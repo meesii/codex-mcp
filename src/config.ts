@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import type { UserConfig } from "./user-config.js";
 
 export interface ServerConfig {
     host: string;
@@ -17,6 +18,18 @@ export interface ServerConfig {
      * Required to silence submission warnings; must be unique per app.
      */
     widgetDomain: string;
+}
+
+export interface LoadConfigOptions {
+    /** Override project root (CLI `--root` or interactive choice). */
+    projectRoot?: string;
+    /** Values from `~/.codex-mcp/config.json`. */
+    userConfig?: UserConfig;
+    /**
+     * When true, do not require a public domain / allowed hosts
+     * (local MCP Inspector use).
+     */
+    local?: boolean;
 }
 
 /**
@@ -38,119 +51,65 @@ export function expandHomePath(pathValue: string): string {
 /**
  * Resolve and validate the startup-bound project root directory.
  *
- * Prefers `CODING_MCP_PROJECT_ROOT`. Falls back to a single-entry
- * `CODING_MCP_ALLOWED_ROOTS` for older env files.
+ * Order: explicit root → `process.cwd()`.
  *
- * @param env - Environment map
+ * @param explicitRoot - Optional CLI / interactive override
  * @returns Absolute project root
  */
-export function resolveProjectRoot(env: NodeJS.ProcessEnv): string {
-    const projectRaw = env.CODING_MCP_PROJECT_ROOT?.trim();
-    if (projectRaw) {
-        return assertProjectDirectory(projectRaw);
+export function resolveProjectRoot(explicitRoot?: string): string {
+    if (explicitRoot?.trim()) {
+        return assertProjectDirectory(explicitRoot.trim());
     }
-
-    const legacyRaw = env.CODING_MCP_ALLOWED_ROOTS?.trim();
-    if (legacyRaw) {
-        const parts = legacyRaw
-            .split(";")
-            .map((part) => part.trim())
-            .filter(Boolean);
-        if (parts.length === 1) {
-            return assertProjectDirectory(parts[0]!);
-        }
-        if (parts.length > 1) {
-            throw new Error(
-                "CODING_MCP_ALLOWED_ROOTS no longer supports multiple roots. Set CODING_MCP_PROJECT_ROOT to a single project directory.",
-            );
-        }
-    }
-
-    throw new Error(
-        "CODING_MCP_PROJECT_ROOT is required (absolute path to the project directory).",
-    );
+    return assertProjectDirectory(process.cwd());
 }
 
 /**
- * Parse allowed HTTP Host header hostnames from a semicolon-separated env string.
+ * Load server config from `~/.codex-mcp/config.json` and CLI options.
  *
- * @param raw - Raw env value (hostnames without ports)
- * @returns Hostname list
- */
-export function parseAllowedHosts(raw: string | undefined): string[] {
-    if (!raw || raw.trim() === "") {
-        return [];
-    }
-
-    return raw
-        .split(";")
-        .map((part) => part.trim().toLowerCase())
-        .filter(Boolean);
-}
-
-/**
- * Load server config from process environment.
- *
- * @param env - Environment map (defaults to `process.env`)
+ * @param options - CLI / user-config overlays
  * @returns Parsed server configuration
  */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-    const host = env.CODING_MCP_HOST?.trim() || "127.0.0.1";
-    const portRaw = env.CODING_MCP_PORT?.trim() || "3920";
-    const port = Number.parseInt(portRaw, 10);
+export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
+    const user = options.userConfig ?? {};
+    const host = user.host?.trim() || "127.0.0.1";
+    const port = user.port ?? 3920;
     if (!Number.isFinite(port) || port < 0 || port > 65535) {
-        throw new Error(`Invalid CODING_MCP_PORT: ${portRaw}`);
+        throw new Error(`Invalid port in user config: ${port}`);
     }
 
-    const projectRoot = resolveProjectRoot(env);
-    const allowedHosts = parseAllowedHosts(env.CODING_MCP_ALLOWED_HOSTS);
-    const widgetDomain = resolveWidgetDomain(env, allowedHosts, host, port);
+    const projectRoot = resolveProjectRoot(options.projectRoot);
+    const allowedHosts =
+        !options.local && user.domain ? [user.domain.toLowerCase()] : [];
 
-    return { host, port, projectRoot, allowedHosts, widgetDomain };
+    return {
+        host,
+        port,
+        projectRoot,
+        allowedHosts,
+        widgetDomain: resolveWidgetDomain(allowedHosts, host, port),
+    };
 }
 
 /**
- * Resolve the unique widget origin for ChatGPT MCP Apps.
+ * Build the ChatGPT widget origin from the public host (or localhost).
  *
- * Prefers `CODING_MCP_WIDGET_DOMAIN`. Falls back to the first allowed host,
- * then localhost.
+ * Always `https://codex-mcp.<first-allowed-host>` when a tunnel host exists.
  *
- * @param env - Environment map
  * @param allowedHosts - Tunnel hostnames
  * @param host - Bind host
  * @param port - Bind port
  * @returns Absolute https/http origin
  */
 export function resolveWidgetDomain(
-    env: NodeJS.ProcessEnv,
     allowedHosts: string[],
     host: string,
     port: number,
 ): string {
-    const raw = env.CODING_MCP_WIDGET_DOMAIN?.trim();
-    if (raw) {
-        return normalizeOrigin(raw);
-    }
     if (allowedHosts.length > 0) {
-        // Unique per app: subdomain-style label under the tunnel host.
         return `https://codex-mcp.${allowedHosts[0]}`;
     }
     const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
     return `http://${localHost}:${port}`;
-}
-
-/**
- * Normalize a URL or hostname into an origin string.
- *
- * @param value - URL or host
- * @returns Origin like https://example.com
- */
-function normalizeOrigin(value: string): string {
-    if (value.includes("://")) {
-        const parsed = new URL(value);
-        return parsed.origin;
-    }
-    return `https://${value.replace(/^\/+/, "").replace(/\/+$/, "")}`;
 }
 
 /**
@@ -162,7 +121,7 @@ function normalizeOrigin(value: string): string {
 function assertProjectDirectory(pathValue: string): string {
     const absolutePath = resolve(expandHomePath(pathValue));
     if (!existsSync(absolutePath) || !statSync(absolutePath).isDirectory()) {
-        throw new Error(`CODING_MCP_PROJECT_ROOT is not a directory: ${pathValue}`);
+        throw new Error(`Project root is not a directory: ${pathValue}`);
     }
     return absolutePath;
 }

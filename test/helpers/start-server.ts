@@ -1,7 +1,10 @@
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServerConfig } from "../../src/config.js";
+import {
+    resolveWidgetDomain,
+    type ServerConfig,
+} from "../../src/config.js";
 import { createHttpServer, type RunningHttpServer } from "../../src/http-server.js";
 
 export interface TestServerContext {
@@ -28,12 +31,15 @@ export async function startTestServer(): Promise<TestServerContext> {
     );
     await writeFile(join(fixtureRoot, "src", "app.ts"), "export const value = 1;\n", "utf8");
 
+    const host = "127.0.0.1";
+    const port = 0;
+    const allowedHosts: string[] = [];
     const config: ServerConfig = {
-        host: "127.0.0.1",
-        port: 0,
+        host,
+        port,
         projectRoot: fixtureRoot,
-        allowedHosts: [],
-        widgetDomain: "https://codex-mcp.test.local",
+        allowedHosts,
+        widgetDomain: resolveWidgetDomain(allowedHosts, host, port),
     };
 
     const server = createHttpServer(config);

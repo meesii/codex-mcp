@@ -6,5 +6,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Local cloudflared binary (place at bin/cloudflared.exe on Windows)
+bin/cloudflared
+bin/cloudflared.exe
+
 # Local reference clones (not part of the published project)
 docs/
