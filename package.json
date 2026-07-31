@@ -1,0 +1,47 @@
+{
+    "name": "codex-mcp",
+    "version": "0.1.0",
+    "description": "Lean local coding MCP server for ChatGPT (Streamable HTTP, no OAuth).",
+    "type": "module",
+    "main": "dist/cli.js",
+    "bin": {
+        "codex-mcp": "dist/cli.js"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "dev": "tsx watch src/cli.ts serve",
+        "build": "tsc -p tsconfig.json",
+        "start": "node dist/cli.js serve",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "tsx test/tools.e2e.test.ts"
+    },
+    "keywords": [
+        "mcp",
+        "chatgpt",
+        "coding"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/meesii/codex-mcp.git"
+    },
+    "bugs": {
+        "url": "https://github.com/meesii/codex-mcp/issues"
+    },
+    "homepage": "https://github.com/meesii/codex-mcp#readme",
+    "license": "MIT",
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "express": "^5.2.1",
+        "turndown": "^7.2.2",
+        "zod": "^4.4.3"
+    },
+    "devDependencies": {
+        "@types/express": "^5.0.6",
+        "@types/node": "^22.19.0",
+        "@types/turndown": "^5.0.6",
+        "tsx": "^4.21.0",
+        "typescript": "^5.9.3"
+    }
+}
