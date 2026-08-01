@@ -89,9 +89,12 @@ export function writeCloudflaredYml(
 ): void {
     mkdirSync(dirname(filePath), { recursive: true });
     const credentials = quoteYamlScalar(input.credentialsFile);
+    // Prefer http2: many networks (CGNAT / firewalls) block QUIC UDP 7844,
+    // which otherwise leaves the tunnel offline and Cloudflare returns 1033.
     const body = [
         `tunnel: ${input.tunnelId}`,
         `credentials-file: ${credentials}`,
+        "protocol: http2",
         "",
         "ingress:",
         `  - hostname: ${input.hostname}`,
