@@ -16,7 +16,7 @@
         "build": "tsc -p tsconfig.json",
         "start": "node dist/cli.js",
         "typecheck": "tsc -p tsconfig.json --noEmit",
-        "test": "tsx test/tools.e2e.test.ts"
+        "test": "tsx test/user-mcp-config.test.ts && tsx test/tools.e2e.test.ts && tsx test/mcp-gateway.e2e.test.ts"
     },
     "keywords": [
         "mcp",

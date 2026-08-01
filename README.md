@@ -11,6 +11,7 @@
 - **文件与搜索**：`read` / `write` / `edit`，以及 `grep` / `glob` / `ls`
 - **命令执行**：短命令用 `bash`；长任务用 `exec_command` + `write_stdin` / `process_kill`（Codex 风格进程会话）
 - **网页拉取**：`webfetch`（http/https → text / markdown / html）
+- **下游 MCP 网关（可选）**：在 `~/.codex-mcp/mcp.json` 配置其它 MCP；instructions 只平铺各 server 简介，具体工具通过 `mcp_tools` / `mcp_call` 按需列出与调用
 - **MCP Apps 摘要卡片**：工具结果挂 `ui://codex-mcp/tool-card.html`，只展示状态 / 路径 / 计数 / 最多 120 字预览，**不渲染完整文件或命令输出**
 
 | 工具                      | 说明                                             |
@@ -22,6 +23,8 @@
 | `process_kill`            | 按 `processId` 结束后台进程                      |
 | `grep` / `glob` / `ls`    | 搜索与列目录                                     |
 | `webfetch`                | 拉取 http(s) 页面                                |
+| `mcp_tools`               | 列出某个下游 MCP 的 tools（含描述 / schema）     |
+| `mcp_call`                | 调用某个下游 MCP 的某个 tool                     |
 
 返回格式遵循 [OpenAI MCP server 文档](https://developers.openai.com/plugins/build/mcp-server)：`content` 为短摘要，`structuredContent` 为结构化数据（并声明 `outputSchema`）。
 
@@ -111,8 +114,43 @@ npm start            # node dist/cli.js（需先 npm run build）
 
 - 隧道日志：`~/.codex-mcp/logs/tunnel.log`
 - cloudflared 配置：`~/.cloudflared/config.yml`（向导生成/更新；ingress 指向本机 `host:port`）
+- 下游 MCP：`~/.codex-mcp/mcp.json`（可选；见下）
 
 DNS 路由：向导会先尝试创建记录；若域名已存在但未指向当前 tunnel，会自动 `--overwrite-dns`，避免重建 tunnel 后出现公网 502/530。
+
+### 下游 MCP（`mcp.json`）
+
+可选。不写此文件时行为与原来一致。写法对齐常见 MCP 客户端：
+
+```json
+{
+    "mcpServers": {
+        "github": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env": {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx"
+            }
+        },
+        "remote-demo": {
+            "url": "https://example.com/mcp",
+            "headers": {
+                "Authorization": "Bearer xxx"
+            }
+        }
+    }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `command` / `args` / `env` / `cwd` | stdio 启动（与 Cursor 类似） |
+| `url` / `headers` | Streamable HTTP 远程 MCP（与 `command` 二选一） |
+| `disabled` | `true` 时跳过该条目 |
+
+启动时会对每个下游 MCP 做 `initialize`，用其 `instructions`（首行）或 server `title`/`name` 作为顶层简介写入 ChatGPT `instructions`——**不必**在 `mcp.json` 里手写 description。
+
+ChatGPT 侧**不会**看到下游每个 tool；只会看到 server 名 + 上述简介。按需 `mcp_tools`（同一对话可复用）再 `mcp_call`。改 `mcp.json` 后重启 `codex-mcp`，并刷新 ChatGPT connector。
 
 ## 接入 ChatGPT
 
@@ -143,9 +181,11 @@ npm run build
 
 ```
 cli → (tunnel wizard / cloudflared sidecar)
+    → DownstreamMcpHub (optional ~/.codex-mcp/mcp.json)
     → http-server (Streamable HTTP /mcp)
-         → mcp-server (instructions = project root + workflow)
+         → mcp-server (instructions = project root + workflow + MCP blurbs)
          → tools/* + ProjectContext (path guard + write lock)
+         → mcp_tools / mcp_call → DownstreamMcpHub
 ```
 
 ## License

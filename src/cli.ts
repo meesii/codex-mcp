@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { styleText } from "node:util";
 import { loadConfig } from "./config.js";
+import { DownstreamMcpHub } from "./downstream/hub.js";
 import { createHttpServer } from "./http-server.js";
 import { isToolLogEnabled } from "./lib/tool-log.js";
 import { askLine, canPromptInteractively } from "./tunnel/prompt.js";
@@ -50,7 +51,7 @@ function paint(format: Parameters<typeof styleText>[0], text: string): string {
     return styleText(format, text);
 }
 
-const BANNER_LABEL_WIDTH = 7;
+const BANNER_LABEL_WIDTH = 8;
 
 /**
  * Clear the terminal when stdout is an interactive TTY.
@@ -80,6 +81,7 @@ function printStartupBanner(input: {
     localUrl: string;
     projectRoot: string;
     logsOn: boolean;
+    downstream: string[];
     tunnel:
         | { protocol?: string; location?: string }
         | "off"
@@ -105,6 +107,10 @@ function printStartupBanner(input: {
                 ? paint("green", bits.join(" · "))
                 : paint("green", "on"),
         );
+    }
+
+    if (input.downstream.length > 0) {
+        printBannerRow("mcp.json", paint("green", input.downstream.join(", ")));
     }
 
     printBannerRow("logs", input.logsOn ? "on" : paint("dim", "off"));
@@ -263,7 +269,8 @@ async function runServe(flags: CliFlags): Promise<void> {
         }
     }
 
-    const server = createHttpServer(config);
+    const hub = await DownstreamMcpHub.connectFromUserConfig();
+    const server = createHttpServer(config, { hub });
     await server.listen();
 
     let sidecar: CloudflaredSidecar | undefined;
@@ -293,11 +300,16 @@ async function runServe(flags: CliFlags): Promise<void> {
         }
     }
 
+    const downstream = hub.listServers().map((item) =>
+        item.status === "ready" ? item.name : `${item.name}!`,
+    );
+
     printStartupBanner({
         mcpUrl: publicUrl ?? server.getMcpUrl(),
         localUrl: server.getMcpUrl(),
         projectRoot: config.projectRoot,
         logsOn: isToolLogEnabled(),
+        downstream,
         tunnel: sidecar
             ? (tunnelReady ?? { protocol: undefined, location: undefined })
             : wantSidecar

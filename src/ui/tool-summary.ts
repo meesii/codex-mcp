@@ -24,6 +24,8 @@ const PARAM_LABELS: Record<string, string> = {
     summary: "总结",
     next: "下一步",
     done: "完成",
+    server: "MCP",
+    tool: "工具",
 };
 
 /** Per-tool argument keys worth showing (order matters). */
@@ -40,6 +42,8 @@ const PARAM_KEYS: Record<string, string[]> = {
     ls: ["path"],
     webfetch: ["url", "format"],
     summary: ["summary", "next", "done"],
+    mcp_tools: ["server"],
+    mcp_call: ["server", "tool"],
 };
 
 /**
@@ -141,6 +145,14 @@ function buildTitle(
             return clipLine(String(input.url ?? ""), 80) || "—";
         case "summary":
             return clipLine(String(input.summary ?? ""), 80) || "—";
+        case "mcp_tools":
+            return clipLine(String(input.server ?? ""), 80) || "—";
+        case "mcp_call": {
+            const server = String(input.server ?? "");
+            const tool = String(input.tool ?? "");
+            if (server && tool) return clipLine(`${server}/${tool}`, 80);
+            return clipLine(server || tool, 80) || "—";
+        }
         case "write_stdin":
         case "process_kill":
             return input.processId != null ? `#${input.processId}` : "—";
@@ -228,6 +240,15 @@ export function summarizeOutcome(
             if (data.done === true) return "任务完成";
             if (data.continueWorking === true) return "继续下一阶段";
             break;
+        }
+        case "mcp_tools": {
+            if (Array.isArray(data.tools)) return `${data.tools.length} 个工具`;
+            break;
+        }
+        case "mcp_call": {
+            const tool = typeof data.tool === "string" ? data.tool : "";
+            if (data.isError === true) return tool ? `${tool} 失败` : "调用失败";
+            return tool ? `${tool} 完成` : "调用完成";
         }
         default:
             break;

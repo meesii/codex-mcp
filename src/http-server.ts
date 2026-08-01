@@ -4,6 +4,7 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "./config.js";
+import { DownstreamMcpHub } from "./downstream/hub.js";
 import { ProcessSessionManager } from "./lib/process-sessions.js";
 import { logMcpEvent } from "./lib/tool-log.js";
 import { createMcpServer } from "./mcp-server.js";
@@ -15,9 +16,15 @@ type Transport = StreamableHTTPServerTransport;
 const MCP_SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MCP_SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
+export interface CreateHttpServerOptions {
+    /** Shared downstream MCP hub; defaults to an empty hub. */
+    hub?: DownstreamMcpHub;
+}
+
 export interface RunningHttpServer {
     config: ServerConfig;
     project: ProjectContext;
+    hub: DownstreamMcpHub;
     listen: () => Promise<NodeHttpServer>;
     close: () => Promise<void>;
     /** Bound URL after listen, e.g. http://127.0.0.1:3920/mcp */
@@ -53,9 +60,14 @@ function sendJsonRpcError(
  * Create the HTTP + Streamable MCP application (no auth).
  *
  * @param config - Server configuration
+ * @param options - Optional shared resources (downstream hub)
  * @returns Running server controls
  */
-export function createHttpServer(config: ServerConfig): RunningHttpServer {
+export function createHttpServer(
+    config: ServerConfig,
+    options: CreateHttpServerOptions = {},
+): RunningHttpServer {
+    const hub = options.hub ?? DownstreamMcpHub.empty();
     const app = createMcpExpressApp({
         host: config.host,
         ...(config.allowedHosts.length > 0
@@ -119,7 +131,7 @@ export function createHttpServer(config: ServerConfig): RunningHttpServer {
                     }
                 };
 
-                const server = createMcpServer(config, project, processes);
+                const server = createMcpServer(config, project, processes, hub);
                 await server.connect(transport);
             } else {
                 sendJsonRpcError(res, 400, -32000, "No valid MCP session");
@@ -136,6 +148,7 @@ export function createHttpServer(config: ServerConfig): RunningHttpServer {
     return {
         config,
         project,
+        hub,
         getMcpUrl: () => `http://${config.host}:${boundPort}/mcp`,
         listen: () =>
             new Promise<NodeHttpServer>((resolve, reject) => {
@@ -152,6 +165,7 @@ export function createHttpServer(config: ServerConfig): RunningHttpServer {
             clearInterval(sessionCleanupTimer);
             processes.shutdown();
             await transports.closeAll();
+            await hub.close();
             await new Promise<void>((resolve, reject) => {
                 if (!httpServer) {
                     resolve();

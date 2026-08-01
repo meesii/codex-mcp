@@ -279,7 +279,9 @@ export function toolCardHtml(toolName?: string): string {
     glob: "查找文件",
     ls: "列出目录",
     webfetch: "抓取网页",
-    summary: "总结进度"
+    summary: "总结进度",
+    mcp_tools: "列出下游工具",
+    mcp_call: "调用下游工具"
   };
   var PARAM_LABELS = {
     path: "路径",
@@ -293,7 +295,9 @@ export function toolCardHtml(toolName?: string): string {
     format: "格式",
     summary: "总结",
     next: "下一步",
-    done: "完成"
+    done: "完成",
+    server: "MCP",
+    tool: "工具"
   };
   var PARAM_KEYS = {
     read: ["path", "offset", "limit"],
@@ -307,7 +311,9 @@ export function toolCardHtml(toolName?: string): string {
     glob: ["pattern"],
     ls: ["path"],
     webfetch: ["url", "format"],
-    summary: ["summary", "next", "done"]
+    summary: ["summary", "next", "done"],
+    mcp_tools: ["server"],
+    mcp_call: ["server", "tool"]
   };
 
   function labelOf(toolName) {
@@ -425,6 +431,14 @@ export function toolCardHtml(toolName?: string): string {
       title = clip(String(input.url || ""), 80) || "—";
     } else if (toolName === "summary") {
       title = clip(String(input.summary || ""), 80) || "—";
+    } else if (toolName === "mcp_tools") {
+      title = clip(String(input.server || ""), 80) || "—";
+    } else if (toolName === "mcp_call") {
+      var mcpServer = String(input.server || "");
+      var mcpTool = String(input.tool || "");
+      title = mcpServer && mcpTool
+        ? clip(mcpServer + "/" + mcpTool, 80)
+        : (clip(mcpServer || mcpTool, 80) || "—");
     } else if (toolName === "write_stdin" || toolName === "process_kill") {
       title = input.processId != null ? "#" + input.processId : "—";
     } else if (params[0]) {
@@ -471,6 +485,14 @@ export function toolCardHtml(toolName?: string): string {
     if (toolName === "summary") {
       if (data.done === true) return "任务完成";
       if (data.continueWorking === true) return "继续下一阶段";
+    }
+    if (toolName === "mcp_tools" && Array.isArray(data.tools)) {
+      return data.tools.length + " 个工具";
+    }
+    if (toolName === "mcp_call") {
+      var called = typeof data.tool === "string" ? data.tool : "";
+      if (data.isError === true) return called ? called + " 失败" : "调用失败";
+      return called ? called + " 完成" : "调用完成";
     }
     var fallback = String(contentText || "").trim();
     return fallback ? clip(fallback, 100) : "";

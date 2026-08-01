@@ -28,6 +28,13 @@ export const openWorldAnnotations = {
     openWorldHint: true,
 };
 
+/** Downstream proxy calls may mutate external systems. */
+export const proxyAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: true,
+};
+
 /**
  * Attach ChatGPT `securitySchemes: noauth`.
  * UI template URI is attached later in `registerTool` (needs the tool name).

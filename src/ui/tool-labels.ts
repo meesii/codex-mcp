@@ -14,6 +14,8 @@ export const TOOL_LABELS: Record<ToolName, string> = {
     ls: "列出目录",
     webfetch: "抓取网页",
     summary: "总结进度",
+    mcp_tools: "列出下游工具",
+    mcp_call: "调用下游工具",
 };
 
 /** Host invoking / invoked status text (≤64 chars each). */
@@ -30,6 +32,8 @@ export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }
     ls: { invoking: "正在列出目录…", invoked: "目录列表完成" },
     webfetch: { invoking: "正在抓取网页…", invoked: "网页抓取完成" },
     summary: { invoking: "正在总结进度…", invoked: "进度已汇报" },
+    mcp_tools: { invoking: "正在列出下游工具…", invoked: "下游工具已列出" },
+    mcp_call: { invoking: "正在调用下游工具…", invoked: "下游工具调用完成" },
 };
 
 /**

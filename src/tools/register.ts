@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerConfig } from "../config.js";
+import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import type { ProjectContext } from "../project.js";
 import { registerToolCardResource } from "../ui/register-ui.js";
@@ -15,6 +16,7 @@ import { registerGlobTool } from "./glob.js";
 import { registerLsTool } from "./ls.js";
 import { registerWebfetchTool } from "./webfetch.js";
 import { registerSummaryTool } from "./summary.js";
+import { registerMcpGatewayTools } from "./mcp-gateway.js";
 
 export { TOOL_NAMES } from "./names.js";
 
@@ -25,12 +27,14 @@ export { TOOL_NAMES } from "./names.js";
  * @param config - Server configuration (widget domain / CSP)
  * @param project - Bound project context
  * @param processes - Shared process session manager
+ * @param hub - Downstream MCP hub (from ~/.codex-mcp/mcp.json)
  */
 export function registerAllTools(
     server: McpServer,
     config: ServerConfig,
     project: ProjectContext,
     processes: ProcessSessionManager,
+    hub: DownstreamMcpHub,
 ): void {
     registerToolCardResource(server, config);
     registerReadTool(server, project);
@@ -45,4 +49,7 @@ export function registerAllTools(
     registerLsTool(server, project);
     registerWebfetchTool(server);
     registerSummaryTool(server);
+    if (hub.hasServers()) {
+        registerMcpGatewayTools(server, hub);
+    }
 }

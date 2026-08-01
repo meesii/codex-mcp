@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildServerInstructions } from "../src/mcp-server.js";
 import { TOOL_CARD_ENABLED, TOOL_CARD_URI, SUMMARY_CARD_URI } from "../src/ui/constants.js";
-import { TOOL_NAMES } from "../src/tools/register.js";
+import { CORE_TOOL_NAMES } from "../src/tools/names.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 import { startTestServer } from "./helpers/start-server.js";
 
@@ -31,8 +31,8 @@ async function main(): Promise<void> {
         const toolNames = await mcp.listToolNames();
         assert.deepEqual(
             toolNames,
-            [...TOOL_NAMES].sort(),
-            "listTools should expose all coding tools",
+            [...CORE_TOOL_NAMES].sort(),
+            "listTools should expose core coding tools (no gateway without mcp.json)",
         );
 
         const instructions = buildServerInstructions(ctx.fixtureRoot);
@@ -49,6 +49,8 @@ async function main(): Promise<void> {
         assert.doesNotMatch(instructions, /You are /i);
         assert.match(instructions, /summary\(done=false/i);
         assert.match(instructions, /~6 inspect|6 inspect/i);
+        assert.doesNotMatch(instructions, /mcp_tools/i);
+        assert.doesNotMatch(instructions, /Downstream MCP servers/);
 
         const listedTools = await mcp.client.listTools();
         const readTool = listedTools.tools.find((tool) => tool.name === "read");
