@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { styleText } from "node:util";
 
 /**
  * Whether stdin/stdout can drive an interactive wizard.
@@ -8,6 +9,20 @@ import { stdin as input, stdout as output } from "node:process";
  */
 export function canPromptInteractively(): boolean {
     return input.isTTY === true && output.isTTY === true;
+}
+
+/**
+ * Colorize prompt text when stdout is a TTY.
+ *
+ * @param format - Color format
+ * @param text - Text
+ * @returns Styled text
+ */
+function paint(format: Parameters<typeof styleText>[0], text: string): string {
+    if (process.env.NO_COLOR !== undefined || output.isTTY !== true) {
+        return text;
+    }
+    return styleText(format, text);
 }
 
 /**
@@ -44,7 +59,7 @@ export async function askLine(
     try {
         const suffix =
             defaultValue !== undefined && defaultValue !== ""
-                ? ` (${defaultValue})`
+                ? ` (${paint(["dim", "underline"], defaultValue)})`
                 : "";
         const answer = await rl.question(`${question}${suffix}: `);
         const trimmed = answer.trim();

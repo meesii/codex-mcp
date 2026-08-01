@@ -50,6 +50,67 @@ function paint(format: Parameters<typeof styleText>[0], text: string): string {
     return styleText(format, text);
 }
 
+const BANNER_LABEL_WIDTH = 7;
+
+/**
+ * Clear the terminal when stdout is an interactive TTY.
+ */
+function clearTerminal(): void {
+    if (process.stdout.isTTY !== true) return;
+    console.clear();
+}
+
+/**
+ * Print one aligned `label  value` row for the startup banner.
+ *
+ * @param label - Left column (dim)
+ * @param value - Right column (already styled if needed)
+ */
+function printBannerRow(label: string, value: string): void {
+    console.log(`  ${paint("dim", label.padEnd(BANNER_LABEL_WIDTH))}  ${value}`);
+}
+
+/**
+ * Print the post-listen startup summary.
+ *
+ * @param input - URLs, root, and tunnel/log status
+ */
+function printStartupBanner(input: {
+    mcpUrl: string;
+    localUrl: string;
+    projectRoot: string;
+    logsOn: boolean;
+    tunnel:
+        | { protocol?: string; location?: string }
+        | "off"
+        | undefined;
+}): void {
+    clearTerminal();
+    console.log(paint(["bold", "cyan"], "codex-mcp"));
+    printBannerRow("mcp", paint(["bold", "green"], input.mcpUrl));
+    if (input.localUrl !== input.mcpUrl) {
+        printBannerRow("local", input.localUrl);
+    }
+    printBannerRow("root", input.projectRoot);
+
+    if (input.tunnel === "off") {
+        printBannerRow("tunnel", paint("dim", "off"));
+    } else if (input.tunnel) {
+        const bits = [input.tunnel.protocol, input.tunnel.location].filter(
+            (part): part is string => Boolean(part),
+        );
+        printBannerRow(
+            "tunnel",
+            bits.length > 0
+                ? paint("green", bits.join(" · "))
+                : paint("green", "on"),
+        );
+    }
+
+    printBannerRow("logs", input.logsOn ? "on" : paint("dim", "off"));
+    console.log("");
+}
+
 /**
  * Parse argv into a command + flags.
  *
@@ -206,6 +267,7 @@ async function runServe(flags: CliFlags): Promise<void> {
     await server.listen();
 
     let sidecar: CloudflaredSidecar | undefined;
+    let tunnelReady: { protocol?: string; location?: string } | undefined;
     const publicUrl =
         config.allowedHosts[0] !== undefined
             ? `https://${config.allowedHosts[0]}/mcp`
@@ -224,32 +286,24 @@ async function runServe(flags: CliFlags): Promise<void> {
             mirrorLogs: flags.tunnelLogs,
         });
         try {
-            await sidecar.start();
+            tunnelReady = await sidecar.start();
         } catch (error) {
             await server.close();
             throw error;
         }
     }
 
-    const logsOn = isToolLogEnabled();
-
-    console.log(
-        `${paint(["bold", "cyan"], "codex-mcp")}  ${paint("green", publicUrl ?? server.getMcpUrl())}`,
-    );
-    console.log(paint("dim", `local  ${server.getMcpUrl()}`));
-    console.log(paint("dim", `root   ${config.projectRoot}`));
-    console.log(
-        paint(
-            "dim",
-            [
-                `logs ${logsOn ? "on" : "off"}`,
-                sidecar ? "tunnel on" : "tunnel off",
-            ].join("  ·  "),
-        ),
-    );
-    if (sidecar) {
-        console.log(paint("dim", `tunnel log  ${sidecar.getLogPath()}`));
-    }
+    printStartupBanner({
+        mcpUrl: publicUrl ?? server.getMcpUrl(),
+        localUrl: server.getMcpUrl(),
+        projectRoot: config.projectRoot,
+        logsOn: isToolLogEnabled(),
+        tunnel: sidecar
+            ? (tunnelReady ?? { protocol: undefined, location: undefined })
+            : wantSidecar
+              ? "off"
+              : undefined,
+    });
 
     let shuttingDown = false;
     const shutdown = async () => {
@@ -292,7 +346,7 @@ async function chooseProjectRoot(
     const cwd = process.cwd();
     console.log("");
     const answer = (
-        await askLine("Project root (Enter = current directory)", cwd)
+        await askLine("Project root", cwd)
     ).trim();
     return answer || cwd;
 }
