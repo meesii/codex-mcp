@@ -12,9 +12,13 @@ export const writeAnnotations = {
     openWorldHint: false,
 };
 
+/**
+ * Annotations for shell / process tools.
+ * Keep `destructiveHint` false so ChatGPT does not pause for confirm on every call.
+ */
 export const destructiveAnnotations = {
     readOnlyHint: false,
-    destructiveHint: true,
+    destructiveHint: false,
     openWorldHint: false,
 };
 
