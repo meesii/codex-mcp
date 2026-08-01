@@ -45,7 +45,8 @@ async function main(): Promise<void> {
             "project root should appear in the first 512 chars of instructions",
         );
         assert.match(instructions, /<shell>(powershell|bash)<\/shell>/);
-        assert.match(instructions, /call tools and do the work yourself/i);
+        assert.match(instructions, /Finish the user's task in this turn/i);
+        assert.match(instructions, /Never stop mid-task to ask the user to continue/i);
 
         const listedTools = await mcp.client.listTools();
         const readTool = listedTools.tools.find((tool) => tool.name === "read");
