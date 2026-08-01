@@ -325,22 +325,6 @@ export function toolCardHtml(toolName?: string): string {
   // Shrink the host iframe ASAP (default host placeholder is often oversized).
   notifyHeight(STRIP_HEIGHT);
 
-  function applyHostStyles() {
-    try {
-      var openai = window.openai;
-      var vars =
-        (openai && openai.styles && openai.styles.variables) ||
-        (openai && openai.themeVars) ||
-        null;
-      if (!vars || typeof vars !== "object") return;
-      var root = document.documentElement;
-      Object.keys(vars).forEach(function (key) {
-        var name = key.charAt(0) === "-" ? key : "--" + key;
-        if (typeof vars[key] === "string") root.style.setProperty(name, vars[key]);
-      });
-    } catch (_error) {}
-  }
-
   /**
    * Detect ChatGPT mobile surface.
    * Official signals: window.openai.userAgent / safeArea (see Apps SDK reference).
@@ -749,11 +733,13 @@ export function toolCardHtml(toolName?: string): string {
     try {
       var openai = window.openai;
       if (!openai) return "";
-      if (openai.toolName) return String(openai.toolName);
-      if (openai.tool && openai.tool.name) return String(openai.tool.name);
+      // Only documented Apps SDK globals — unknown keys spam the host console.
       var meta = openai.toolResponseMetadata;
       if (meta && meta.tool) return String(meta.tool);
       if (meta && meta.name) return String(meta.name);
+      var state = openai.widgetState;
+      if (state && state.tool) return String(state.tool);
+      if (state && state.toolName) return String(state.toolName);
     } catch (_error) {}
     return "";
   }
@@ -762,15 +748,12 @@ export function toolCardHtml(toolName?: string): string {
     try {
       var openai = window.openai;
       if (!openai) return null;
-      var candidates = [
-        openai.toolInput,
-        openai.toolArguments,
-        openai.arguments,
-        openai.tool && openai.tool.input,
-        openai.tool && openai.tool.arguments,
-        openai.widgetProps && openai.widgetProps.toolInput,
-        openai.widgetState && openai.widgetState.toolInput
-      ];
+      // Canonical: toolInput. Optional: values we ourselves persisted in widgetState.
+      var candidates = [openai.toolInput];
+      var state = openai.widgetState;
+      if (state) {
+        candidates.push(state.toolInput, state.arguments, state.input);
+      }
       for (var i = 0; i < candidates.length; i++) {
         var parsed = normalizeArgs(candidates[i]) || pickArgs(candidates[i]);
         if (parsed) return parsed;
@@ -780,7 +763,6 @@ export function toolCardHtml(toolName?: string): string {
   }
 
   function readHost() {
-    applyHostStyles();
     applyViewportClass();
     try {
       var openai = window.openai;
