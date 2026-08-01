@@ -21,6 +21,9 @@ const PARAM_LABELS: Record<string, string> = {
     offset: "起始行",
     limit: "行数",
     format: "格式",
+    summary: "总结",
+    next: "下一步",
+    done: "完成",
 };
 
 /** Per-tool argument keys worth showing (order matters). */
@@ -36,6 +39,7 @@ const PARAM_KEYS: Record<string, string[]> = {
     glob: ["pattern"],
     ls: ["path"],
     webfetch: ["url", "format"],
+    summary: ["summary", "next", "done"],
 };
 
 /**
@@ -135,6 +139,8 @@ function buildTitle(
             return clipLine(String(input.pattern ?? ""), 80) || "—";
         case "webfetch":
             return clipLine(String(input.url ?? ""), 80) || "—";
+        case "summary":
+            return clipLine(String(input.summary ?? ""), 80) || "—";
         case "write_stdin":
         case "process_kill":
             return input.processId != null ? `#${input.processId}` : "—";
@@ -216,6 +222,11 @@ export function summarizeOutcome(
         }
         case "webfetch": {
             if (typeof data.bytes === "number") return `${data.bytes} 字节`;
+            break;
+        }
+        case "summary": {
+            if (data.done === true) return "任务完成";
+            if (data.continueWorking === true) return "继续下一阶段";
             break;
         }
         default:

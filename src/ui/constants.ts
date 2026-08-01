@@ -5,8 +5,11 @@
  */
 export const TOOL_CARD_ENABLED = true;
 
-/** Stable shared MCP Apps UI resource URI (all tools). */
+/** Stable shared MCP Apps UI resource URI (all tools except summary). */
 export const TOOL_CARD_URI = "ui://codex-mcp/tool-card.html";
+
+/** Always-open progress panel for the `summary` tool. */
+export const SUMMARY_CARD_URI = "ui://codex-mcp/summary-card.html";
 
 /**
  * Legacy URI prefix from the short-lived per-tool card experiment.

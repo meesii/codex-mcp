@@ -14,9 +14,10 @@ function instructionShellName(): string {
 }
 
 /**
- * Build MCP initialize `instructions` in a Codex-like shape:
- * environment first (OpenAI: keep the first 512 characters self-contained),
- * then act-first coding rules and tool roles.
+ * Build MCP initialize `instructions`: environment first (OpenAI: keep the
+ * first 512 characters self-contained), then a tool-selection map — not a
+ * model persona. OpenAI: shared sequences / limits here; do not repeat every
+ * tool description or change the model's personality.
  *
  * @param projectRoot - Absolute project directory
  * @returns Server instructions string
@@ -32,20 +33,30 @@ export function buildServerInstructions(projectRoot: string): string {
     ].join('\n');
 
     const body = [
-        "You are a local coding agent. Finish the user's task in this turn by calling MCP tools yourself.",
-        'Keep calling tools until the task is fully done or you hit a real blocker. Never stop mid-task to ask the user to continue, confirm a plan, approve next steps, or run commands for you.',
-        'Do not narrate progress and wait. Prefer reasonable assumptions. Do not stop at advice, pseudocode, or copy-paste commands.',
-        'Ask one short plain-text question only when a needed fact cannot be discovered locally and a wrong assumption would be risky.',
+        'Codex-MCP: local project coding tools. Paths are under project_root. Shell is ' +
+            shell +
+            '. Prefer the dedicated tools below over shell for file inspect/edit.',
         '',
-        'Tool roles (Codex maps shell/apply_patch/exec_command here differently — use these MCP tools):',
-        '- Inspect: prefer read / grep / glob / ls over shell cat/rg/Get-ChildItem.',
-        '- Change files: edit = small exact replace; write = new file or full rewrite. Never edit source via bash.',
-        `- Short shell (${shell}): bash (cwd is project_root; avoid cd).`,
-        '- Long-running: exec_command → processId → write_stdin (poll/stdin) / process_kill (stop).',
-        '- Public http(s) only: webfetch.',
+        'Tool map (pick by goal):',
+        '- read — file contents before explain/change (not bash cat/type).',
+        '- grep — regex search in files (not bash Select-String/grep).',
+        '- glob — find paths by pattern (e.g. **/*.ts).',
+        '- ls — list one directory.',
+        '- edit — small exact string replace on an existing file.',
+        '- write — create file or full overwrite; use edit for small patches.',
+        `- bash — short foreground ${shell} (install/test/build/git); cwd=project_root; not for source read/edit.`,
+        '- exec_command — long-running or interactive command; returns processId while running.',
+        '- write_stdin — poll or send stdin to a processId from exec_command.',
+        '- process_kill — force-stop a processId.',
+        '- webfetch — http(s) URL body only.',
+        '- summary — mid-task user-visible progress (done=false + next) or final checkpoint (done=true).',
         '',
-        'On failure: inspect tool stdout/stderr, fix with edit/write, and retry until it works or you hit a real blocker.',
-        'When truly blocked, say what failed and what you need — otherwise keep working with tools.',
+        'Shared sequences / limits:',
+        '- Servers/watchers: exec_command → write_stdin (poll) → process_kill when done.',
+        '- Mid-task status: summary(done=false); do not use plain chat for partial progress.',
+        '- After ~6 inspect calls (read/grep/glob/ls) without summary, call summary before more inspect.',
+        '- summary(done=true) only when the full user task is finished.',
+        '- On tool failure: use stdout/stderr, then edit/write/bash to fix and retry.',
     ].join('\n');
 
     return `${environment}\n\n${body}`;

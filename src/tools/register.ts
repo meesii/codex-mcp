@@ -14,6 +14,7 @@ import { registerGrepTool } from "./grep.js";
 import { registerGlobTool } from "./glob.js";
 import { registerLsTool } from "./ls.js";
 import { registerWebfetchTool } from "./webfetch.js";
+import { registerSummaryTool } from "./summary.js";
 
 export { TOOL_NAMES } from "./names.js";
 
@@ -43,4 +44,5 @@ export function registerAllTools(
     registerGlobTool(server, project);
     registerLsTool(server, project);
     registerWebfetchTool(server);
+    registerSummaryTool(server);
 }

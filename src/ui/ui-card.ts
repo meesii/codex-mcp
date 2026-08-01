@@ -20,6 +20,12 @@ export interface UiCard {
     args?: Record<string, string | number | boolean>;
     /** Short outcome line after completion. */
     outcome?: string;
+    /** `summary` tool: overall task finished. */
+    done?: boolean;
+    /** `summary` tool: progress note (may wrap). */
+    summaryText?: string;
+    /** `summary` tool: next step when not done. */
+    nextText?: string | null;
 }
 
 /**
@@ -42,6 +48,9 @@ function toArgsMap(
         "offset",
         "limit",
         "chars",
+        "summary",
+        "next",
+        "done",
     ] as const;
     const out: Record<string, string | number | boolean> = {};
     for (const key of keys) {
@@ -84,7 +93,7 @@ export function buildUiCard(
     const outcome = summarizeOutcome(toolName, ok, structured, contentText);
     const argsMap = toArgsMap(args);
 
-    return {
+    const card: UiCard = {
         tool: toolName,
         label: toolLabel(toolName),
         ok,
@@ -93,4 +102,24 @@ export function buildUiCard(
         ...(argsMap ? { args: argsMap } : {}),
         ...(outcome ? { outcome } : {}),
     };
+
+    if (toolName === "summary") {
+        const summaryText =
+            (typeof structured?.summary === "string" && structured.summary.trim()) ||
+            (typeof args?.summary === "string" && args.summary.trim()) ||
+            "";
+        const nextRaw =
+            structured?.next ??
+            (typeof args?.next === "string" ? args.next : null);
+        const nextText =
+            typeof nextRaw === "string" && nextRaw.trim() ? nextRaw.trim() : null;
+        const done = structured?.done === true || args?.done === true;
+
+        card.done = done;
+        card.summaryText = summaryText || call.title;
+        card.nextText = done ? null : nextText;
+        card.label = done ? "任务完成" : "进度汇报";
+    }
+
+    return card;
 }

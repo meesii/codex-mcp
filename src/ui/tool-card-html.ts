@@ -278,7 +278,8 @@ export function toolCardHtml(toolName?: string): string {
     grep: "搜索内容",
     glob: "查找文件",
     ls: "列出目录",
-    webfetch: "抓取网页"
+    webfetch: "抓取网页",
+    summary: "总结进度"
   };
   var PARAM_LABELS = {
     path: "路径",
@@ -289,7 +290,10 @@ export function toolCardHtml(toolName?: string): string {
     chars: "输入",
     offset: "起始行",
     limit: "行数",
-    format: "格式"
+    format: "格式",
+    summary: "总结",
+    next: "下一步",
+    done: "完成"
   };
   var PARAM_KEYS = {
     read: ["path", "offset", "limit"],
@@ -302,7 +306,8 @@ export function toolCardHtml(toolName?: string): string {
     grep: ["pattern", "path"],
     glob: ["pattern"],
     ls: ["path"],
-    webfetch: ["url", "format"]
+    webfetch: ["url", "format"],
+    summary: ["summary", "next", "done"]
   };
 
   function labelOf(toolName) {
@@ -418,6 +423,8 @@ export function toolCardHtml(toolName?: string): string {
       title = clip(String(input.pattern || ""), 80) || "—";
     } else if (toolName === "webfetch") {
       title = clip(String(input.url || ""), 80) || "—";
+    } else if (toolName === "summary") {
+      title = clip(String(input.summary || ""), 80) || "—";
     } else if (toolName === "write_stdin" || toolName === "process_kill") {
       title = input.processId != null ? "#" + input.processId : "—";
     } else if (params[0]) {
@@ -461,6 +468,10 @@ export function toolCardHtml(toolName?: string): string {
     }
     if (toolName === "ls" && Array.isArray(data.entries)) return data.entries.length + " 项";
     if (toolName === "webfetch" && typeof data.bytes === "number") return data.bytes + " 字节";
+    if (toolName === "summary") {
+      if (data.done === true) return "任务完成";
+      if (data.continueWorking === true) return "继续下一阶段";
+    }
     var fallback = String(contentText || "").trim();
     return fallback ? clip(fallback, 100) : "";
   }

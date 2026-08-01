@@ -13,6 +13,7 @@ export const TOOL_LABELS: Record<ToolName, string> = {
     glob: "查找文件",
     ls: "列出目录",
     webfetch: "抓取网页",
+    summary: "总结进度",
 };
 
 /** Host invoking / invoked status text (≤64 chars each). */
@@ -28,6 +29,7 @@ export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }
     glob: { invoking: "正在查找文件…", invoked: "文件查找完成" },
     ls: { invoking: "正在列出目录…", invoked: "目录列表完成" },
     webfetch: { invoking: "正在抓取网页…", invoked: "网页抓取完成" },
+    summary: { invoking: "正在总结进度…", invoked: "进度已汇报" },
 };
 
 /**

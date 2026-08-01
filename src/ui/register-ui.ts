@@ -9,8 +9,10 @@ import {
     TOOL_CARD_LEGACY_TEMPLATE,
     TOOL_CARD_MIME,
     TOOL_CARD_URI,
+    SUMMARY_CARD_URI,
 } from "./constants.js";
 import { toolCardHtml } from "./tool-card-html.js";
+import { summaryCardHtml } from "./summary-card-html.js";
 import { toolStatus } from "./tool-labels.js";
 
 /**
@@ -47,6 +49,26 @@ export function toolCardResourceMeta(config: ServerConfig): Record<string, unkno
 }
 
 /**
+ * Resource `_meta` for the always-open summary progress panel.
+ *
+ * @param config - Server config (widgetDomain)
+ * @returns Resource contents `_meta`
+ */
+export function summaryCardResourceMeta(config: ServerConfig): Record<string, unknown> {
+    const base = toolCardResourceMeta(config);
+    return {
+        ...base,
+        "openai/widgetDescription":
+            "Always-open progress report panel for the summary tool.",
+        ui: {
+            ...((base.ui as Record<string, unknown> | undefined) ?? {}),
+            prefersBorder: false,
+            domain: config.widgetDomain,
+        },
+    };
+}
+
+/**
  * Parse a tool name from a legacy per-tool card path segment.
  *
  * @param pathName - e.g. `write_stdin@v7.html` / `read-v8.html`
@@ -72,6 +94,7 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
     if (!TOOL_CARD_ENABLED) return;
 
     const resourceMeta = toolCardResourceMeta(config);
+    const summaryMeta = summaryCardResourceMeta(config);
 
     const readFixed = async (uri: { href: string }) => ({
         contents: [
@@ -94,6 +117,27 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
             _meta: resourceMeta,
         },
         async (uri) => readFixed(uri),
+    );
+
+    server.registerResource(
+        "summary-card",
+        SUMMARY_CARD_URI,
+        {
+            description:
+                "Always-open progress report panel for the summary tool.",
+            mimeType: TOOL_CARD_MIME,
+            _meta: summaryMeta,
+        },
+        async (uri) => ({
+            contents: [
+                {
+                    uri: uri.href,
+                    mimeType: TOOL_CARD_MIME,
+                    text: summaryCardHtml(),
+                    _meta: summaryMeta,
+                },
+            ],
+        }),
     );
 
     // Compatibility for connectors that still request the old per-tool URIs.
@@ -124,7 +168,7 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
 }
 
 /**
- * Tool descriptor `_meta` that links a tool to the shared UI card template.
+ * Tool descriptor `_meta` that links a tool to its UI card template.
  *
  * @param toolName - Machine tool name (for per-tool host status text)
  * @returns Meta object for registerTool config
@@ -132,13 +176,14 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
  */
 export function toolUiMeta(toolName: string): Record<string, unknown> {
     const status = toolStatus(toolName);
+    const templateUri = toolName === "summary" ? SUMMARY_CARD_URI : TOOL_CARD_URI;
     return {
         ...(TOOL_CARD_ENABLED
             ? {
                   ui: {
-                      resourceUri: TOOL_CARD_URI,
+                      resourceUri: templateUri,
                   },
-                  "openai/outputTemplate": TOOL_CARD_URI,
+                  "openai/outputTemplate": templateUri,
               }
             : {}),
         // Host status row (≤64 chars). In ChatGPT this chrome appears with outputTemplate.

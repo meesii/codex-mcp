@@ -11,6 +11,7 @@ export const TOOL_NAMES = [
     "glob",
     "ls",
     "webfetch",
+    "summary",
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildServerInstructions } from "../src/mcp-server.js";
-import { TOOL_CARD_ENABLED, TOOL_CARD_URI } from "../src/ui/constants.js";
+import { TOOL_CARD_ENABLED, TOOL_CARD_URI, SUMMARY_CARD_URI } from "../src/ui/constants.js";
 import { TOOL_NAMES } from "../src/tools/register.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 import { startTestServer } from "./helpers/start-server.js";
@@ -45,8 +45,10 @@ async function main(): Promise<void> {
             "project root should appear in the first 512 chars of instructions",
         );
         assert.match(instructions, /<shell>(powershell|bash)<\/shell>/);
-        assert.match(instructions, /Finish the user's task in this turn/i);
-        assert.match(instructions, /Never stop mid-task to ask the user to continue/i);
+        assert.match(instructions, /Tool map/i);
+        assert.doesNotMatch(instructions, /You are /i);
+        assert.match(instructions, /summary\(done=false/i);
+        assert.match(instructions, /~6 inspect|6 inspect/i);
 
         const listedTools = await mcp.client.listTools();
         const readTool = listedTools.tools.find((tool) => tool.name === "read");
@@ -73,6 +75,20 @@ async function main(): Promise<void> {
 
             const cardContents = await mcp.client.readResource({ uri: TOOL_CARD_URI });
             assert.ok(cardContents.contents[0]?.text);
+
+            const summaryTool = listedTools.tools.find((tool) => tool.name === "summary");
+            assert.ok(summaryTool);
+            const summaryMeta = summaryTool._meta as
+                | {
+                      ui?: { resourceUri?: string };
+                      "openai/outputTemplate"?: string;
+                  }
+                | undefined;
+            assert.equal(summaryMeta?.ui?.resourceUri, SUMMARY_CARD_URI);
+            assert.equal(summaryMeta?.["openai/outputTemplate"], SUMMARY_CARD_URI);
+            const summaryCard = await mcp.client.readResource({ uri: SUMMARY_CARD_URI });
+            assert.ok(summaryCard.contents[0]?.text);
+            assert.match(String(summaryCard.contents[0]?.text), /进度汇报/);
 
             const legacyUri = "ui://codex-mcp/tool-card/write_stdin@v7.html";
             const legacyContents = await mcp.client.readResource({ uri: legacyUri });
@@ -311,6 +327,58 @@ async function main(): Promise<void> {
             url: "file:///etc/passwd",
         });
         assertToolError(fetchBad, "webfetch non-http");
+
+        // summary checkpoint (keeps the tool loop alive)
+        const summaryContinue = await mcp.callTool("summary", {
+            summary: "Listed project files",
+            next: "Read hello.txt",
+            done: false,
+        });
+        assert.notEqual(summaryContinue.isError, true, toolText(summaryContinue));
+        assert.match(toolText(summaryContinue), /done=false/);
+        assert.match(toolText(summaryContinue), /Codex-MCP/);
+        assert.match(toolText(summaryContinue), /Read hello\.txt/);
+        const summaryContinueData = summaryContinue.structuredContent as {
+            done?: boolean;
+            continueWorking?: boolean;
+            next?: string | null;
+        };
+        assert.equal(summaryContinueData.done, false);
+        assert.equal(summaryContinueData.continueWorking, true);
+        assert.equal(summaryContinueData.next, "Read hello.txt");
+        const summaryContinueCard = (summaryContinue._meta as {
+            uiCard?: {
+                done?: boolean;
+                summaryText?: string;
+                nextText?: string | null;
+                label?: string;
+            };
+        })?.uiCard;
+        assert.ok(summaryContinueCard);
+        assert.equal(summaryContinueCard.done, false);
+        assert.equal(summaryContinueCard.label, "进度汇报");
+        assert.match(summaryContinueCard.summaryText ?? "", /Listed project files/);
+        assert.equal(summaryContinueCard.nextText, "Read hello.txt");
+
+        const summaryDone = await mcp.callTool("summary", {
+            summary: "All requested work finished",
+            done: true,
+        });
+        assert.notEqual(summaryDone.isError, true, toolText(summaryDone));
+        assert.match(toolText(summaryDone), /done=true/i);
+        const summaryDoneData = summaryDone.structuredContent as {
+            done?: boolean;
+            continueWorking?: boolean;
+        };
+        assert.equal(summaryDoneData.done, true);
+        assert.equal(summaryDoneData.continueWorking, false);
+        const summaryDoneCard = (summaryDone._meta as {
+            uiCard?: { done?: boolean; label?: string; nextText?: string | null };
+        })?.uiCard;
+        assert.ok(summaryDoneCard);
+        assert.equal(summaryDoneCard.done, true);
+        assert.equal(summaryDoneCard.label, "任务完成");
+        assert.equal(summaryDoneCard.nextText, null);
 
         console.log("All MCP client e2e tool tests passed.");
     } finally {
