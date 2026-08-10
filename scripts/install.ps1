@@ -39,7 +39,12 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     Fail "没有找到 npm。重新安装 Node.js 通常可以解决。"
 }
 
-$nodeMajor = [int](& node -p 'Number(process.versions.node.split(".")[0])')
+$nodeVersionText = (& node -p "process.versions.node").Trim()
+try {
+    $nodeMajor = ([version]$nodeVersionText).Major
+} catch {
+    Fail "无法识别 Node.js 版本：$nodeVersionText"
+}
 if ($nodeMajor -lt 22) {
     Fail "当前 Node.js 版本是 $(& node -v)，需要 22 或更高版本。"
 }
