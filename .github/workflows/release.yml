@@ -68,8 +68,23 @@ jobs:
           CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
           sh scripts/install.sh
           "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version
+
+          PASSWORD_MODULE="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/auth/password-store.js"
+          HOME="$TEST_HOME" node --input-type=module --eval '
+            import { pathToFileURL } from "node:url";
+            const store = await import(pathToFileURL(process.argv[1]).href);
+            await store.setAdminPassword("release smoke password 123");
+          ' "$PASSWORD_MODULE"
+          HOME="$TEST_HOME" node --input-type=module --eval '
+            import { pathToFileURL } from "node:url";
+            const store = await import(pathToFileURL(process.argv[1]).href);
+            if (!(await store.hasAdminPassword())) process.exit(1);
+            if (!(await store.verifyAdminPassword("release smoke password 123"))) process.exit(2);
+          ' "$PASSWORD_MODULE"
+
           HOME="$TEST_HOME" sh scripts/uninstall.sh
           test ! -e "$TEST_HOME/.codex-mcp/npm"
+          test -f "$TEST_HOME/.codex-mcp/auth.json"
           ! grep -F '.codex-mcp/npm/bin' "$TEST_HOME/.profile"
 
       - name: Smoke test installer (Windows)
@@ -79,15 +94,71 @@ jobs:
           $version = node -p "require('./package.json').version"
           $package = Join-Path $PWD "codex-mcp-$version.tgz"
           $testHome = Join-Path $env:RUNNER_TEMP "codex-mcp-install-home"
+          $installRoot = Join-Path $testHome ".codex-mcp/npm"
+          $shadowDir = Join-Path $env:RUNNER_TEMP "codex-mcp-old-shadow"
+          $originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          $baseProcessPath = $env:Path
+
           New-Item -ItemType Directory -Force -Path $testHome | Out-Null
+          New-Item -ItemType Directory -Force -Path $shadowDir | Out-Null
+          Set-Content -LiteralPath (Join-Path $shadowDir "codex-mcp.cmd") -Value "@echo shadow-old" -Encoding ascii
+          [Environment]::SetEnvironmentVariable("Path", $shadowDir, "User")
+          $env:Path = "$shadowDir;$baseProcessPath"
           $env:USERPROFILE = $testHome
           $env:CODEX_MCP_PACKAGE = $package
+
           & ./scripts/install.ps1
-          & (Join-Path $testHome ".codex-mcp/npm/codex-mcp.cmd") --version
+
+          $persistedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          $firstUserPath = ($persistedUserPath -split ";" | Where-Object { $_ -and $_.Trim() -ne "" })[0]
+          if (-not [string]::Equals(
+              $firstUserPath.TrimEnd('\'),
+              $installRoot.TrimEnd('\'),
+              [System.StringComparison]::OrdinalIgnoreCase
+          )) {
+            throw "codex-mcp install directory is not first in the Windows User PATH"
+          }
+
+          $env:Path = "$persistedUserPath;$baseProcessPath"
+          $resolvedCommand = (Get-Command codex-mcp -ErrorAction Stop).Source
+          if (-not $resolvedCommand.StartsWith($installRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "codex-mcp resolves to an older command after installation: $resolvedCommand"
+          }
+          if ((& codex-mcp --version) -ne $version) {
+            throw "codex-mcp version resolution smoke test failed"
+          }
+
+          $passwordModule = Join-Path $installRoot "node_modules/codex-mcp/dist/auth/password-store.js"
+          $setPasswordScript = 'import { pathToFileURL } from "node:url"; const store = await import(pathToFileURL(process.argv[1]).href); await store.setAdminPassword("release smoke password 123");'
+          & node --input-type=module --eval $setPasswordScript $passwordModule
+          if ($LASTEXITCODE -ne 0) { throw "password write smoke test failed" }
+
+          $verifyPasswordScript = 'import { pathToFileURL } from "node:url"; const store = await import(pathToFileURL(process.argv[1]).href); if (!(await store.hasAdminPassword())) process.exit(1); if (!(await store.verifyAdminPassword("release smoke password 123"))) process.exit(2);'
+          & node --input-type=module --eval $verifyPasswordScript $passwordModule
+          if ($LASTEXITCODE -ne 0) { throw "password persistence smoke test failed" }
+
           & ./scripts/uninstall.ps1
-          if (Test-Path (Join-Path $testHome ".codex-mcp/npm")) {
+          if (Test-Path $installRoot) {
             throw "codex-mcp uninstall smoke test failed"
           }
+          if (-not (Test-Path (Join-Path $testHome ".codex-mcp/auth.json"))) {
+            throw "codex-mcp uninstall removed the saved password"
+          }
+          $remainingUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          $remainingInstallEntries = @(
+            $remainingUserPath -split ";" | Where-Object {
+              $_ -and [string]::Equals(
+                  $_.Trim().TrimEnd('\'),
+                  $installRoot.TrimEnd('\'),
+                  [System.StringComparison]::OrdinalIgnoreCase
+              )
+            }
+          )
+          if ($remainingInstallEntries.Count -ne 0) {
+            throw "codex-mcp uninstall left its Windows PATH entry behind"
+          }
+
+          [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
 
   package:
     name: 生成 Release

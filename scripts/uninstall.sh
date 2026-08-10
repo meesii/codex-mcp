@@ -3,8 +3,27 @@ set -eu
 
 INSTALL_ROOT="${HOME}/.codex-mcp/npm"
 
+status() {
+  marker="$1"
+  color="$2"
+  message="$3"
+  if [ -t 1 ] && [ -z "${NO_COLOR+x}" ]; then
+    printf '\033[%sm%s %s\033[0m\n' "$color" "$marker" "$message"
+  else
+    printf '%s %s\n' "$marker" "$message"
+  fi
+}
+
+info() {
+  status 'ℹ' '36' "$1"
+}
+
+success() {
+  status '✓' '32' "$1"
+}
+
 if [ ! -e "$INSTALL_ROOT" ]; then
-  printf '%s\n' "codex-mcp 程序已经不在这台电脑上了。"
+  info "codex-mcp 程序已经不在这台电脑上了。"
   exit 0
 fi
 
@@ -24,9 +43,7 @@ remove_path_line "${HOME}/.bashrc"
 remove_path_line "${HOME}/.bash_profile"
 remove_path_line "${HOME}/.profile"
 
-printf '%s\n' "✓ codex-mcp 程序已删除。"
+success "codex-mcp 程序已删除。"
 printf '%s\n' ""
-printf '%s\n' "你的配置、连接密码和 Tunnel 信息仍保留在："
-printf '  %s\n' "${HOME}/.codex-mcp"
-printf '%s\n' ""
-printf '%s\n' "以后重新安装 codex-mcp 时可以继续使用这些配置。"
+info "你的配置、连接密码和 Tunnel 信息仍保留在：${HOME}/.codex-mcp"
+info "以后重新安装 codex-mcp 时可以继续使用这些配置。"

@@ -6,8 +6,29 @@ if (-not $Package) {
     $Package = "https://github.com/meesii/codex-mcp/releases/latest/download/codex-mcp.tgz"
 }
 
+function Write-Status([string]$Marker, [ConsoleColor]$Color, [string]$Message) {
+    $text = "$Marker $Message"
+    if (Test-Path Env:NO_COLOR) {
+        Write-Host $text
+    } else {
+        Write-Host $text -ForegroundColor $Color
+    }
+}
+
+function Info([string]$Message) {
+    Write-Status "ℹ" Cyan $Message
+}
+
+function Warn([string]$Message) {
+    Write-Status "!" Yellow $Message
+}
+
+function Success([string]$Message) {
+    Write-Status "✓" Green $Message
+}
+
 function Fail([string]$Message) {
-    Write-Error "安装失败：$Message"
+    Write-Status "✗" Red "安装失败：$Message"
     exit 1
 }
 
@@ -26,7 +47,7 @@ if ($nodeMajor -lt 22) {
 $installRoot = Join-Path $env:USERPROFILE ".codex-mcp\npm"
 New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 
-Write-Host "正在安装 codex-mcp…"
+Info "正在安装 codex-mcp…"
 & npm install --global --prefix $installRoot $Package
 if ($LASTEXITCODE -ne 0) {
     Fail "npm 安装没有完成。请检查上面的错误信息。"
@@ -39,19 +60,24 @@ if (-not (Test-Path -LiteralPath $cmdPath)) {
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $userPath) { $userPath = "" }
-$parts = $userPath -split ";" | Where-Object { $_ -and $_.Trim() -ne "" }
-if ($parts -notcontains $installRoot) {
-    $newPath = ($parts + $installRoot) -join ";"
-    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+$installRootNormalized = $installRoot.TrimEnd('\')
+$parts = $userPath -split ";" | Where-Object {
+    $_ -and
+    $_.Trim() -ne "" -and
+    -not [string]::Equals(
+        $_.Trim().TrimEnd('\'),
+        $installRootNormalized,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
 }
+$newPath = (@($installRoot) + @($parts)) -join ";"
+[Environment]::SetEnvironmentVariable("Path", $newPath, "User")
 $env:Path = "$installRoot;$env:Path"
 
 $version = & $cmdPath --version 2>$null
 Write-Host ""
-Write-Host "✓ codex-mcp $version"
-Write-Host "✓ 命令目录已加入 PATH：$installRoot"
+Success "codex-mcp $version"
+Success "命令目录已加入 PATH：$installRoot"
 Write-Host ""
-Write-Host "第一次使用请运行："
-Write-Host "  codex-mcp setup"
-Write-Host ""
-Write-Host "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"
+Info "第一次使用请运行：codex-mcp setup"
+Warn "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"

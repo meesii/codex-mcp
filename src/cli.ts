@@ -1,17 +1,25 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { styleText } from "node:util";
 import { loadConfig } from "./config.js";
 import { runDoctorChecks, type DoctorLevel } from "./doctor.js";
 import {
     hasAdminPassword,
     setAdminPassword,
+    verifyAdminPassword,
 } from "./auth/password-store.js";
 import { DownstreamMcpHub } from "./downstream/hub.js";
 import { CodexCapabilityWatcher } from "./capabilities/runtime.js";
 import { resolveAllowedTools } from "./capabilities/policy.js";
 import { createHttpServer } from "./http-server.js";
 import { isToolLogEnabled } from "./lib/tool-log.js";
+import {
+    paintTerminal,
+    printError,
+    printInfo,
+    printSuccess,
+    printWarning,
+    terminalMessage,
+} from "./lib/terminal.js";
 import { SkillRegistry } from "./skills/registry.js";
 import { askLine, askSecret, canPromptInteractively } from "./tunnel/prompt.js";
 import { CloudflaredSidecar } from "./tunnel/sidecar.js";
@@ -54,20 +62,7 @@ function printUsage(): void {
 `);
 }
 
-/**
- * Colorize startup banner text when stdout is a TTY.
- *
- * @param format - Color format
- * @param text - Text
- * @returns Styled text
- */
-function paint(format: Parameters<typeof styleText>[0], text: string): string {
-    if (process.env.NO_COLOR !== undefined || process.stdout.isTTY !== true) {
-        return text;
-    }
-    return styleText(format, text);
-}
-
+const paint = paintTerminal;
 const BANNER_LABEL_WIDTH = 8;
 
 /**
@@ -418,7 +413,7 @@ async function runFirstTimeSetup(): Promise<void> {
 
     console.log("");
     console.log(paint(["bold", "cyan"], "开始设置 codex-mcp"));
-    console.log("只需要完成两步：设置连接密码，然后设置公网连接。");
+    printInfo("只需要完成两步：设置连接密码，然后设置公网连接。");
     console.log("");
 
     await configureAdminPassword();
@@ -426,8 +421,9 @@ async function runFirstTimeSetup(): Promise<void> {
 
     console.log("");
     console.log(paint(["bold", "green"], "✓ 设置完成"));
-    console.log(`ChatGPT 连接地址：https://${result.domain}/mcp`);
-    console.log("接下来：进入你的项目目录，运行 codex-mcp。\n");
+    printInfo(`ChatGPT 连接地址：https://${result.domain}/mcp`);
+    printInfo("接下来：进入你的项目目录，运行 codex-mcp。");
+    console.log("");
 }
 
 /** Print a readable, read-only installation/configuration report. */
@@ -438,32 +434,27 @@ async function printDoctorReport(): Promise<void> {
 
     const report = await runDoctorChecks();
     for (const check of report.checks) {
-        const marker = doctorMarker(check.level);
-        console.log(`${marker} ${check.label}：${check.detail}`);
+        console.log(doctorMessage(check.level, `${check.label}：${check.detail}`));
     }
 
     console.log("");
     if (report.errors > 0) {
-        console.log(
-            paint(
-                "red",
-                `发现 ${report.errors} 个需要处理的问题。按上面的提示修复后，再运行一次 codex-mcp doctor。`,
-            ),
+        printError(
+            `发现 ${report.errors} 个需要处理的问题。按上面的提示修复后，再运行一次 codex-mcp doctor。`,
         );
     } else if (report.warnings > 0) {
-        console.log(
-            paint("yellow", `可以正常使用。有 ${report.warnings} 个可选项目没有安装。`),
-        );
+        printWarning(`可以正常使用。有 ${report.warnings} 个可选项目没有安装。`);
     } else {
-        console.log(paint("green", "✓ 安装和配置看起来都正常。"));
+        printSuccess("安装和配置看起来都正常。");
     }
-    console.log("启动 codex-mcp 时还会自动检查公网连接是否真的可用。\n");
+    printInfo("启动 codex-mcp 时还会自动检查公网连接是否真的可用。");
+    console.log("");
 }
 
-function doctorMarker(level: DoctorLevel): string {
-    if (level === "ok") return paint("green", "✓");
-    if (level === "warn") return paint("yellow", "!");
-    return paint("red", "✗");
+function doctorMessage(level: DoctorLevel, text: string): string {
+    if (level === "ok") return terminalMessage("success", text);
+    if (level === "warn") return terminalMessage("warning", text);
+    return terminalMessage("error", text);
 }
 
 function getPackageVersion(): string {
@@ -483,14 +474,18 @@ async function configureAdminPassword(): Promise<void> {
         throw new Error("设置连接密码需要在可以输入内容的终端里运行");
     }
     console.log("");
-    console.log("设置连接密码（至少 12 个字符）。");
+    printInfo("设置连接密码。");
+    printWarning("密码要求：至少 12 个字符。");
     const password = await askSecret("连接密码");
     const confirmation = await askSecret("再输入一次");
     if (password !== confirmation) {
         throw new Error("两次输入的密码不一样，请重新设置");
     }
     await setAdminPassword(password);
-    console.log(paint("green", "✓ 连接密码已保存。"));
+    if (!(await verifyAdminPassword(password))) {
+        throw new Error("连接密码保存后校验失败，请重新运行 `codex-mcp setup`");
+    }
+    printSuccess("连接密码已保存。");
 }
 
 async function ensureAdminPasswordConfigured(): Promise<void> {
@@ -499,12 +494,7 @@ async function ensureAdminPasswordConfigured(): Promise<void> {
         throw new Error("还没有设置连接密码，请先运行 `codex-mcp setup`");
     }
     console.log("");
-    console.log(
-        paint(
-            "yellow",
-            "第一次使用需要先设置一个连接密码。",
-        ),
-    );
+    printWarning("第一次使用需要先设置一个连接密码。");
     await configureAdminPassword();
 }
 
@@ -527,6 +517,6 @@ async function chooseProjectRoot(
 }
 
 void main(process.argv.slice(2)).catch((error) => {
-    console.error(error instanceof Error ? error.message : error);
+    printError(error instanceof Error ? error.message : String(error));
     process.exit(1);
 });

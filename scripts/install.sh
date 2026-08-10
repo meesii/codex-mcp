@@ -9,8 +9,35 @@ say() {
   printf '%s\n' "$1"
 }
 
+status() {
+  marker="$1"
+  color="$2"
+  message="$3"
+  if [ -t 1 ] && [ -z "${NO_COLOR+x}" ]; then
+    printf '\033[%sm%s %s\033[0m\n' "$color" "$marker" "$message"
+  else
+    printf '%s %s\n' "$marker" "$message"
+  fi
+}
+
+info() {
+  status 'ℹ' '36' "$1"
+}
+
+warn() {
+  status '!' '33' "$1"
+}
+
+success() {
+  status '✓' '32' "$1"
+}
+
 fail() {
-  printf '安装失败：%s\n' "$1" >&2
+  if [ -t 2 ] && [ -z "${NO_COLOR+x}" ]; then
+    printf '\033[31m✗ 安装失败：%s\033[0m\n' "$1" >&2
+  else
+    printf '✗ 安装失败：%s\n' "$1" >&2
+  fi
   exit 1
 }
 
@@ -20,7 +47,7 @@ command -v npm >/dev/null 2>&1 || fail "没有找到 npm。重新安装 Node.js 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 [ "$NODE_MAJOR" -ge 22 ] || fail "当前 Node.js 版本是 $(node -v)，需要 22 或更高版本。"
 
-say "正在安装 codex-mcp…"
+info "正在安装 codex-mcp…"
 mkdir -p "$INSTALL_ROOT"
 npm install --global --prefix "$INSTALL_ROOT" "$PACKAGE"
 
@@ -53,10 +80,8 @@ export PATH="$BIN_DIR:$PATH"
 
 VERSION="$(codex-mcp --version 2>/dev/null || true)"
 say ""
-say "✓ codex-mcp ${VERSION:-已安装}"
-say "✓ 命令目录已加入 PATH：${BIN_DIR}"
+success "codex-mcp ${VERSION:-已安装}"
+success "命令目录已加入 PATH：${BIN_DIR}"
 say ""
-say "第一次使用请运行："
-say "  codex-mcp setup"
-say ""
-say "如果当前终端还找不到 codex-mcp，请重新打开一个终端窗口。"
+info "第一次使用请运行：codex-mcp setup"
+warn "如果当前终端还找不到 codex-mcp，请重新打开一个终端窗口。"
