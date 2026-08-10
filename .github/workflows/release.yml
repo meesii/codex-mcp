@@ -107,10 +107,13 @@ jobs:
           $env:USERPROFILE = $testHome
           $env:CODEX_MCP_PACKAGE = $package
 
-          # Run the installer under legacy Windows PowerShell 5.1 as well as
-          # the pwsh host driving this job. Native argument quoting differs
-          # between them, and the public install instructions must support both.
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PWD "scripts/install.ps1")
+          # Reproduce the saved-script invocation used by Windows PowerShell 5.1
+          # users. Explicit UTF-8 decoding avoids Windows PowerShell's legacy
+          # no-BOM script-file decoding while still exercising its native
+          # argument passing to node/npm.
+          $installerPath = Join-Path $PWD "scripts/install.ps1"
+          $legacyCommand = "iex (Get-Content -Raw -Encoding UTF8 '$installerPath')"
+          & powershell.exe -NoProfile -Command $legacyCommand
           if ($LASTEXITCODE -ne 0) {
             throw "Windows PowerShell 5.1 installer smoke test failed"
           }
