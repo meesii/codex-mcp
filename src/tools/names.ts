@@ -7,15 +7,41 @@ export const CORE_TOOL_NAMES = [
     "exec_command",
     "write_stdin",
     "process_kill",
+    "process_list",
+    "process_status",
+    "process_output",
+    "runtime_status",
     "grep",
     "glob",
     "ls",
     "webfetch",
     "summary",
+    "skills_list",
+    "skill_read",
+    "agents_for_path",
+    "capabilities_reload",
+    "workspace_projects",
+    "workspace_search",
+    "context_pack",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "git_branches",
+    "code_explore",
 ] as const;
 
-/** Downstream gateway tools (registered when mcp.json has servers). */
-export const GATEWAY_TOOL_NAMES = ["mcp_tools", "mcp_call"] as const;
+/** Downstream gateway tools stay registered so hot reload works in existing sessions. */
+export const GATEWAY_TOOL_NAMES = [
+    "mcp_servers",
+    "mcp_reconnect",
+    "mcp_tools",
+    "mcp_call",
+    "mcp_resources",
+    "mcp_resource_read",
+    "mcp_prompts",
+    "mcp_prompt_get",
+] as const;
 
 /** All tool names this package may expose. */
 export const TOOL_NAMES = [...CORE_TOOL_NAMES, ...GATEWAY_TOOL_NAMES] as const;

@@ -1,7 +1,4 @@
-import {
-    McpServer,
-    ResourceTemplate,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config.js";
 import { TOOL_NAMES, type ToolName } from "../tools/names.js";
 import {
@@ -14,6 +11,10 @@ import {
 import { toolCardHtml } from "./tool-card-html.js";
 import { summaryCardHtml } from "./summary-card-html.js";
 import { toolStatus } from "./tool-labels.js";
+
+const SHARED_TOOL_CARD_HTML = toolCardHtml();
+const SUMMARY_CARD_HTML = summaryCardHtml();
+const legacyToolCardHtmlCache = new Map<ToolName | undefined, string>();
 
 /**
  * Build ChatGPT / MCP Apps resource `_meta` including CSP + unique domain.
@@ -83,6 +84,14 @@ export function toolNameFromCardPath(pathName: string): ToolName | undefined {
     return undefined;
 }
 
+function cachedLegacyToolCardHtml(toolName: ToolName | undefined): string {
+    const cached = legacyToolCardHtmlCache.get(toolName);
+    if (cached !== undefined) return cached;
+    const html = toolCardHtml(toolName);
+    legacyToolCardHtmlCache.set(toolName, html);
+    return html;
+}
+
 /**
  * Register the shared tool-card UI resource, plus a legacy template so old
  * ChatGPT-cached `ui://codex-mcp/tool-card/*@vN.html` pointers still fetch.
@@ -101,7 +110,7 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
             {
                 uri: uri.href,
                 mimeType: TOOL_CARD_MIME,
-                text: toolCardHtml(),
+                text: SHARED_TOOL_CARD_HTML,
                 _meta: resourceMeta,
             },
         ],
@@ -133,7 +142,7 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
                 {
                     uri: uri.href,
                     mimeType: TOOL_CARD_MIME,
-                    text: summaryCardHtml(),
+                    text: SUMMARY_CARD_HTML,
                     _meta: summaryMeta,
                 },
             ],
@@ -158,7 +167,7 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
                     {
                         uri: uri.href,
                         mimeType: TOOL_CARD_MIME,
-                        text: toolCardHtml(toolName),
+                        text: cachedLegacyToolCardHtml(toolName),
                         _meta: resourceMeta,
                     },
                 ],

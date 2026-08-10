@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withNoAuth } from "../lib/tool-meta.js";
-import { okResult } from "../lib/tool-result.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
+import { errorResult, okResult } from "../lib/tool-result.js";
 
 /**
  * Register the `summary` progress checkpoint tool.
@@ -13,7 +13,7 @@ export function registerSummaryTool(server: McpServer): void {
     registerTool(
         server,
         "summary",
-        withNoAuth({
+        withToolAuth({
             title: "Summarize progress",
             description:
                 "Mid-task progress for the user. Use instead of chat text. done=false while work remains (include next); done=true only when the full task is finished.",
@@ -39,6 +39,9 @@ export function registerSummaryTool(server: McpServer): void {
         async ({ summary, next, done }) => {
             const finished = done === true;
             const nextStep = next?.trim() ? next.trim() : null;
+            if (!finished && !nextStep) {
+                return errorResult("next is required when done=false");
+            }
             const structured = {
                 summary: summary.trim(),
                 next: nextStep,

@@ -1,11 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../project.js";
 import { AccessDeniedError } from "../project.js";
 import { registerTool } from "../lib/tool-log.js";
-import { withNoAuth, writeAnnotations } from "../lib/tool-meta.js";
+import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
 
 /**
@@ -18,7 +18,7 @@ export function registerWriteTool(server: McpServer, project: ProjectContext): v
     registerTool(
         server,
         "write",
-        withNoAuth({
+        withToolAuth({
             title: "Write file",
             description:
                 "Create or completely overwrite a file. Use for new files or full rewrites; prefer edit for small targeted changes to existing files. Do not use bash redirection/heredoc to write source.",

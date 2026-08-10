@@ -6,6 +6,12 @@ import type { UserConfig } from "./user-config.js";
 export interface ServerConfig {
     host: string;
     port: number;
+    /** Local inspector mode: loopback only and OAuth is not required. */
+    local: boolean;
+    /** Require embedded OAuth before `/mcp` requests reach the transport. */
+    oauthRequired: boolean;
+    /** Public MCP resource URL used by OAuth (e.g. https://mcp.example.com/mcp). */
+    publicMcpUrl?: string;
     /** Absolute project directory bound at process start. */
     projectRoot: string;
     /**
@@ -71,19 +77,25 @@ export function resolveProjectRoot(explicitRoot?: string): string {
  */
 export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
     const user = options.userConfig ?? {};
-    const host = user.host?.trim() || "127.0.0.1";
+    const local = options.local === true;
+    // `--local` is a security boundary, not just a tunnel toggle.
+    const host = local ? "127.0.0.1" : user.host?.trim() || "127.0.0.1";
     const port = user.port ?? 3920;
     if (!Number.isFinite(port) || port < 0 || port > 65535) {
-        throw new Error(`Invalid port in user config: ${port}`);
+        throw new Error(`配置里的端口不正确：${port}`);
     }
 
     const projectRoot = resolveProjectRoot(options.projectRoot);
-    const allowedHosts =
-        !options.local && user.domain ? [user.domain.toLowerCase()] : [];
+    const allowedHosts = !local && user.domain ? [user.domain.toLowerCase()] : [];
+    const publicMcpUrl =
+        !local && user.domain ? `https://${user.domain.toLowerCase()}/mcp` : undefined;
 
     return {
         host,
         port,
+        local,
+        oauthRequired: !local,
+        ...(publicMcpUrl ? { publicMcpUrl } : {}),
         projectRoot,
         allowedHosts,
         widgetDomain: resolveWidgetDomain(allowedHosts, host, port),
@@ -121,7 +133,7 @@ export function resolveWidgetDomain(
 function assertProjectDirectory(pathValue: string): string {
     const absolutePath = resolve(expandHomePath(pathValue));
     if (!existsSync(absolutePath) || !statSync(absolutePath).isDirectory()) {
-        throw new Error(`Project root is not a directory: ${pathValue}`);
+        throw new Error(`这个项目目录不存在或不是文件夹：${pathValue}`);
     }
     return absolutePath;
 }

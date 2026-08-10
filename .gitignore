@@ -5,10 +5,17 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+/codex-mcp-*.tgz
+/release/
+/task_plan.md
+/findings.md
+/progress.md
 
 # Local cloudflared binary (place at bin/cloudflared.exe on Windows)
 bin/cloudflared
 bin/cloudflared.exe
 
 # Local reference clones (not part of the published project)
-docs/
+docs/*
+!docs/oauth-security-hardening/
+!docs/oauth-security-hardening/**

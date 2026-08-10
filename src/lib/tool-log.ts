@@ -1,12 +1,14 @@
 import { styleText } from "node:util";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { toolUiMeta } from "../ui/register-ui.js";
+import { securitySchemesForServer } from "./tool-meta.js";
 import { summarizeOutcome, summarizeToolCall } from "../ui/tool-summary.js";
 import { buildUiCard } from "../ui/ui-card.js";
 import { resultText } from "./tool-result.js";
+import { runtimeTelemetry } from "./runtime-telemetry.js";
 
-const TOOL_NAME_WIDTH = 13;
+const TOOL_NAME_WIDTH = 18;
+const toolRegistrationPolicies = new WeakMap<McpServer, ReadonlySet<string>>();
 
 const colorEnabled =
     process.env.NO_COLOR === undefined &&
@@ -153,6 +155,18 @@ function logToolCall(
     console.log(`${time}  ${status}  ${tool}  ${ms}  ${detail}`.trimEnd());
 }
 
+/** Configure the concrete tool set exposed by one MCP server/session. */
+export function configureToolRegistrationPolicy(
+    server: McpServer,
+    allowedTools?: ReadonlySet<string>,
+): void {
+    if (allowedTools === undefined) {
+        toolRegistrationPolicies.delete(server);
+        return;
+    }
+    toolRegistrationPolicies.set(server, allowedTools);
+}
+
 /**
  * Register a tool on the MCP server with centralized call logging.
  *
@@ -169,14 +183,20 @@ export function registerTool(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler: (args: any) => Promise<CallToolResult>,
 ): void {
+    const allowedTools = toolRegistrationPolicies.get(server);
+    if (allowedTools && !allowedTools.has(name)) return;
+
     const previousMeta =
         config && typeof config === "object" && "_meta" in config
             ? ((config as { _meta?: Record<string, unknown> })._meta ?? {})
             : {};
+    const securitySchemes = securitySchemesForServer(server);
     const configWithUi = {
         ...config,
+        securitySchemes,
         _meta: {
             ...previousMeta,
+            securitySchemes,
             ...toolUiMeta(name),
         },
     };
@@ -185,19 +205,23 @@ export function registerTool(
         const startedAt = performance.now();
         try {
             const result = withUiCardMeta(name, args, await handler(args));
-            logToolCall(
+            const durationMs = performance.now() - startedAt;
+            runtimeTelemetry.recordTool(
                 name,
-                args,
-                result,
-                Math.round(performance.now() - startedAt),
+                durationMs,
+                result.isError === true,
+                estimateResultBytes(result),
             );
+            logToolCall(name, args, result, Math.round(durationMs));
             return result;
         } catch (error) {
+            const durationMs = performance.now() - startedAt;
+            runtimeTelemetry.recordTool(name, durationMs, true, 0);
             logToolCall(
                 name,
                 args,
                 { thrown: error instanceof Error ? error.message : String(error) },
-                Math.round(performance.now() - startedAt),
+                Math.round(durationMs),
             );
             throw error;
         }
@@ -222,6 +246,21 @@ export function registerTool(
  * @param result - Raw tool result
  * @returns Result with compact `_meta.uiCard`
  */
+function estimateResultBytes(result: CallToolResult): number {
+    try {
+        return Buffer.byteLength(
+            JSON.stringify({
+                isError: result.isError === true,
+                content: result.content,
+                structuredContent: result.structuredContent,
+            }),
+            "utf8",
+        );
+    } catch {
+        return 0;
+    }
+}
+
 function withUiCardMeta(
     toolName: string,
     args: Record<string, unknown>,

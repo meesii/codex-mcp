@@ -16,6 +16,7 @@ const PARAM_LABELS: Record<string, string> = {
     command: "命令",
     pattern: "模式",
     url: "网址",
+    uri: "资源 URI",
     processId: "进程",
     chars: "输入",
     offset: "起始行",
@@ -26,6 +27,13 @@ const PARAM_LABELS: Record<string, string> = {
     done: "完成",
     server: "MCP",
     tool: "工具",
+    name: "Skill",
+    prompt: "提示词",
+    query: "查询",
+    revision: "版本",
+    staged: "暂存区",
+    project_path: "项目",
+    max_depth: "深度",
 };
 
 /** Per-tool argument keys worth showing (order matters). */
@@ -34,16 +42,39 @@ const PARAM_KEYS: Record<string, string[]> = {
     write: ["path"],
     edit: ["path"],
     bash: ["command"],
-    exec_command: ["command"],
+    exec_command: ["command", "name"],
     write_stdin: ["processId", "chars"],
     process_kill: ["processId"],
+    process_list: [],
+    process_status: ["processId"],
+    process_output: ["processId"],
+    runtime_status: [],
     grep: ["pattern", "path"],
     glob: ["pattern"],
     ls: ["path"],
     webfetch: ["url", "format"],
     summary: ["summary", "next", "done"],
+    skills_list: [],
+    skill_read: ["name", "path"],
+    agents_for_path: ["path"],
+    capabilities_reload: [],
+    workspace_projects: ["max_depth"],
+    workspace_search: ["pattern", "path"],
+    context_pack: ["query", "path"],
+    git_status: ["path"],
+    git_diff: ["path", "staged"],
+    git_log: ["path", "limit"],
+    git_show: ["path", "revision"],
+    git_branches: ["path"],
+    code_explore: ["query", "project_path"],
+    mcp_servers: [],
+    mcp_reconnect: ["server"],
     mcp_tools: ["server"],
     mcp_call: ["server", "tool"],
+    mcp_resources: ["server"],
+    mcp_resource_read: ["server", "uri"],
+    mcp_prompts: ["server"],
+    mcp_prompt_get: ["server", "prompt"],
 };
 
 /**
@@ -76,7 +107,10 @@ function formatParamValue(key: string, value: unknown): string | null {
         }
     }
     if (key === "command" && typeof value === "string") {
-        return clipLine(value, 160);
+        return hiddenCommandLabel(value);
+    }
+    if (key === "url" && typeof value === "string") {
+        return safeUrlForDisplay(value);
     }
     if (typeof value === "string") return clipLine(value, 96);
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -131,8 +165,10 @@ function buildTitle(
         case "ls":
             return clipLine(String(input.path ?? params[0]?.value ?? ""), 80) || "—";
         case "bash":
-        case "exec_command":
-            return clipLine(String(input.command ?? ""), 80) || "—";
+        case "exec_command": {
+            const command = typeof input.command === "string" ? input.command : "";
+            return command ? hiddenCommandLabel(command) : "—";
+        }
         case "grep": {
             const pattern = String(input.pattern ?? "");
             const path = input.path != null ? String(input.path) : "";
@@ -142,11 +178,29 @@ function buildTitle(
         case "glob":
             return clipLine(String(input.pattern ?? ""), 80) || "—";
         case "webfetch":
-            return clipLine(String(input.url ?? ""), 80) || "—";
+            return safeUrlForDisplay(String(input.url ?? "")) || "—";
         case "summary":
             return clipLine(String(input.summary ?? ""), 80) || "—";
+        case "mcp_servers":
+        case "capabilities_reload":
+        case "process_list":
+        case "skills_list":
+            return "—";
+        case "mcp_reconnect":
         case "mcp_tools":
+        case "mcp_resources":
+        case "mcp_prompts":
             return clipLine(String(input.server ?? ""), 80) || "—";
+        case "mcp_resource_read": {
+            const server = String(input.server ?? "");
+            const uri = String(input.uri ?? "");
+            return clipLine(server && uri ? `${server}/${uri}` : server || uri, 80) || "—";
+        }
+        case "mcp_prompt_get": {
+            const server = String(input.server ?? "");
+            const prompt = String(input.prompt ?? "");
+            return clipLine(server && prompt ? `${server}/${prompt}` : server || prompt, 80) || "—";
+        }
         case "mcp_call": {
             const server = String(input.server ?? "");
             const tool = String(input.tool ?? "");
@@ -155,6 +209,8 @@ function buildTitle(
         }
         case "write_stdin":
         case "process_kill":
+        case "process_status":
+        case "process_output":
             return input.processId != null ? `#${input.processId}` : "—";
         default:
             return params[0]?.value ? clipLine(params[0].value, 80) : "—";
@@ -170,6 +226,24 @@ function buildTitle(
  * @param contentText - Flattened text content (fallback / errors)
  * @returns Short outcome, or undefined when nothing useful
  */
+export function hiddenCommandLabel(command: string): string {
+    return `命令内容已隐藏（${command.length} 个字符）`;
+}
+
+export function safeUrlForDisplay(value: string): string {
+    if (!value) return "";
+    try {
+        const url = new URL(value);
+        url.username = "";
+        url.password = "";
+        url.search = "";
+        url.hash = "";
+        return clipLine(url.href, 96);
+    } catch {
+        return "[网址格式不正确，已隐藏]";
+    }
+}
+
 export function summarizeOutcome(
     toolName: string,
     ok: boolean,

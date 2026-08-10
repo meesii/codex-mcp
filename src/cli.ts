@@ -1,11 +1,21 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { styleText } from "node:util";
 import { loadConfig } from "./config.js";
+import { runDoctorChecks, type DoctorLevel } from "./doctor.js";
+import {
+    hasAdminPassword,
+    setAdminPassword,
+} from "./auth/password-store.js";
 import { DownstreamMcpHub } from "./downstream/hub.js";
+import { CodexCapabilityWatcher } from "./capabilities/runtime.js";
+import { resolveAllowedTools } from "./capabilities/policy.js";
 import { createHttpServer } from "./http-server.js";
 import { isToolLogEnabled } from "./lib/tool-log.js";
-import { askLine, canPromptInteractively } from "./tunnel/prompt.js";
+import { SkillRegistry } from "./skills/registry.js";
+import { askLine, askSecret, canPromptInteractively } from "./tunnel/prompt.js";
 import { CloudflaredSidecar } from "./tunnel/sidecar.js";
+import { verifyTunnelRoute } from "./tunnel/verify.js";
 import {
     ensureTunnelSetup,
     runTunnelWizard,
@@ -14,7 +24,7 @@ import {
 import { loadUserConfig } from "./user-config.js";
 
 interface CliFlags {
-    command: "serve" | "tunnel" | "help";
+    command: "serve" | "setup" | "doctor" | "tunnel" | "auth" | "version" | "help";
     local: boolean;
     noTunnel: boolean;
     tunnelLogs: boolean;
@@ -25,15 +35,22 @@ interface CliFlags {
  * Print CLI usage to stderr.
  */
 function printUsage(): void {
-    console.error(`Usage:
-  codex-mcp [--local] [--no-tunnel] [--tunnel-logs] [--root <dir>]
-  codex-mcp serve [same flags]
-  codex-mcp tunnel
-  codex-mcp help
+    console.error(`codex-mcp 使用方法
 
-Defaults:
-  project root = current working directory
-  starts Cloudflare Tunnel when configured (useCloudflared)
+  codex-mcp                         启动当前项目
+  codex-mcp setup                   首次设置
+  codex-mcp doctor                  检查安装和配置
+  codex-mcp auth                    重新设置连接密码
+  codex-mcp tunnel                  重新设置公网连接
+  codex-mcp --local                 只在本机启动，不开放公网
+  codex-mcp --root <目录>           指定项目目录
+  codex-mcp --no-tunnel             不自动启动 Cloudflare Tunnel
+  codex-mcp --tunnel-logs           在终端显示 Tunnel 日志
+  codex-mcp --version               查看版本
+  codex-mcp help                    查看帮助
+
+平时最常用：进入项目目录后直接运行 codex-mcp。
+首次使用：运行 codex-mcp setup。
 `);
 }
 
@@ -82,38 +99,42 @@ function printStartupBanner(input: {
     projectRoot: string;
     logsOn: boolean;
     downstream: string[];
+    skillCount: number;
     tunnel:
         | { protocol?: string; location?: string }
         | "off"
         | undefined;
 }): void {
     clearTerminal();
-    console.log(paint(["bold", "cyan"], "codex-mcp"));
-    printBannerRow("mcp", paint(["bold", "green"], input.mcpUrl));
+    console.log(paint(["bold", "cyan"], "codex-mcp 已启动"));
+    printBannerRow("连接地址", paint(["bold", "green"], input.mcpUrl));
     if (input.localUrl !== input.mcpUrl) {
-        printBannerRow("local", input.localUrl);
+        printBannerRow("本机地址", input.localUrl);
     }
-    printBannerRow("root", input.projectRoot);
+    printBannerRow("项目目录", input.projectRoot);
 
     if (input.tunnel === "off") {
-        printBannerRow("tunnel", paint("dim", "off"));
+        printBannerRow("公网连接", paint("dim", "未启动"));
     } else if (input.tunnel) {
         const bits = [input.tunnel.protocol, input.tunnel.location].filter(
             (part): part is string => Boolean(part),
         );
         printBannerRow(
-            "tunnel",
+            "公网连接",
             bits.length > 0
                 ? paint("green", bits.join(" · "))
-                : paint("green", "on"),
+                : paint("green", "已连接"),
         );
     }
 
     if (input.downstream.length > 0) {
-        printBannerRow("mcp.json", paint("green", input.downstream.join(", ")));
+        printBannerRow("外部 MCP", paint("green", input.downstream.join(", ")));
+    }
+    if (input.skillCount > 0) {
+        printBannerRow("Skills", paint("green", String(input.skillCount)));
     }
 
-    printBannerRow("logs", input.logsOn ? "on" : paint("dim", "off"));
+    printBannerRow("工具日志", input.logsOn ? "已开启" : paint("dim", "未开启"));
     console.log("");
 }
 
@@ -148,7 +169,7 @@ function parseArgv(argv: string[]): CliFlags {
         if (arg === "--root") {
             const value = argv[index + 1];
             if (!value || value.startsWith("-")) {
-                throw new Error("--root requires a directory path");
+                throw new Error("`--root` 后面需要填写项目目录");
             }
             root = value;
             index += 1;
@@ -163,24 +184,41 @@ function parseArgv(argv: string[]): CliFlags {
                 root,
             };
         }
+        if (arg === "--version" || arg === "-v") {
+            return {
+                command: "version",
+                local,
+                noTunnel,
+                tunnelLogs,
+                root,
+            };
+        }
         if (arg.startsWith("-")) {
-            throw new Error(`Unknown flag: ${arg}`);
+            throw new Error(`不认识这个选项：${arg}`);
         }
         positionals.push(arg);
     }
 
     if (positionals[0] === "help") {
         command = "help";
+    } else if (positionals[0] === "setup") {
+        command = "setup";
+    } else if (positionals[0] === "doctor") {
+        command = "doctor";
     } else if (positionals[0] === "tunnel") {
         command = "tunnel";
+    } else if (positionals[0] === "auth") {
+        command = "auth";
+    } else if (positionals[0] === "version") {
+        command = "version";
     } else if (positionals[0] === "serve" || positionals[0] === undefined) {
         command = "serve";
     } else {
-        throw new Error(`Unknown command: ${positionals[0]}`);
+        throw new Error(`不认识这个命令：${positionals[0]}。运行 codex-mcp help 查看帮助`);
     }
 
     if (positionals.length > 1) {
-        throw new Error(`Unexpected arguments: ${positionals.slice(1).join(" ")}`);
+        throw new Error(`这里不需要这些内容：${positionals.slice(1).join(" ")}`);
     }
 
     return { command, local, noTunnel, tunnelLogs, root };
@@ -198,24 +236,44 @@ async function main(argv: string[]): Promise<void> {
         return;
     }
 
+    if (flags.command === "version") {
+        console.log(getPackageVersion());
+        return;
+    }
+
+    if (flags.command === "doctor") {
+        await printDoctorReport();
+        return;
+    }
+
+    if (flags.command === "setup") {
+        await runFirstTimeSetup();
+        return;
+    }
+
+    if (flags.command === "auth") {
+        await configureAdminPassword();
+        return;
+    }
+
     if (flags.command === "tunnel") {
         const result = await runTunnelWizard();
         if (result.useCloudflared && result.tunnelId) {
             console.log(
                 paint(
                     "green",
-                    `Tunnel ready: https://${result.domain}/mcp  (id ${result.tunnelId})`,
+                    `公网连接已设置：https://${result.domain}/mcp`,
                 ),
             );
         } else {
             console.log(
-                paint("green", `Domain saved: https://${result.domain}/mcp`),
+                paint("green", `公网地址已保存：https://${result.domain}/mcp`),
             );
         }
         console.log(
             paint(
                 "dim",
-                "Run `codex-mcp` in a project directory to serve.",
+                "接下来进入你的项目目录，运行 codex-mcp 即可启动。",
             ),
         );
         return;
@@ -243,6 +301,10 @@ async function runServe(flags: CliFlags): Promise<void> {
         ).userConfig;
     }
 
+    if (!flags.local) {
+        await ensureAdminPasswordConfigured();
+    }
+
     const projectRoot = await chooseProjectRoot(flags);
     const config = loadConfig({
         projectRoot,
@@ -251,9 +313,7 @@ async function runServe(flags: CliFlags): Promise<void> {
     });
 
     if (!flags.local && config.allowedHosts.length === 0) {
-        throw new Error(
-            "A public domain is required in ~/.codex-mcp/config.json. Use --local for localhost only.",
-        );
+        throw new Error("还没有设置公网地址，请先运行 `codex-mcp setup`；只在本机使用可加 `--local`");
     }
 
     let tunnelSetup: TunnelSetupResult | undefined;
@@ -269,9 +329,16 @@ async function runServe(flags: CliFlags): Promise<void> {
         }
     }
 
-    const hub = await DownstreamMcpHub.connectFromUserConfig();
-    const server = createHttpServer(config, { hub });
+    const hub = await DownstreamMcpHub.connectFromDefaultConfig();
+    const skills = SkillRegistry.discoverDefault();
+    const server = createHttpServer(config, {
+        hub,
+        skills,
+        allowedToolsResolver: resolveAllowedTools,
+    });
     await server.listen();
+    const capabilityWatcher = new CodexCapabilityWatcher(hub, skills);
+    capabilityWatcher.start();
 
     let sidecar: CloudflaredSidecar | undefined;
     let tunnelReady: { protocol?: string; location?: string } | undefined;
@@ -294,7 +361,12 @@ async function runServe(flags: CliFlags): Promise<void> {
         });
         try {
             tunnelReady = await sidecar.start();
+            if (publicUrl) {
+                await verifyTunnelRoute(publicUrl, server.getTunnelProbe());
+            }
         } catch (error) {
+            capabilityWatcher.close();
+            await sidecar.stop().catch(() => undefined);
             await server.close();
             throw error;
         }
@@ -310,6 +382,7 @@ async function runServe(flags: CliFlags): Promise<void> {
         projectRoot: config.projectRoot,
         logsOn: isToolLogEnabled(),
         downstream,
+        skillCount: skills.list().length,
         tunnel: sidecar
             ? (tunnelReady ?? { protocol: undefined, location: undefined })
             : wantSidecar
@@ -321,6 +394,7 @@ async function runServe(flags: CliFlags): Promise<void> {
     const shutdown = async () => {
         if (shuttingDown) return;
         shuttingDown = true;
+        capabilityWatcher.close();
         if (sidecar) {
             await sidecar.stop();
         }
@@ -336,15 +410,104 @@ async function runServe(flags: CliFlags): Promise<void> {
     });
 }
 
-/**
- * Pick the project root before listen.
- *
- * Skips the prompt when `--root` is set, or when stdin is not a TTY
- * (falls back to cwd via loadConfig).
- *
- * @param flags - Parsed CLI flags
- * @returns Explicit root for loadConfig, or undefined to use cwd
- */
+/** Run the guided first-time setup for public ChatGPT access. */
+async function runFirstTimeSetup(): Promise<void> {
+    if (!canPromptInteractively()) {
+        throw new Error("首次设置需要在可以输入内容的终端里运行");
+    }
+
+    console.log("");
+    console.log(paint(["bold", "cyan"], "开始设置 codex-mcp"));
+    console.log("只需要完成两步：设置连接密码，然后设置公网连接。");
+    console.log("");
+
+    await configureAdminPassword();
+    const result = await runTunnelWizard();
+
+    console.log("");
+    console.log(paint(["bold", "green"], "✓ 设置完成"));
+    console.log(`ChatGPT 连接地址：https://${result.domain}/mcp`);
+    console.log("接下来：进入你的项目目录，运行 codex-mcp。\n");
+}
+
+/** Print a readable, read-only installation/configuration report. */
+async function printDoctorReport(): Promise<void> {
+    console.log("");
+    console.log(paint(["bold", "cyan"], "codex-mcp 检查"));
+    console.log("");
+
+    const report = await runDoctorChecks();
+    for (const check of report.checks) {
+        const marker = doctorMarker(check.level);
+        console.log(`${marker} ${check.label}：${check.detail}`);
+    }
+
+    console.log("");
+    if (report.errors > 0) {
+        console.log(
+            paint(
+                "red",
+                `发现 ${report.errors} 个需要处理的问题。按上面的提示修复后，再运行一次 codex-mcp doctor。`,
+            ),
+        );
+    } else if (report.warnings > 0) {
+        console.log(
+            paint("yellow", `可以正常使用。有 ${report.warnings} 个可选项目没有安装。`),
+        );
+    } else {
+        console.log(paint("green", "✓ 安装和配置看起来都正常。"));
+    }
+    console.log("启动 codex-mcp 时还会自动检查公网连接是否真的可用。\n");
+}
+
+function doctorMarker(level: DoctorLevel): string {
+    if (level === "ok") return paint("green", "✓");
+    if (level === "warn") return paint("yellow", "!");
+    return paint("red", "✗");
+}
+
+function getPackageVersion(): string {
+    try {
+        const raw = JSON.parse(
+            readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+        ) as { version?: unknown };
+        return typeof raw.version === "string" ? raw.version : "未知版本";
+    } catch {
+        return "未知版本";
+    }
+}
+
+/** Configure or replace the public access password. */
+async function configureAdminPassword(): Promise<void> {
+    if (!canPromptInteractively()) {
+        throw new Error("设置连接密码需要在可以输入内容的终端里运行");
+    }
+    console.log("");
+    console.log("设置连接密码（至少 12 个字符）。");
+    const password = await askSecret("连接密码");
+    const confirmation = await askSecret("再输入一次");
+    if (password !== confirmation) {
+        throw new Error("两次输入的密码不一样，请重新设置");
+    }
+    await setAdminPassword(password);
+    console.log(paint("green", "✓ 连接密码已保存。"));
+}
+
+async function ensureAdminPasswordConfigured(): Promise<void> {
+    if (await hasAdminPassword()) return;
+    if (!canPromptInteractively()) {
+        throw new Error("还没有设置连接密码，请先运行 `codex-mcp setup`");
+    }
+    console.log("");
+    console.log(
+        paint(
+            "yellow",
+            "第一次使用需要先设置一个连接密码。",
+        ),
+    );
+    await configureAdminPassword();
+}
+
 async function chooseProjectRoot(
     flags: CliFlags,
 ): Promise<string | undefined> {
@@ -358,7 +521,7 @@ async function chooseProjectRoot(
     const cwd = process.cwd();
     console.log("");
     const answer = (
-        await askLine("Project root", cwd)
+        await askLine("要操作的项目目录", cwd)
     ).trim();
     return answer || cwd;
 }

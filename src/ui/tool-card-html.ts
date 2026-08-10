@@ -17,18 +17,42 @@ export function toolCardHtml(toolName?: string): string {
 <style>
   :root {
     color-scheme: light dark;
-    /* Prefer host design tokens (Apps SDK / UI guidelines). */
+    /* Host tokens win; these fallbacks are tuned to ChatGPT's light surface. */
     --fg: var(--color-text-primary, #111827);
-    --muted: var(--color-text-secondary, #6b7280);
-    --line: var(--color-border-primary, var(--color-border-light, #e5e7eb));
-    --chip: var(--color-background-secondary, #f3f4f6);
-    --ok: var(--color-text-success, var(--color-border-success, #067647));
-    --fail: var(--color-text-danger, var(--color-border-danger, #b42318));
-    --ring: var(--color-ring-primary, var(--color-text-info, #6366f1));
-    --radius: var(--border-radius-md, 8px);
+    --muted: var(--color-text-secondary, #667085);
+    --faint: var(--color-text-tertiary, #98a2b3);
+    --line: var(--color-border-primary, var(--color-border-light, #e4e7ec));
+    --line-strong: var(--color-border-secondary, #d0d5dd);
+    --surface: var(--color-background-primary, #ffffff);
+    --surface-soft: var(--color-background-secondary, #f7f8fa);
+    --surface-hover: var(--color-background-tertiary, #f2f4f7);
+    --accent: var(--color-text-info, #2563eb);
+    --ok: var(--color-text-success, var(--color-border-success, #15803d));
+    --fail: var(--color-text-danger, var(--color-border-danger, #dc2626));
+    --ring: var(--color-ring-primary, var(--color-text-info, #2563eb));
+    --rail: var(--faint);
+    --radius: var(--border-radius-lg, 10px);
+    --radius-sm: var(--border-radius-sm, 6px);
     --font: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
     --font-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-    --strip-h: 42px;
+    --strip-h: 46px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* Used when the host does not expose design tokens. */
+      --fg: var(--color-text-primary, #f2f4f7);
+      --muted: var(--color-text-secondary, #a6adbb);
+      --faint: var(--color-text-tertiary, #707887);
+      --line: var(--color-border-primary, var(--color-border-light, #343a46));
+      --line-strong: var(--color-border-secondary, #454c59);
+      --surface: var(--color-background-primary, #202123);
+      --surface-soft: var(--color-background-secondary, #282a2f);
+      --surface-hover: var(--color-background-tertiary, #303239);
+      --accent: var(--color-text-info, #7aa2ff);
+      --ok: var(--color-text-success, var(--color-border-success, #4ade80));
+      --fail: var(--color-text-danger, var(--color-border-danger, #fb7185));
+      --ring: var(--color-ring-primary, var(--color-text-info, #7aa2ff));
+    }
   }
   *, *::before, *::after { box-sizing: border-box; }
   html, body {
@@ -40,36 +64,55 @@ export function toolCardHtml(toolName?: string): string {
     background: transparent !important;
   }
   body {
-    font: 14px/1.4 var(--font);
+    font: 14px/1.45 var(--font);
     color: var(--fg);
+    -webkit-font-smoothing: antialiased;
   }
-  /* Default: no side gutter (web already has conversation inset). */
   .frame {
     width: 100%;
     margin: 0;
     padding: 4px 0;
   }
-  /* Mobile only — host may leave the iframe edge-to-edge. */
   html.is-mobile .frame {
     padding-left: max(16px, env(safe-area-inset-left, 0px));
     padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
   .shell {
+    --rail: var(--faint);
+    position: relative;
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    background: transparent;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
     overflow: hidden;
     width: 100%;
     max-width: 100%;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 5%, transparent);
+    transition: border-color 0.16s ease, background-color 0.16s ease;
+  }
+  .shell::before {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    inset: 8px auto 8px 0;
+    width: 3px;
+    border-radius: 0 999px 999px 0;
+    background: var(--rail);
+  }
+  .shell.running { --rail: var(--accent); }
+  .shell.success { --rail: var(--ok); }
+  .shell.failure { --rail: var(--fail); }
+  .shell.open {
+    border-color: var(--line-strong);
+    background: var(--surface);
   }
   .strip {
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    gap: 8px;
+    gap: 9px;
     min-height: var(--strip-h);
     height: auto;
-    padding: 10px 12px;
+    padding: 10px 10px 10px 14px;
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -80,14 +123,14 @@ export function toolCardHtml(toolName?: string): string {
     text-align: left;
     color: inherit;
     font: inherit;
+    transition: background-color 0.14s ease;
   }
+  .strip:not(:disabled):hover { background: var(--surface-hover); }
   .strip:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: -2px;
   }
-  .strip:disabled {
-    cursor: default;
-  }
+  .strip:disabled { cursor: default; }
   .icon {
     width: 18px;
     height: 18px;
@@ -103,7 +146,7 @@ export function toolCardHtml(toolName?: string): string {
     display: block;
     vertical-align: middle;
   }
-  .icon-svg.loading { color: var(--muted); }
+  .icon-svg.loading { color: var(--accent); }
   .icon-svg.ok { color: var(--ok); }
   .icon-svg.fail { color: var(--fail); }
   .icon-svg.loading .arc {
@@ -113,13 +156,19 @@ export function toolCardHtml(toolName?: string): string {
   @keyframes spin { to { transform: rotate(360deg); } }
   .tool {
     flex: 0 0 auto;
-    font-weight: 600;
-    font-size: 13px;
-    color: var(--fg);
-    max-width: 8em;
+    max-width: 10em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    padding: 2px 7px 3px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-soft);
+    color: var(--fg);
+    font-size: 11px;
+    line-height: 1.25;
+    font-weight: 650;
+    letter-spacing: 0.015em;
   }
   .title {
     flex: 1 1 auto;
@@ -127,35 +176,36 @@ export function toolCardHtml(toolName?: string): string {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13px;
-    font-weight: 400;
+    font: 12.5px/1.4 var(--font-mono);
     color: var(--muted);
-    font-family: var(--font-mono);
+    letter-spacing: -0.01em;
   }
   .shell.pending .title {
     flex: 0 1 auto;
-    font-family: inherit;
-    color: var(--fg);
+    font-family: var(--font);
+    font-size: 13px;
+    color: var(--muted);
   }
-  .shell.pending .chev {
-    display: none;
-  }
-  .shell.pending .strip {
-    justify-content: flex-start;
-  }
+  .shell.pending .chev { display: none; }
+  .shell.pending .strip { justify-content: flex-start; }
   .chev {
     flex: 0 0 auto;
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
     display: grid;
     place-items: center;
+    color: var(--faint);
+    background: transparent;
+    transition: color 0.14s ease, background-color 0.14s ease;
+  }
+  .strip:not(:disabled):hover .chev {
     color: var(--muted);
-    background: var(--chip);
+    background: var(--surface-soft);
   }
   .chev svg {
-    width: 15px;
-    height: 15px;
+    width: 14px;
+    height: 14px;
     transition: transform 0.18s ease;
   }
   .shell.open .chev svg { transform: rotate(180deg); }
@@ -170,44 +220,61 @@ export function toolCardHtml(toolName?: string): string {
     min-height: 0;
   }
   .panel {
-    padding: 10px 12px 12px;
+    padding: 11px 12px 13px 14px;
     border-top: 0;
-    /* No nested scrolling — grow with content (inline card rules). */
     max-height: none;
     overflow: visible;
+    background: var(--surface-soft);
   }
-  .shell.open .panel {
-    border-top: 1px solid var(--line);
-  }
+  .shell.open .panel { border-top: 1px solid var(--line); }
   .rows {
     margin: 0;
     display: grid;
-    gap: 6px;
+    gap: 0;
   }
   .row {
     display: grid;
-    grid-template-columns: 3.2em 1fr;
-    gap: 10px;
-    align-items: baseline;
+    grid-template-columns: minmax(54px, 4.5em) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+    padding: 6px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   }
+  .row:last-child { border-bottom: 0; }
   .row dt {
     margin: 0;
-    color: var(--muted);
-    font-size: 13px;
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.55;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
   .row dd {
     margin: 0;
+    min-width: 0;
     word-break: break-word;
-    font-family: var(--font-mono);
-    font-size: 13px;
+    color: var(--fg);
+    font: 12px/1.55 var(--font-mono);
   }
-  .row.outcome dd { font-family: var(--font); }
+  .row.outcome dd {
+    font-family: var(--font);
+    font-size: 12.5px;
+  }
   .row.outcome.fail dd { color: var(--fail); }
+  .shell.success .row.outcome:not(.fail) dd { color: var(--ok); }
   .empty {
+    padding: 3px 0;
     color: var(--muted);
-    font-size: 13px;
+    font-size: 12.5px;
+  }
+  @media (max-width: 440px) {
+    .strip { gap: 7px; padding-right: 8px; }
+    .tool { max-width: 8em; }
+    .row { grid-template-columns: 4em minmax(0, 1fr); gap: 9px; }
   }
   @media (prefers-reduced-motion: reduce) {
+    .shell, .strip, .chev { transition: none; }
     .icon-svg.loading .arc { animation: none; }
     .chev svg { transition: none; }
     .drawer { transition: none; }
@@ -243,9 +310,11 @@ export function toolCardHtml(toolName?: string): string {
   var expanded = false;
   var lastKey = "";
   var currentCard = null;
+  var pollTimer = null;
+  var pollAttempts = 0;
   var knownTool = ${bakedTool} || "";
   var knownArgs = null;
-  var STRIP_HEIGHT = 44;
+  var STRIP_HEIGHT = 56;
   var ARG_KEYS = ["path", "command", "pattern", "url", "processId", "format", "offset", "limit", "chars"];
 
   function iconSvg(kind) {
@@ -275,19 +344,43 @@ export function toolCardHtml(toolName?: string): string {
     exec_command: "后台命令",
     write_stdin: "进程交互",
     process_kill: "结束进程",
+    process_list: "列出进程",
+    process_status: "查看进程",
+    process_output: "查看进程输出",
+    runtime_status: "查看运行指标",
     grep: "搜索内容",
     glob: "查找文件",
     ls: "列出目录",
     webfetch: "抓取网页",
     summary: "总结进度",
+    skills_list: "列出 Codex Skills",
+    skill_read: "读取 Codex Skill",
+    agents_for_path: "读取项目指令",
+    capabilities_reload: "刷新 Codex 能力",
+    workspace_projects: "列出工作区项目",
+    workspace_search: "搜索工作区",
+    context_pack: "构建任务上下文",
+    git_status: "读取 Git 状态",
+    git_diff: "读取 Git 差异",
+    git_log: "读取 Git 历史",
+    git_show: "查看 Git 提交",
+    git_branches: "列出 Git 分支",
+    code_explore: "探索代码关系",
+    mcp_servers: "列出下游 MCP",
+    mcp_reconnect: "重连下游 MCP",
     mcp_tools: "列出下游工具",
-    mcp_call: "调用下游工具"
+    mcp_call: "调用下游工具",
+    mcp_resources: "列出下游资源",
+    mcp_resource_read: "读取下游资源",
+    mcp_prompts: "列出下游提示词",
+    mcp_prompt_get: "读取下游提示词"
   };
   var PARAM_LABELS = {
     path: "路径",
     command: "命令",
     pattern: "模式",
     url: "网址",
+    uri: "资源 URI",
     processId: "进程",
     chars: "输入",
     offset: "起始行",
@@ -297,23 +390,53 @@ export function toolCardHtml(toolName?: string): string {
     next: "下一步",
     done: "完成",
     server: "MCP",
-    tool: "工具"
+    tool: "工具",
+    name: "Skill",
+    prompt: "提示词",
+    query: "查询",
+    revision: "版本",
+    staged: "暂存区",
+    project_path: "项目",
+    max_depth: "深度"
   };
   var PARAM_KEYS = {
     read: ["path", "offset", "limit"],
     write: ["path"],
     edit: ["path"],
     bash: ["command"],
-    exec_command: ["command"],
+    exec_command: ["command", "name"],
     write_stdin: ["processId", "chars"],
     process_kill: ["processId"],
+    process_list: [],
+    process_status: ["processId"],
+    process_output: ["processId"],
+    runtime_status: [],
     grep: ["pattern", "path"],
     glob: ["pattern"],
     ls: ["path"],
     webfetch: ["url", "format"],
     summary: ["summary", "next", "done"],
+    skills_list: [],
+    skill_read: ["name", "path"],
+    agents_for_path: ["path"],
+    capabilities_reload: [],
+    workspace_projects: ["max_depth"],
+    workspace_search: ["pattern", "path"],
+    context_pack: ["query", "path"],
+    git_status: ["path"],
+    git_diff: ["path", "staged"],
+    git_log: ["path", "limit"],
+    git_show: ["path", "revision"],
+    git_branches: ["path"],
+    code_explore: ["query", "project_path"],
+    mcp_servers: [],
+    mcp_reconnect: ["server"],
     mcp_tools: ["server"],
-    mcp_call: ["server", "tool"]
+    mcp_call: ["server", "tool"],
+    mcp_resources: ["server"],
+    mcp_resource_read: ["server", "uri"],
+    mcp_prompts: ["server"],
+    mcp_prompt_get: ["server", "prompt"]
   };
 
   function labelOf(toolName) {
@@ -705,6 +828,8 @@ export function toolCardHtml(toolName?: string): string {
 
     strip.disabled = !canExpand(card);
     shell.classList.toggle("running", !!card.running);
+    shell.classList.toggle("success", !card.running && card.ok === true);
+    shell.classList.toggle("failure", !card.running && card.ok === false);
     shell.classList.toggle("pending", pending);
     statusIcon.innerHTML = card.running
       ? iconSvg("loading")
@@ -751,6 +876,10 @@ export function toolCardHtml(toolName?: string): string {
     paintStrip(card);
     renderPanel(card);
     setExpanded(false);
+    if (!card.running && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
   }
 
   function applyRaw(raw) {
@@ -853,11 +982,22 @@ export function toolCardHtml(toolName?: string): string {
   window.addEventListener("openai:set_globals", readHost);
   document.addEventListener("openai:set_globals", readHost);
   window.addEventListener("resize", applyViewportClass);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") readHost();
+  });
   statusIcon.innerHTML = iconSvg("loading");
   applyViewportClass();
   renderRunning(knownTool || guessToolName(), readToolInput());
   readHost();
-  setInterval(readHost, 250);
+  pollTimer = setInterval(function () {
+    if (document.visibilityState === "hidden") return;
+    pollAttempts += 1;
+    readHost();
+    if (pollAttempts >= 40 && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }, 250);
 })();
   </script>
 </body>

@@ -1,10 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../project.js";
 import { AccessDeniedError } from "../project.js";
 import { registerTool } from "../lib/tool-log.js";
-import { withNoAuth, writeAnnotations } from "../lib/tool-meta.js";
+import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
 
 /**
@@ -17,7 +17,7 @@ export function registerEditTool(server: McpServer, project: ProjectContext): vo
     registerTool(
         server,
         "edit",
-        withNoAuth({
+        withToolAuth({
             title: "Edit file",
             description:
                 "Apply a targeted code change by replacing exact old_string with new_string (our counterpart to Codex apply_patch for small edits). Prefer this over write for existing files. old_string must match exactly once; keep it as small as possible while unique. Do not use bash/sed to edit.",
@@ -25,7 +25,8 @@ export function registerEditTool(server: McpServer, project: ProjectContext): vo
                 path: z.string().describe("File path relative to the project root."),
                 old_string: z
                     .string()
-                    .describe("Exact text to find; must match exactly once."),
+                    .min(1)
+                    .describe("Exact non-empty text to find; must match exactly once."),
                 new_string: z.string().describe("Replacement text."),
             },
             outputSchema: {
@@ -48,7 +49,9 @@ export function registerEditTool(server: McpServer, project: ProjectContext): vo
                             `old_string matched ${occurrences} times in ${filePath}; make it unique`,
                         );
                     }
-                    const next = current.replace(oldString, newString);
+                    // Replacement must be literal: String.replace(string, string)
+                    // interprets $&, $`, $' and $$ sequences in newString.
+                    const next = current.replace(oldString, () => newString);
                     await writeFile(absolutePath, next, "utf8");
                     return okResult(`Edited ${filePath}.`, {
                         path: filePath,

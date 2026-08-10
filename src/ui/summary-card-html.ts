@@ -15,15 +15,34 @@ export function summaryCardHtml(): string {
   :root {
     color-scheme: light dark;
     --fg: var(--color-text-primary, #111827);
-    --muted: var(--color-text-secondary, #6b7280);
-    --line: var(--color-border-primary, var(--color-border-light, #e5e7eb));
-    --chip: var(--color-background-secondary, #f3f4f6);
-    --ok: var(--color-text-success, var(--color-border-success, #067647));
-    --fail: var(--color-text-danger, var(--color-border-danger, #b42318));
-    --progress: var(--color-text-info, #0b6bcb);
-    --ring: var(--color-ring-primary, var(--color-text-info, #6366f1));
-    --radius: var(--border-radius-md, 8px);
+    --muted: var(--color-text-secondary, #667085);
+    --faint: var(--color-text-tertiary, #98a2b3);
+    --line: var(--color-border-primary, var(--color-border-light, #e4e7ec));
+    --line-strong: var(--color-border-secondary, #d0d5dd);
+    --surface: var(--color-background-primary, #ffffff);
+    --surface-soft: var(--color-background-secondary, #f7f8fa);
+    --accent: var(--color-text-info, #2563eb);
+    --ok: var(--color-text-success, var(--color-border-success, #15803d));
+    --fail: var(--color-text-danger, var(--color-border-danger, #dc2626));
+    --progress: var(--color-text-info, #2563eb);
+    --radius: var(--border-radius-lg, 10px);
+    --radius-sm: var(--border-radius-sm, 6px);
     --font: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: var(--color-text-primary, #f2f4f7);
+      --muted: var(--color-text-secondary, #a6adbb);
+      --faint: var(--color-text-tertiary, #707887);
+      --line: var(--color-border-primary, var(--color-border-light, #343a46));
+      --line-strong: var(--color-border-secondary, #454c59);
+      --surface: var(--color-background-primary, #202123);
+      --surface-soft: var(--color-background-secondary, #282a2f);
+      --accent: var(--color-text-info, #7aa2ff);
+      --ok: var(--color-text-success, var(--color-border-success, #4ade80));
+      --fail: var(--color-text-danger, var(--color-border-danger, #fb7185));
+      --progress: var(--color-text-info, #7aa2ff);
+    }
   }
   *, *::before, *::after { box-sizing: border-box; }
   html, body {
@@ -35,8 +54,9 @@ export function summaryCardHtml(): string {
     background: transparent !important;
   }
   body {
-    font: 14px/1.4 var(--font);
+    font: 14px/1.45 var(--font);
     color: var(--fg);
+    -webkit-font-smoothing: antialiased;
   }
   .frame {
     width: 100%;
@@ -48,19 +68,34 @@ export function summaryCardHtml(): string {
     padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
   .shell {
-    border: 1px solid var(--line);
+    --rail: var(--accent);
+    position: relative;
+    border: 1px solid var(--line-strong);
     border-radius: var(--radius);
-    background: transparent;
+    background: var(--surface);
     overflow: hidden;
     width: 100%;
     max-width: 100%;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 5%, transparent);
   }
+  .shell::before {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    inset: 8px auto 8px 0;
+    width: 3px;
+    border-radius: 0 999px 999px 0;
+    background: var(--rail);
+  }
+  .shell.running, .shell.progress { --rail: var(--progress); }
+  .shell.success { --rail: var(--ok); }
+  .shell.failure { --rail: var(--fail); }
   .head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    min-height: 42px;
-    padding: 10px 12px;
+    gap: 9px;
+    min-height: 46px;
+    padding: 10px 12px 10px 14px;
   }
   .icon {
     width: 18px;
@@ -76,7 +111,7 @@ export function summaryCardHtml(): string {
     height: 18px;
     display: block;
   }
-  .icon-svg.loading { color: var(--muted); }
+  .icon-svg.loading { color: var(--progress); }
   .icon-svg.ok { color: var(--ok); }
   .icon-svg.progress { color: var(--progress); }
   .icon-svg.fail { color: var(--fail); }
@@ -87,9 +122,15 @@ export function summaryCardHtml(): string {
   @keyframes spin { to { transform: rotate(360deg); } }
   .tool {
     flex: 0 0 auto;
-    font-weight: 600;
-    font-size: 13px;
+    padding: 2px 7px 3px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-soft);
     color: var(--fg);
+    font-size: 11px;
+    line-height: 1.25;
+    font-weight: 650;
+    letter-spacing: 0.015em;
   }
   .status {
     flex: 1 1 auto;
@@ -97,44 +138,65 @@ export function summaryCardHtml(): string {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13px;
-    font-weight: 400;
+    font-size: 12.5px;
+    font-weight: 450;
     color: var(--muted);
   }
+  .shell.success .status { color: var(--ok); }
+  .shell.failure .status { color: var(--fail); }
   .panel {
-    padding: 10px 12px 12px;
+    padding: 12px 12px 13px 14px;
     border-top: 1px solid var(--line);
+    background: var(--surface-soft);
   }
   .shell.running .panel { display: none; }
   .rows {
     margin: 0;
     display: grid;
-    gap: 8px;
+    gap: 0;
   }
   .row {
     display: grid;
-    grid-template-columns: 3.2em 1fr;
-    gap: 10px;
+    grid-template-columns: minmax(54px, 4.5em) minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
+    padding: 7px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   }
+  .row:last-child { border-bottom: 0; }
   .row dt {
     margin: 0;
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.5;
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.6;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
   .row dd {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
+    min-width: 0;
+    font-size: 12.5px;
+    line-height: 1.6;
     color: var(--fg);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .row:first-child dd {
+    font-size: 13px;
+    font-weight: 520;
   }
   .row.outcome dd { color: var(--muted); }
   .row.outcome.ok dd { color: var(--ok); }
   .row.outcome.progress dd { color: var(--progress); }
   .row.outcome.fail dd { color: var(--fail); }
+  @media (max-width: 440px) {
+    .head { gap: 7px; padding-right: 10px; }
+    .row { grid-template-columns: 4em minmax(0, 1fr); gap: 9px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .icon-svg.loading .arc { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -167,7 +229,7 @@ export function summaryCardHtml(): string {
     } catch (_error) {}
   }
 
-  notifyHeight(48);
+  notifyHeight(56);
 
   function isMobileHost() {
     try {
@@ -271,7 +333,7 @@ export function summaryCardHtml(): string {
     var nextText = card.nextText != null ? String(card.nextText).trim() : "";
     var outcome = !ok ? "调用失败" : done ? "任务完成" : "继续下一阶段";
 
-    shell.className = "shell";
+    shell.className = "shell " + (kind === "ok" ? "success" : kind === "fail" ? "failure" : "progress");
     iconEl.innerHTML = iconSvg(kind);
     toolEl.textContent = done ? "任务完成" : "进度汇报";
     statusEl.textContent = outcome;

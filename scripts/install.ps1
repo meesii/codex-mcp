@@ -1,36 +1,57 @@
-# Install a user-local `codex-mcp` command (Windows).
-# Usage: pwsh -File scripts/install.ps1
-
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
+$ProgressPreference = "SilentlyContinue"
 
-npm run build
+$Package = $env:CODEX_MCP_PACKAGE
+if (-not $Package) {
+    $Package = "https://github.com/meesii/codex-mcp/releases/latest/download/codex-mcp.tgz"
+}
 
-$binDir = Join-Path $env:USERPROFILE ".codex-mcp\bin"
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+function Fail([string]$Message) {
+    Write-Error "安装失败：$Message"
+    exit 1
+}
 
-$distCli = Join-Path $root "dist\cli.js"
-$cmdPath = Join-Path $binDir "codex-mcp.cmd"
-$cmd = @"
-@echo off
-node "$distCli" %*
-"@
-Set-Content -Path $cmdPath -Value $cmd -Encoding ASCII
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Fail "没有找到 Node.js。请先安装 Node.js 22 或更高版本。"
+}
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Fail "没有找到 npm。重新安装 Node.js 通常可以解决。"
+}
 
-$pathEntry = $binDir
+$nodeMajor = [int](& node -p 'Number(process.versions.node.split(".")[0])')
+if ($nodeMajor -lt 22) {
+    Fail "当前 Node.js 版本是 $(& node -v)，需要 22 或更高版本。"
+}
+
+$installRoot = Join-Path $env:USERPROFILE ".codex-mcp\npm"
+New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+
+Write-Host "正在安装 codex-mcp…"
+& npm install --global --prefix $installRoot $Package
+if ($LASTEXITCODE -ne 0) {
+    Fail "npm 安装没有完成。请检查上面的错误信息。"
+}
+
+$cmdPath = Join-Path $installRoot "codex-mcp.cmd"
+if (-not (Test-Path -LiteralPath $cmdPath)) {
+    Fail "安装完成，但没有找到 codex-mcp 命令：$cmdPath"
+}
+
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $userPath) { $userPath = "" }
 $parts = $userPath -split ";" | Where-Object { $_ -and $_.Trim() -ne "" }
-if ($parts -notcontains $pathEntry) {
-    $newPath = ($parts + $pathEntry) -join ";"
+if ($parts -notcontains $installRoot) {
+    $newPath = ($parts + $installRoot) -join ";"
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    $env:Path = "$pathEntry;$env:Path"
-    Write-Host "Added to user PATH: $pathEntry"
-    Write-Host "Open a new terminal for PATH to apply everywhere."
-} else {
-    Write-Host "PATH already contains: $pathEntry"
 }
+$env:Path = "$installRoot;$env:Path"
 
-Write-Host "Installed: $cmdPath"
-Write-Host "Try: codex-mcp --help"
+$version = & $cmdPath --version 2>$null
+Write-Host ""
+Write-Host "✓ codex-mcp $version"
+Write-Host "✓ 命令目录已加入 PATH：$installRoot"
+Write-Host ""
+Write-Host "第一次使用请运行："
+Write-Host "  codex-mcp setup"
+Write-Host ""
+Write-Host "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"

@@ -1,0 +1,137 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 发布检查 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Build install package
+        run: npm pack
+
+      - name: Smoke test installer (macOS / Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TEST_HOME="$(mktemp -d)"
+          HOME="$TEST_HOME" \
+          SHELL=/bin/sh \
+          CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
+          sh scripts/install.sh
+          "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version
+          HOME="$TEST_HOME" sh scripts/uninstall.sh
+          test ! -e "$TEST_HOME/.codex-mcp/npm"
+          ! grep -F '.codex-mcp/npm/bin' "$TEST_HOME/.profile"
+
+      - name: Smoke test installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $package = Join-Path $PWD "codex-mcp-$version.tgz"
+          $testHome = Join-Path $env:RUNNER_TEMP "codex-mcp-install-home"
+          New-Item -ItemType Directory -Force -Path $testHome | Out-Null
+          $env:USERPROFILE = $testHome
+          $env:CODEX_MCP_PACKAGE = $package
+          & ./scripts/install.ps1
+          & (Join-Path $testHome ".codex-mcp/npm/codex-mcp.cmd") --version
+          & ./scripts/uninstall.ps1
+          if (Test-Path (Join-Path $testHome ".codex-mcp/npm")) {
+            throw "codex-mcp uninstall smoke test failed"
+          }
+
+  package:
+    name: 生成 Release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Check version
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "package.json 版本是 $PACKAGE_VERSION，但 Git tag 是 $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Build package
+        shell: bash
+        run: |
+          mkdir -p release
+          npm pack --pack-destination release
+          mv "release/codex-mcp-${GITHUB_REF_NAME#v}.tgz" release/codex-mcp.tgz
+          cp scripts/install.sh release/install.sh
+          cp scripts/install.ps1 release/install.ps1
+          cp scripts/uninstall.sh release/uninstall.sh
+          cp scripts/uninstall.ps1 release/uninstall.ps1
+          cd release
+          sha256sum codex-mcp.tgz install.sh install.ps1 uninstall.sh uninstall.ps1 > SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/codex-mcp.tgz \
+            release/install.sh \
+            release/install.ps1 \
+            release/uninstall.sh \
+            release/uninstall.ps1 \
+            release/SHA256SUMS \
+            --verify-tag \
+            --generate-notes \
+            --title "codex-mcp $GITHUB_REF_NAME"

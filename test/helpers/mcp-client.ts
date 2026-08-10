@@ -18,9 +18,14 @@ export interface McpTestClient {
  * @param mcpUrl - Full URL ending in /mcp
  * @returns Connected test client helpers
  */
-export async function connectMcpClient(mcpUrl: string): Promise<McpTestClient> {
+export async function connectMcpClient(
+    mcpUrl: string,
+    headers?: Record<string, string>,
+): Promise<McpTestClient> {
     const client = new Client({ name: "codex-mcp-e2e", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(mcpUrl));
+    const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
+        requestInit: headers ? { headers } : undefined,
+    });
     await client.connect(transport);
 
     return {

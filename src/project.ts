@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import {
     AccessDeniedError,
     resolveAllowedPath,
@@ -9,11 +10,14 @@ import { ProjectLock } from "./lib/project-lock.js";
  */
 export class ProjectContext {
     readonly lock = new ProjectLock();
+    readonly root: string;
 
     /**
      * @param root - Absolute project root from server config
      */
-    constructor(readonly root: string) {}
+    constructor(root: string) {
+        this.root = realpathSync.native(root);
+    }
 
     /**
      * Resolve a path inside the project root (must stay under root).

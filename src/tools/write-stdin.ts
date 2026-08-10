@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import { registerTool } from "../lib/tool-log.js";
-import { destructiveAnnotations, withNoAuth } from "../lib/tool-meta.js";
+import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
 import { truncateText } from "../lib/truncate.js";
 
@@ -19,10 +19,10 @@ export function registerWriteStdinTool(
     registerTool(
         server,
         "write_stdin",
-        withNoAuth({
+        withToolAuth({
             title: "Write to / poll process",
             description:
-                "Write characters to an existing exec_command process and/or return recent output (Codex write_stdin style). Omit chars (or empty) to only poll. Pass \\u0003 to send Ctrl-C. For hard stop prefer process_kill.",
+                "Write characters to an existing exec_command process and/or return recent output (Codex write_stdin style). Omit chars (or empty) to only poll. On Unix, \\u0003 sends SIGINT to the process group; on Windows it force-stops the process tree. For an explicit hard stop prefer process_kill.",
             inputSchema: {
                 processId: z
                     .number()
@@ -79,8 +79,7 @@ export function registerWriteStdinTool(
                       ? `Process exited after signal ${snapshot.signal}.`
                       : `Process exited with code ${snapshot.exitCode ?? "unknown"}.`;
                 const text = output ? `${output}\n${status}` : status;
-
-                return okResult(text, {
+                const structured = {
                     processId: snapshot.processId,
                     running: snapshot.running,
                     exitCode: snapshot.exitCode,
@@ -88,7 +87,18 @@ export function registerWriteStdinTool(
                     wallTimeMs: snapshot.wallTimeMs,
                     output,
                     outputTruncated: snapshot.outputTruncated,
-                });
+                };
+                const failed =
+                    !snapshot.running &&
+                    (snapshot.signal !== undefined ||
+                        (snapshot.exitCode !== undefined && snapshot.exitCode !== 0));
+                if (failed) {
+                    return {
+                        ...errorResult(text),
+                        structuredContent: structured,
+                    };
+                }
+                return okResult(text, structured);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 return errorResult(message);

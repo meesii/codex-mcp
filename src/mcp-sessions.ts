@@ -9,6 +9,7 @@ export interface McpSessionCloseResult {
 
 interface McpSessionEntry<TTransport> {
     transport: TTransport;
+    ownerClientId?: string;
     lastActivityAt: number;
 }
 
@@ -37,10 +38,12 @@ export class McpSessionRegistry<TTransport extends ClosableMcpTransport> {
      *
      * @param sessionId - MCP session id
      * @param transport - Streamable HTTP transport
+     * @param ownerClientId - OAuth client that created the session; undefined in local noauth mode
      */
-    register(sessionId: string, transport: TTransport): void {
+    register(sessionId: string, transport: TTransport, ownerClientId?: string): void {
         this.sessions.set(sessionId, {
             transport,
+            ownerClientId,
             lastActivityAt: this.now(),
         });
     }
@@ -49,11 +52,12 @@ export class McpSessionRegistry<TTransport extends ClosableMcpTransport> {
      * Fetch a session transport and refresh activity time.
      *
      * @param sessionId - MCP session id
+     * @param ownerClientId - Current OAuth client; must match the creator in public mode
      * @returns Transport or undefined
      */
-    get(sessionId: string): TTransport | undefined {
+    get(sessionId: string, ownerClientId?: string): TTransport | undefined {
         const entry = this.sessions.get(sessionId);
-        if (!entry) return undefined;
+        if (!entry || entry.ownerClientId !== ownerClientId) return undefined;
         entry.lastActivityAt = this.now();
         return entry.transport;
     }

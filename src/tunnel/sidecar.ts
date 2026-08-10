@@ -1,11 +1,54 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
+import { terminateChildProcess } from "../lib/process-tree.js";
 import { ensureUserConfigDirs, getUserLogDir } from "../user-config.js";
 import { getCloudflaredConfigPath } from "./yml.js";
 
 /** Default wait for the first Cloudflare edge registration. */
 const DEFAULT_READY_TIMEOUT_MS = 45_000;
+const MAX_DIAGNOSTIC_LOG_CHARS = 16_000;
+
+/** @internal Build a deterministic cloudflared invocation for tunnel sidecars. */
+export function cloudflaredRunArgs(configPath: string, tunnelId: string): string[] {
+    return [
+        "tunnel",
+        "--config",
+        configPath,
+        "--protocol",
+        "http2",
+        "--edge-ip-version",
+        "4",
+        "run",
+        tunnelId,
+    ];
+}
+
+/** @internal Turn recent cloudflared output into an actionable readiness timeout. */
+export function tunnelReadinessTimeoutMessage(
+    timeoutMs: number,
+    logText: string,
+    logPath: string,
+): string {
+    const prefix = `公网连接在 ${Math.round(timeoutMs / 1000)} 秒内没有准备好。`;
+    const ipv6Tcp7844Timeout = /\[[0-9a-f:]+\]:7844[^\n]*(?:i\/o timeout|timed out|timeout)/i.test(
+        logText,
+    );
+    if (ipv6Tcp7844Timeout) {
+        return `${prefix} Cloudflare 的 IPv6 连接超时。当前版本已经强制使用 IPv4；请确认网络允许访问 TCP 7844。日志：${logPath}`;
+    }
+
+    const tcp7844Failure =
+        /TCP Connectivity[^\n]*FAIL[^\n]*HTTP\/2[^\n]*(?:blocked|unreachable)/i.test(logText) ||
+        /(?:dial tcp|TLS handshake)[^\n]*:7844[^\n]*(?:i\/o timeout|timed out|timeout|refused|unreachable)/i.test(
+            logText,
+        );
+    if (tcp7844Failure) {
+        return `${prefix} 无法连接 Cloudflare 的 TCP 7844 端口。请检查防火墙或网络限制。日志：${logPath}`;
+    }
+
+    return `${prefix} 请检查网络是否允许访问 Cloudflare TCP 7844。日志：${logPath}`;
+}
 
 export interface TunnelSidecarOptions {
     bin: string;
@@ -40,6 +83,7 @@ export class CloudflaredSidecar {
     private readonly readyTimeoutMs: number;
     private readySeen = false;
     private logLineCarry = "";
+    private diagnosticTail = "";
     private readyResolve: ((info: TunnelReadyInfo) => void) | undefined;
     private readyReject: ((error: Error) => void) | undefined;
 
@@ -73,7 +117,7 @@ export class CloudflaredSidecar {
      */
     async start(): Promise<TunnelReadyInfo> {
         if (this.child) {
-            throw new Error("cloudflared sidecar already started");
+            throw new Error("Cloudflare Tunnel 已经在运行");
         }
 
         const configPath = this.options.configPath ?? getCloudflaredConfigPath();
@@ -89,15 +133,7 @@ export class CloudflaredSidecar {
 
         const child = spawn(
             this.options.bin,
-            [
-                "tunnel",
-                "--config",
-                configPath,
-                "--protocol",
-                "http2",
-                "run",
-                this.options.tunnelId,
-            ],
+            cloudflaredRunArgs(configPath, this.options.tunnelId),
             {
                 stdio: ["ignore", "pipe", "pipe"],
                 windowsHide: true,
@@ -108,6 +144,7 @@ export class CloudflaredSidecar {
         this.exitCode = null;
         this.readySeen = false;
         this.logLineCarry = "";
+        this.diagnosticTail = "";
 
         child.stdout?.on("data", (chunk: Buffer) => {
             this.onLogChunk(chunk.toString("utf8"));
@@ -118,7 +155,7 @@ export class CloudflaredSidecar {
         child.on("error", (error) => {
             this.writeLog(`spawn error: ${error.message}\n`);
             this.failReady(
-                new Error(`cloudflared spawn failed: ${error.message}`),
+                new Error(`无法启动 cloudflared：${error.message}`),
             );
         });
         child.on("close", (code) => {
@@ -128,7 +165,7 @@ export class CloudflaredSidecar {
             if (!this.readySeen) {
                 this.failReady(
                     new Error(
-                        `cloudflared exited before tunnel was ready (code ${code}). See ${this.logPath}`,
+                        `cloudflared 在公网连接准备好之前退出了（代码 ${code}）。日志：${this.logPath}`,
                     ),
                 );
             }
@@ -140,9 +177,11 @@ export class CloudflaredSidecar {
             timer = setTimeout(() => {
                 reject(
                     new Error(
-                        `Tunnel did not become ready within ${Math.round(timeoutMs / 1000)}s ` +
-                            `(no "Registered tunnel connection"). Often QUIC/UDP is blocked — ` +
-                            `this build forces http2. See ${this.logPath}`,
+                        tunnelReadinessTimeoutMessage(
+                            timeoutMs,
+                            this.diagnosticTail,
+                            this.logPath,
+                        ),
                     ),
                 );
             }, timeoutMs);
@@ -172,14 +211,13 @@ export class CloudflaredSidecar {
             return;
         }
 
-        await killProcessTree(child.pid);
-        await Promise.race([
-            new Promise<void>((resolve) => child.once("close", () => resolve())),
-            sleep(3000),
-        ]);
-        this.child = undefined;
-        this.logStream?.end();
-        this.logStream = undefined;
+        try {
+            await terminateChildProcess(child, 2_000, 1_000);
+        } finally {
+            this.child = undefined;
+            this.logStream?.end();
+            this.logStream = undefined;
+        }
     }
 
     /**
@@ -189,6 +227,7 @@ export class CloudflaredSidecar {
      */
     private onLogChunk(text: string): void {
         this.writeLog(text);
+        this.diagnosticTail = (this.diagnosticTail + text).slice(-MAX_DIAGNOSTIC_LOG_CHARS);
         if (this.readySeen) return;
 
         const combined = this.logLineCarry + text;
@@ -248,34 +287,4 @@ export class CloudflaredSidecar {
             }
         }
     }
-}
-
-/**
- * @param pid - Root process id
- */
-async function killProcessTree(pid: number): Promise<void> {
-    if (process.platform === "win32") {
-        await new Promise<void>((resolve) => {
-            const killer = spawn("taskkill.exe", ["/T", "/F", "/PID", String(pid)], {
-                stdio: "ignore",
-                windowsHide: true,
-            });
-            killer.on("close", () => resolve());
-            killer.on("error", () => resolve());
-        });
-        return;
-    }
-    try {
-        process.kill(pid, "SIGTERM");
-    } catch {
-        // already gone
-    }
-}
-
-/**
- * @param ms - Delay
- * @returns Promise that resolves after ms
- */
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

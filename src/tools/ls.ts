@@ -1,11 +1,13 @@
 import { readdir, stat } from "node:fs/promises";
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../project.js";
 import { AccessDeniedError } from "../project.js";
 import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withNoAuth } from "../lib/tool-meta.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
+
+const MAX_DIRECTORY_ENTRIES = 2_000;
 
 /**
  * Register the `ls` tool.
@@ -17,7 +19,7 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
     registerTool(
         server,
         "ls",
-        withNoAuth({
+        withToolAuth({
             title: "List directory",
             description:
                 "List directory entries inside the project root. Prefer this over bash ls/Get-ChildItem for simple listings. Entries are in structuredContent.entries.",
@@ -35,6 +37,7 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
                         type: z.enum(["dir", "file", "other"]),
                     }),
                 ),
+                truncated: z.boolean(),
             },
             annotations: readOnlyAnnotations,
         }),
@@ -48,6 +51,7 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
 
                 const entries = await readdir(absolutePath, { withFileTypes: true });
                 const items = entries
+                    .slice(0, MAX_DIRECTORY_ENTRIES)
                     .map((entry) => ({
                         name: entry.name,
                         type: (entry.isDirectory()
@@ -58,10 +62,15 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
                     }))
                     .sort((left, right) => left.name.localeCompare(right.name));
 
-                return okResult(`Listed ${items.length} entries in ${dirPath ?? "."}.`, {
-                    path: dirPath ?? ".",
-                    entries: items,
-                });
+                const truncated = entries.length > items.length;
+                return okResult(
+                    `Listed ${items.length}${truncated ? ` of ${entries.length}` : ""} entries in ${dirPath ?? "."}.`,
+                    {
+                        path: dirPath ?? ".",
+                        entries: items,
+                        truncated,
+                    },
+                );
             } catch (error) {
                 const message =
                     error instanceof AccessDeniedError || error instanceof Error

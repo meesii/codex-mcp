@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { expandHomePath } from "../config.js";
+import { getUserConfigDir } from "../user-config.js";
 
 export interface CloudflaredYml {
     tunnelId: string;
@@ -13,10 +14,10 @@ export interface CloudflaredYml {
 /**
  * Default path to the cloudflared config file.
  *
- * @returns Absolute path (`~/.cloudflared/config.yml`)
+ * @returns Absolute codex-mcp-owned path (`~/.codex-mcp/cloudflared.yml`)
  */
 export function getCloudflaredConfigPath(): string {
-    return expandHomePath("~/.cloudflared/config.yml");
+    return join(getUserConfigDir(), "cloudflared.yml");
 }
 
 /**
@@ -39,7 +40,7 @@ export function readCloudflaredYml(
     filePath: string = getCloudflaredConfigPath(),
 ): CloudflaredYml {
     if (!existsSync(filePath)) {
-        throw new Error(`Missing cloudflared config: ${filePath}`);
+        throw new Error(`没有找到 cloudflared 配置：${filePath}`);
     }
     const raw = readFileSync(filePath, "utf8");
     const tunnelId = matchLine(raw, /^tunnel:\s*(.+)$/m);
@@ -51,16 +52,16 @@ export function readCloudflaredYml(
     const serviceUrl = matchLine(raw, /^\s*service:\s*(https?:\/\/.+)$/m);
 
     if (!tunnelId) {
-        throw new Error(`No tunnel id in ${filePath}`);
+        throw new Error(`Tunnel 配置里缺少 ID：${filePath}`);
     }
     if (!credentialsFile) {
-        throw new Error(`No credentials-file in ${filePath}`);
+        throw new Error(`Tunnel 配置里缺少凭据文件：${filePath}`);
     }
     if (!hostname) {
-        throw new Error(`No ingress hostname in ${filePath}`);
+        throw new Error(`Tunnel 配置里缺少域名：${filePath}`);
     }
     if (!serviceUrl) {
-        throw new Error(`No ingress http(s) service in ${filePath}`);
+        throw new Error(`Tunnel 配置里缺少本机服务地址：${filePath}`);
     }
 
     return {
@@ -89,12 +90,14 @@ export function writeCloudflaredYml(
 ): void {
     mkdirSync(dirname(filePath), { recursive: true });
     const credentials = quoteYamlScalar(input.credentialsFile);
-    // Prefer http2: many networks (CGNAT / firewalls) block QUIC UDP 7844,
-    // which otherwise leaves the tunnel offline and Cloudflare returns 1033.
+    // Prefer HTTP/2 over IPv4: some dual-stack networks advertise IPv6 first
+    // while outbound IPv6 TCP/7844 is unusable, causing cloudflared auto mode
+    // to time out even though IPv4 TCP/7844 works.
     const body = [
         `tunnel: ${input.tunnelId}`,
         `credentials-file: ${credentials}`,
         "protocol: http2",
+        "edge-ip-version: 4",
         "",
         "ingress:",
         `  - hostname: ${input.hostname}`,
@@ -120,10 +123,10 @@ function matchLine(text: string, pattern: RegExp): string | undefined {
  * @returns Unquoted value
  */
 function stripQuotes(value: string): string {
-    if (
-        (value.startsWith("'") && value.endsWith("'")) ||
-        (value.startsWith('"') && value.endsWith('"'))
-    ) {
+    if (value.startsWith("'") && value.endsWith("'")) {
+        return value.slice(1, -1).replace(/''/g, "'");
+    }
+    if (value.startsWith('"') && value.endsWith('"')) {
         return value.slice(1, -1);
     }
     return value;

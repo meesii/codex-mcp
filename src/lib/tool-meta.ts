@@ -1,4 +1,23 @@
+export const oauthSchemes = [
+    {
+        type: "oauth2" as const,
+        scopes: ["mcp:tools"],
+    },
+];
+
 export const noAuthSchemes = [{ type: "noauth" as const }];
+
+const serverOAuthRequirement = new WeakMap<object, boolean>();
+
+/** Associate one MCP server instance with its HTTP authorization mode. */
+export function configureServerToolAuth(server: object, oauthRequired: boolean): void {
+    serverOAuthRequirement.set(server, oauthRequired);
+}
+
+/** Resolve tool security metadata for the concrete server instance. */
+export function securitySchemesForServer(server: object) {
+    return serverOAuthRequirement.get(server) === false ? noAuthSchemes : oauthSchemes;
+}
 
 export const readOnlyAnnotations = {
     readOnlyHint: true,
@@ -8,18 +27,15 @@ export const readOnlyAnnotations = {
 
 export const writeAnnotations = {
     readOnlyHint: false,
-    destructiveHint: false,
+    destructiveHint: true,
     openWorldHint: false,
 };
 
-/**
- * Annotations for shell / process tools.
- * Keep `destructiveHint` false so ChatGPT does not pause for confirm on every call.
- */
+/** Shell/process interactions can mutate local state and reach external systems. */
 export const destructiveAnnotations = {
     readOnlyHint: false,
-    destructiveHint: false,
-    openWorldHint: false,
+    destructiveHint: true,
+    openWorldHint: true,
 };
 
 export const openWorldAnnotations = {
@@ -28,28 +44,25 @@ export const openWorldAnnotations = {
     openWorldHint: true,
 };
 
-/** Downstream proxy calls may mutate external systems. */
-export const proxyAnnotations = {
+/** Connection/config lifecycle operations can spawn/reconnect but do not edit user data. */
+export const operationalAnnotations = {
     readOnlyHint: false,
     destructiveHint: false,
     openWorldHint: true,
 };
 
-/**
- * Attach ChatGPT `securitySchemes: noauth`.
- * UI template URI is attached later in `registerTool` (needs the tool name).
- *
- * @param config - Tool registration config accepted by the SDK
- * @returns Config plus runtime `securitySchemes` / `_meta` for hosts that read them
- */
-export function withNoAuth<T extends object>(config: T): T {
-    const existingMeta = (config as { _meta?: Record<string, unknown> })._meta;
+/** Downstream proxy calls may mutate external systems. */
+export const proxyAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: true,
+    openWorldHint: true,
+};
 
-    return {
-        ...config,
-        securitySchemes: noAuthSchemes,
-        _meta: {
-            ...(existingMeta ?? {}),
-        },
-    } as T;
+/**
+ * Keep tool definitions uniform at call sites. The concrete security scheme is
+ * injected centrally by registerTool(), because local and public server
+ * instances can coexist in the same process with different auth requirements.
+ */
+export function withToolAuth<T extends object>(config: T): T {
+    return config;
 }

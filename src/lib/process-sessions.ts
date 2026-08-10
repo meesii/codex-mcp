@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { spawnSync } from "node:child_process";
+import { signalProcessTree } from "./process-tree.js";
+import { RollingTextBuffer } from "./rolling-text-buffer.js";
+import { commandShell } from "./shell-command.js";
+import type { ProcessRuntimeStats } from "./runtime-telemetry.js";
 
 const DEFAULT_YIELD_MS = 10_000;
 const DEFAULT_POLL_MS = 5_000;
@@ -7,11 +10,19 @@ const MAX_YIELD_MS = 30_000;
 const MAX_POLL_MS = 110_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 40_000;
 const MAX_BUFFER_CHARS = 1_000_000;
+const COMPLETED_MAX_BUFFER_CHARS = 200_000;
 const COMPLETED_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_PROCESSES = 8;
+const DEFAULT_MAX_PROCESSES_PER_SCOPE = 4;
+const MAX_RETAINED_COMPLETED_GLOBAL = 64;
+const MAX_RETAINED_COMPLETED_PER_SCOPE = 16;
+const MAX_RETAINED_BUFFER_CHARS_GLOBAL = 8_000_000;
+const MAX_RETAINED_BUFFER_CHARS_PER_SCOPE = 2_000_000;
 
 export interface StartProcessInput {
     command: string;
     cwd: string;
+    name?: string;
     yieldTimeMs?: number;
     maxOutputChars?: number;
 }
@@ -33,11 +44,29 @@ export interface ProcessSnapshot {
     wallTimeMs: number;
 }
 
+export interface ProcessInfo {
+    processId: number;
+    name?: string;
+    command: string;
+    cwd: string;
+    running: boolean;
+    startedAt: number;
+    wallTimeMs: number;
+    exitCode?: number;
+    signal?: string;
+    bufferedChars: number;
+    outputTruncated: boolean;
+}
+
 interface ProcessSession {
     id: number;
+    ownerScope?: string;
+    name?: string;
+    command: string;
+    cwd: string;
     child?: ChildProcessWithoutNullStreams;
     startedAt: number;
-    buffer: string;
+    buffer: RollingTextBuffer;
     truncated: boolean;
     running: boolean;
     exitCode?: number;
@@ -47,28 +76,83 @@ interface ProcessSession {
     cleanupTimer?: NodeJS.Timeout;
 }
 
+interface SharedProcessState {
+    sessions: Map<number, ProcessSession>;
+    nextId: number;
+    maxProcesses: number;
+    starts: number;
+    completions: number;
+    outputTruncations: number;
+}
+
 /**
  * Manage long-running processes with processId handles.
+ *
+ * A root manager owns the shared process capacity. `scope()` creates a view for
+ * one stable process owner: process ids remain globally unique, but poll/kill
+ * only see processes created by that owner. Root `shutdown()` is reserved for
+ * server shutdown and terminates every process across owners.
  */
 export class ProcessSessionManager {
-    private readonly sessions = new Map<number, ProcessSession>();
-    private nextId = 1;
+    private readonly state: SharedProcessState;
+
+    constructor(
+        maxProcesses = DEFAULT_MAX_PROCESSES,
+        private readonly ownerScope?: string,
+        state?: SharedProcessState,
+        private readonly maxProcessesPerScope = DEFAULT_MAX_PROCESSES_PER_SCOPE,
+    ) {
+        this.state = state ?? {
+            sessions: new Map<number, ProcessSession>(),
+            nextId: 1,
+            maxProcesses,
+            starts: 0,
+            completions: 0,
+            outputTruncations: 0,
+        };
+    }
+
+    /** Create an isolated owner view over the shared global capacity. */
+    scope(ownerScope: string): ProcessSessionManager {
+        if (!ownerScope) throw new Error("Process scope id is required");
+        return new ProcessSessionManager(
+            this.state.maxProcesses,
+            ownerScope,
+            this.state,
+            this.maxProcessesPerScope,
+        );
+    }
 
     /**
      * Start a command; wait up to yieldTimeMs then return a snapshot.
      * If still running, `processId` is set for later poll/kill.
-     *
-     * @param input - Start options
-     * @returns Process snapshot
      */
     async start(input: StartProcessInput): Promise<ProcessSnapshot> {
-        const session = this.createSession();
-        this.sessions.set(session.id, session);
+        const running = [...this.state.sessions.values()].filter((session) => session.running);
+        if (running.length >= this.state.maxProcesses) {
+            throw new Error(
+                `Process capacity reached (${this.state.maxProcesses} running processes max)`,
+            );
+        }
+        if (this.ownerScope !== undefined) {
+            const ownedRunning = running.filter(
+                (session) => session.ownerScope === this.ownerScope,
+            ).length;
+            if (ownedRunning >= this.maxProcessesPerScope) {
+                throw new Error(
+                    `Process scope capacity reached (${this.maxProcessesPerScope} running processes max)`,
+                );
+            }
+        }
+
+        const session = this.createSession(input.command, input.cwd, input.name);
+        this.state.sessions.set(session.id, session);
 
         try {
             this.spawnCommand(session, input.command, input.cwd);
+            this.state.starts += 1;
         } catch (error) {
-            this.sessions.delete(session.id);
+            this.state.sessions.delete(session.id);
             throw error;
         }
 
@@ -79,10 +163,8 @@ export class ProcessSessionManager {
 
     /**
      * Poll output and optionally write stdin (Codex write_stdin style).
-     * Pass `"\\u0003"` in chars to send Ctrl-C / interrupt.
-     *
-     * @param input - Poll options
-     * @returns Process snapshot
+     * `"\\u0003"` sends SIGINT to the Unix process group; Windows falls back
+     * to force-terminating the process tree because console signals are not portable here.
      */
     async poll(input: PollProcessInput): Promise<ProcessSnapshot> {
         const session = this.getSession(input.processId);
@@ -90,7 +172,7 @@ export class ProcessSessionManager {
         const wantsInteract = chars.length > 0;
 
         if (chars.includes("\u0003") && session.running) {
-            this.signalProcess(session, "SIGINT");
+            await this.signalProcess(session, "SIGINT");
         }
         const writable = chars.replaceAll("\u0003", "");
         if (writable && session.running && session.child?.stdin.writable) {
@@ -107,45 +189,99 @@ export class ProcessSessionManager {
         return this.consume(session, input.maxOutputChars);
     }
 
-    /**
-     * Terminate a running process by processId.
-     *
-     * @param processId - Process id from exec_command
-     * @returns Snapshot after signaling kill
-     */
+    /** Terminate a running process by processId inside this scope. */
     async kill(processId: number): Promise<ProcessSnapshot> {
+        return this.killSession(this.getSession(processId));
+    }
+
+    /** List process handles visible to this stable owner scope without consuming output. */
+    list(): ProcessInfo[] {
+        return [...this.state.sessions.values()]
+            .filter(
+                (session) =>
+                    this.ownerScope === undefined || session.ownerScope === this.ownerScope,
+            )
+            .map((session) => this.toInfo(session))
+            .sort((left, right) => left.processId - right.processId);
+    }
+
+    /** Return aggregate process runtime state without exposing commands or paths. */
+    runtimeStats(): ProcessRuntimeStats {
+        const sessions = [...this.state.sessions.values()];
+        const running = sessions.filter((session) => session.running).length;
+        return {
+            running,
+            retained: sessions.length - running,
+            bufferedChars: sessions.reduce((total, session) => total + session.buffer.length, 0),
+            starts: this.state.starts,
+            completions: this.state.completions,
+            outputTruncations: this.state.outputTruncations,
+        };
+    }
+
+    /** Return metadata for one process without consuming buffered output. */
+    status(processId: number): ProcessInfo {
+        return this.toInfo(this.getSession(processId));
+    }
+
+    /** Peek buffered output without clearing it. */
+    peek(processId: number, maxOutputChars?: number): ProcessSnapshot {
         const session = this.getSession(processId);
-        if (session.running) {
-            this.signalProcess(session, "SIGTERM");
-            await this.waitForExit(session, 2_000);
-            if (session.running) {
-                this.signalProcess(session, "SIGKILL");
-                await this.waitForExit(session, 1_000);
-            }
+        const limit = clampInt(maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS, 200_000);
+        let output = session.buffer.toString();
+        let outputTruncated = session.truncated;
+        if (output.length > limit) {
+            output = `${output.slice(0, Math.floor(limit / 2))}\n... output truncated ...\n${output.slice(-Math.floor(limit / 2))}`;
+            outputTruncated = true;
         }
-        return this.consume(session);
+        return {
+            processId: session.id,
+            output,
+            outputTruncated,
+            running: session.running,
+            exitCode: session.exitCode,
+            signal: session.signal,
+            wallTimeMs: Date.now() - session.startedAt,
+        };
     }
 
     /**
-     * Kill every managed process (server shutdown).
+     * Kill managed processes and wait for TERM→KILL escalation.
+     * Scoped managers only terminate their own processes; the root manager
+     * terminates all scopes during HTTP server shutdown.
      */
-    shutdown(): void {
-        for (const session of this.sessions.values()) {
-            if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
-            if (session.running) this.signalProcess(session, "SIGTERM");
+    async shutdown(): Promise<void> {
+        const sessions = [...this.state.sessions.values()].filter(
+            (session) =>
+                this.ownerScope === undefined || session.ownerScope === this.ownerScope,
+        );
+        await Promise.all(
+            sessions.map(async (session) => {
+                try {
+                    await this.killSession(session);
+                } catch {
+                    // A concurrently completed session can disappear before shutdown reaches it.
+                }
+            }),
+        );
+        for (const session of sessions) {
+            this.removeSession(session);
         }
-        this.sessions.clear();
     }
 
-    private createSession(): ProcessSession {
+    private createSession(command: string, cwd: string, name?: string): ProcessSession {
         let resolveExit = (): void => undefined;
         const exitPromise = new Promise<void>((resolve) => {
             resolveExit = resolve;
         });
         return {
-            id: this.nextId++,
+            id: this.state.nextId++,
+            ownerScope: this.ownerScope,
+            ...(name ? { name } : {}),
+            command,
+            cwd,
             startedAt: Date.now(),
-            buffer: "",
+            buffer: new RollingTextBuffer(MAX_BUFFER_CHARS),
             truncated: false,
             running: true,
             exitPromise,
@@ -154,11 +290,7 @@ export class ProcessSessionManager {
     }
 
     private spawnCommand(session: ProcessSession, command: string, cwd: string): void {
-        const isWindows = process.platform === "win32";
-        const file = isWindows ? "pwsh" : "/bin/bash";
-        const args = isWindows
-            ? ["-NoProfile", "-Command", command]
-            : ["-lc", command];
+        const { file, args, isWindows } = commandShell(command);
         const detached = !isWindows;
 
         const child = spawn(file, args, {
@@ -183,11 +315,7 @@ export class ProcessSessionManager {
 
     private append(session: ProcessSession, chunk: string): void {
         if (!chunk) return;
-        session.buffer += chunk;
-        if (session.buffer.length > MAX_BUFFER_CHARS) {
-            session.buffer = session.buffer.slice(session.buffer.length - MAX_BUFFER_CHARS);
-            session.truncated = true;
-        }
+        if (session.buffer.append(chunk)) this.markTruncated(session);
     }
 
     private finish(session: ProcessSession, exitCode?: number, signal?: string): void {
@@ -195,11 +323,34 @@ export class ProcessSessionManager {
         session.running = false;
         session.exitCode = exitCode;
         session.signal = signal;
+        this.state.completions += 1;
         session.resolveExit();
+
+        // Running processes may need a large rolling buffer for interactive logs,
+        // but completed history is retained only for reconnect recovery. Shrink it
+        // before entering the retained pool so 5-minute TTL history cannot pin
+        // running-process-sized buffers.
+        if (session.buffer.trimTo(COMPLETED_MAX_BUFFER_CHARS)) {
+            this.markTruncated(session);
+        }
+
         session.cleanupTimer = setTimeout(() => {
-            this.sessions.delete(session.id);
+            this.removeSession(session);
         }, COMPLETED_TTL_MS);
         session.cleanupTimer.unref();
+        this.enforceRetentionBudgets(session.ownerScope);
+    }
+
+    private async killSession(session: ProcessSession): Promise<ProcessSnapshot> {
+        if (session.running) {
+            await this.signalProcess(session, "SIGTERM");
+            await this.waitForExit(session, 2_000);
+            if (session.running) {
+                await this.signalProcess(session, "SIGKILL");
+                await this.waitForExit(session, 1_000);
+            }
+        }
+        return this.consume(session);
     }
 
     private async waitForExit(session: ProcessSession, yieldMs: number): Promise<void> {
@@ -218,18 +369,17 @@ export class ProcessSessionManager {
 
     private consume(session: ProcessSession, maxOutputChars?: number): ProcessSnapshot {
         const limit = clampInt(maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS, 200_000);
-        let output = session.buffer;
+        let output = session.buffer.toString();
         let outputTruncated = session.truncated;
         if (output.length > limit) {
             output = `${output.slice(0, Math.floor(limit / 2))}\n... output truncated ...\n${output.slice(-Math.floor(limit / 2))}`;
             outputTruncated = true;
         }
-        session.buffer = "";
+        session.buffer.clear();
         session.truncated = false;
 
         if (!session.running) {
-            if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
-            this.sessions.delete(session.id);
+            this.removeSession(session);
         }
 
         return {
@@ -243,46 +393,91 @@ export class ProcessSessionManager {
         };
     }
 
+    private enforceRetentionBudgets(ownerScope: string | undefined): void {
+        const completed = [...this.state.sessions.values()]
+            .filter((item) => !item.running)
+            .sort((left, right) => left.startedAt - right.startedAt || left.id - right.id);
+        const owned = completed.filter((item) => item.ownerScope === ownerScope);
+
+        evictOldestUntilWithinBudget(
+            owned,
+            MAX_RETAINED_COMPLETED_PER_SCOPE,
+            MAX_RETAINED_BUFFER_CHARS_PER_SCOPE,
+            (session) => this.removeSession(session),
+        );
+
+        const remaining = [...this.state.sessions.values()]
+            .filter((item) => !item.running)
+            .sort((left, right) => left.startedAt - right.startedAt || left.id - right.id);
+        evictOldestUntilWithinBudget(
+            remaining,
+            MAX_RETAINED_COMPLETED_GLOBAL,
+            MAX_RETAINED_BUFFER_CHARS_GLOBAL,
+            (session) => this.removeSession(session),
+        );
+    }
+
+    private markTruncated(session: ProcessSession): void {
+        if (!session.truncated) this.state.outputTruncations += 1;
+        session.truncated = true;
+    }
+
+    private removeSession(session: ProcessSession): void {
+        if (session.cleanupTimer) {
+            clearTimeout(session.cleanupTimer);
+            session.cleanupTimer = undefined;
+        }
+        if (this.state.sessions.get(session.id) === session) {
+            this.state.sessions.delete(session.id);
+        }
+    }
+
+    private toInfo(session: ProcessSession): ProcessInfo {
+        return {
+            processId: session.id,
+            ...(session.name ? { name: session.name } : {}),
+            command: session.command,
+            cwd: session.cwd,
+            running: session.running,
+            startedAt: session.startedAt,
+            wallTimeMs: Date.now() - session.startedAt,
+            exitCode: session.exitCode,
+            signal: session.signal,
+            bufferedChars: session.buffer.length,
+            outputTruncated: session.truncated,
+        };
+    }
+
     private getSession(processId: number): ProcessSession {
-        const session = this.sessions.get(processId);
-        if (!session) {
+        const session = this.state.sessions.get(processId);
+        if (!session || session.ownerScope !== this.ownerScope) {
             throw new Error(`Unknown processId: ${processId}`);
         }
         return session;
     }
 
-    private signalProcess(session: ProcessSession, signal: NodeJS.Signals): void {
-        const child = session.child;
-        if (!child?.pid) return;
-
-        if (process.platform === "win32") {
-            spawnSync("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
-                stdio: "ignore",
-                windowsHide: true,
-            });
-            return;
-        }
-
-        try {
-            process.kill(-child.pid, signal);
-        } catch {
-            try {
-                child.kill(signal);
-            } catch {
-                // already exited
-            }
-        }
+    private async signalProcess(session: ProcessSession, signal: NodeJS.Signals): Promise<void> {
+        const pid = session.child?.pid;
+        if (pid) await signalProcessTree(pid, signal);
     }
 }
 
-/**
- * Clamp an optional integer into [0, maximum], with a default when unset.
- *
- * @param value - Optional input
- * @param fallback - Default
- * @param maximum - Max allowed
- * @returns Clamped integer
- */
+function evictOldestUntilWithinBudget(
+    sessions: ProcessSession[],
+    maxSessions: number,
+    maxBufferedChars: number,
+    remove: (session: ProcessSession) => void,
+): void {
+    let count = sessions.length;
+    let bufferedChars = sessions.reduce((total, session) => total + session.buffer.length, 0);
+    for (const session of sessions) {
+        if (count <= maxSessions && bufferedChars <= maxBufferedChars) break;
+        remove(session);
+        count -= 1;
+        bufferedChars -= session.buffer.length;
+    }
+}
+
 function clampInt(value: number | undefined, fallback: number, maximum: number): number {
     if (value === undefined) return fallback;
     if (!Number.isFinite(value) || value < 0) return fallback;

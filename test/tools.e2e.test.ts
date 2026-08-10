@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildServerInstructions } from "../src/mcp-server.js";
 import { TOOL_CARD_ENABLED, TOOL_CARD_URI, SUMMARY_CARD_URI } from "../src/ui/constants.js";
-import { CORE_TOOL_NAMES } from "../src/tools/names.js";
+import { listGlobFiles } from "../src/tools/glob.js";
+import { TOOL_NAMES } from "../src/tools/names.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 import { startTestServer } from "./helpers/start-server.js";
 
@@ -25,15 +26,34 @@ async function main(): Promise<void> {
     const ctx = await startTestServer();
     const mcp = await connectMcpClient(ctx.mcpUrl);
 
-    let localFetchClose: (() => Promise<void>) | undefined;
-
     try {
         const toolNames = await mcp.listToolNames();
         assert.deepEqual(
             toolNames,
-            [...CORE_TOOL_NAMES].sort(),
-            "listTools should expose core coding tools (no gateway without mcp.json)",
+            [...TOOL_NAMES].sort(),
+            "listTools should expose the fixed tool surface so hot-loaded capabilities work in existing sessions",
         );
+
+        // Public HTTP serving is deliberately stateless. A stale session id from a
+        // proxy/client reconnect must never poison subsequent tool requests.
+        const staleSessionResponse = await fetch(ctx.mcpUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json, text/event-stream",
+                "Mcp-Protocol-Version": "2025-11-25",
+                "Mcp-Session-Id": "stale-session-regression",
+            },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: "stale-session",
+                method: "tools/list",
+                params: {},
+            }),
+        });
+        assert.equal(staleSessionResponse.status, 200);
+        assert.equal(staleSessionResponse.headers.get("mcp-session-id"), null);
+        assert.match(await staleSessionResponse.text(), /"tools"/);
 
         const instructions = buildServerInstructions(ctx.fixtureRoot);
         assert.ok(
@@ -49,8 +69,16 @@ async function main(): Promise<void> {
         assert.doesNotMatch(instructions, /You are /i);
         assert.match(instructions, /summary\(done=false/i);
         assert.match(instructions, /~6 inspect|6 inspect/i);
-        assert.doesNotMatch(instructions, /mcp_tools/i);
+        assert.match(instructions, /skills_list/);
+        assert.match(instructions, /skill_read/);
+        assert.match(instructions, /mcp_tools/i);
         assert.doesNotMatch(instructions, /Downstream MCP servers/);
+
+        const emptySkills = await mcp.callTool("skills_list", {});
+        assert.notEqual(emptySkills.isError, true, toolText(emptySkills));
+        assert.equal((emptySkills.structuredContent as { count?: number }).count, 0);
+        const missingSkill = await mcp.callTool("skill_read", { name: "missing" });
+        assertToolError(missingSkill, "skill_read missing");
 
         const listedTools = await mcp.client.listTools();
         const readTool = listedTools.tools.find((tool) => tool.name === "read");
@@ -61,10 +89,34 @@ async function main(): Promise<void> {
                   "openai/outputTemplate"?: string;
                   "openai/toolInvocation/invoking"?: string;
                   "openai/toolInvocation/invoked"?: string;
+                  securitySchemes?: Array<{ type?: string; scopes?: string[] }>;
               }
             | undefined;
         assert.equal(readMeta?.["openai/toolInvocation/invoking"], "正在读取文件…");
         assert.equal(readMeta?.["openai/toolInvocation/invoked"], "文件读取完成");
+        assert.equal(readMeta?.securitySchemes?.[0]?.type, "noauth");
+        const writeToolDescriptor = listedTools.tools.find((tool) => tool.name === "write");
+        const bashToolDescriptor = listedTools.tools.find((tool) => tool.name === "bash");
+        const writeStdinToolDescriptor = listedTools.tools.find(
+            (tool) => tool.name === "write_stdin",
+        );
+        const processKillToolDescriptor = listedTools.tools.find(
+            (tool) => tool.name === "process_kill",
+        );
+        const runtimeStatusToolDescriptor = listedTools.tools.find(
+            (tool) => tool.name === "runtime_status",
+        );
+        assert.equal(writeToolDescriptor?.annotations?.destructiveHint, true);
+        assert.equal(bashToolDescriptor?.annotations?.destructiveHint, true);
+        assert.equal(bashToolDescriptor?.annotations?.openWorldHint, true);
+        assert.match(
+            writeStdinToolDescriptor?.description ?? "",
+            /Windows.*force-stops the process tree/i,
+        );
+        assert.equal(processKillToolDescriptor?.annotations?.destructiveHint, true);
+        assert.equal(processKillToolDescriptor?.annotations?.openWorldHint, false);
+        assert.equal(runtimeStatusToolDescriptor?.annotations?.readOnlyHint, true);
+        assert.equal(runtimeStatusToolDescriptor?.annotations?.openWorldHint, false);
 
         if (TOOL_CARD_ENABLED) {
             const resources = await mcp.client.listResources();
@@ -76,7 +128,11 @@ async function main(): Promise<void> {
             assert.equal(readMeta?.["openai/outputTemplate"], TOOL_CARD_URI);
 
             const cardContents = await mcp.client.readResource({ uri: TOOL_CARD_URI });
-            assert.ok(cardContents.contents[0]?.text);
+            const cardContent = cardContents.contents[0];
+            assert.ok(cardContent && "text" in cardContent);
+            const cardHtml = cardContent.text;
+            assert.doesNotMatch(cardHtml, /setInterval\(readHost,\s*250\)/);
+            assert.match(cardHtml, /pollAttempts\s*>=\s*40/);
 
             const summaryTool = listedTools.tools.find((tool) => tool.name === "summary");
             assert.ok(summaryTool);
@@ -89,8 +145,9 @@ async function main(): Promise<void> {
             assert.equal(summaryMeta?.ui?.resourceUri, SUMMARY_CARD_URI);
             assert.equal(summaryMeta?.["openai/outputTemplate"], SUMMARY_CARD_URI);
             const summaryCard = await mcp.client.readResource({ uri: SUMMARY_CARD_URI });
-            assert.ok(summaryCard.contents[0]?.text);
-            assert.match(String(summaryCard.contents[0]?.text), /进度汇报/);
+            const summaryContent = summaryCard.contents[0];
+            assert.ok(summaryContent && "text" in summaryContent);
+            assert.match(summaryContent.text, /进度汇报/);
 
             const legacyUri = "ui://codex-mcp/tool-card/write_stdin@v7.html";
             const legacyContents = await mcp.client.readResource({ uri: legacyUri });
@@ -138,6 +195,20 @@ async function main(): Promise<void> {
         });
         assertToolError(readMissing, "read missing");
 
+        await writeFile(
+            join(ctx.fixtureRoot, "large.txt"),
+            `${"x".repeat(120_000)}\nsecond-line\n`,
+            "utf8",
+        );
+        const largeRead = await mcp.callTool("read", { path: "large.txt" });
+        assert.notEqual(largeRead.isError, true, toolText(largeRead));
+        const largeReadData = largeRead.structuredContent as {
+            content?: string;
+            truncated?: boolean;
+        };
+        assert.equal(largeReadData.truncated, true);
+        assert.ok((largeReadData.content ?? "").length < 81_000);
+
         // write success + escape failure
         const writeOk = await mcp.callTool("write", {
             path: "notes/out.txt",
@@ -152,6 +223,53 @@ async function main(): Promise<void> {
             content: "nope",
         });
         assertToolError(writeEscape, "write escape");
+
+        // symlink/junction must not escape the canonical project root
+        const outsideRoot = await mkdtemp(join(tmpdir(), "codex-mcp-outside-"));
+        await writeFile(join(outsideRoot, "secret.txt"), "outside-secret\n", "utf8");
+        await symlink(
+            outsideRoot,
+            join(ctx.fixtureRoot, "outside-link"),
+            process.platform === "win32" ? "junction" : "dir",
+        );
+        assertToolError(
+            await mcp.callTool("read", { path: "outside-link/secret.txt" }),
+            "read symlink escape",
+        );
+        assertToolError(
+            await mcp.callTool("write", {
+                path: "outside-link/new.txt",
+                content: "must-not-write",
+            }),
+            "write symlink escape",
+        );
+        assertToolError(
+            await mcp.callTool("edit", {
+                path: "outside-link/secret.txt",
+                old_string: "outside-secret",
+                new_string: "changed",
+            }),
+            "edit symlink escape",
+        );
+        assertToolError(
+            await mcp.callTool("ls", { path: "outside-link" }),
+            "ls symlink escape",
+        );
+        await assert.rejects(readFile(join(outsideRoot, "new.txt"), "utf8"), /ENOENT/);
+        assert.equal(await readFile(join(outsideRoot, "secret.txt"), "utf8"), "outside-secret\n");
+
+        if (process.platform !== "win32") {
+            const danglingTarget = join(outsideRoot, "created-through-dangling-link.txt");
+            await symlink(danglingTarget, join(ctx.fixtureRoot, "dangling-link"), "file");
+            assertToolError(
+                await mcp.callTool("write", {
+                    path: "dangling-link",
+                    content: "must-not-create",
+                }),
+                "write dangling symlink escape",
+            );
+            await assert.rejects(readFile(danglingTarget, "utf8"), /ENOENT/);
+        }
 
         // edit success + mismatch
         const editOk = await mcp.callTool("edit", {
@@ -170,6 +288,37 @@ async function main(): Promise<void> {
         });
         assertToolError(editMiss, "edit mismatch");
 
+        await writeFile(join(ctx.fixtureRoot, "literal.txt"), "OLD\n", "utf8");
+        const literalEdit = await mcp.callTool("edit", {
+            path: "literal.txt",
+            old_string: "OLD",
+            new_string: "$& $$ $'",
+        });
+        assert.notEqual(literalEdit.isError, true, toolText(literalEdit));
+        assert.equal(await readFile(join(ctx.fixtureRoot, "literal.txt"), "utf8"), "$& $$ $'\n");
+        const emptyEdit = await mcp.callTool("edit", {
+            path: "literal.txt",
+            old_string: "",
+            new_string: "x",
+        });
+        assertToolError(emptyEdit, "edit empty old_string");
+
+        await writeFile(join(ctx.fixtureRoot, "crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n", "utf8");
+        const crlfRead = await mcp.callTool("read", { path: "crlf.txt", limit: 2 });
+        assert.notEqual(crlfRead.isError, true, toolText(crlfRead));
+        const crlfContent = (crlfRead.structuredContent as { content?: string }).content ?? "";
+        assert.equal(crlfContent, "alpha\r\nbeta\r\n");
+        const crlfEdit = await mcp.callTool("edit", {
+            path: "crlf.txt",
+            old_string: crlfContent,
+            new_string: "alpha2\r\nbeta2\r\n",
+        });
+        assert.notEqual(crlfEdit.isError, true, toolText(crlfEdit));
+        assert.equal(
+            await readFile(join(ctx.fixtureRoot, "crlf.txt"), "utf8"),
+            "alpha2\r\nbeta2\r\ngamma\r\n",
+        );
+
         // bash success + non-zero
         const bashOk = await mcp.callTool("bash", {
             command:
@@ -183,12 +332,23 @@ async function main(): Promise<void> {
         assert.match(bashStructured.stdout ?? "", /bash-ok/);
 
         const bashFail = await mcp.callTool("bash", {
-            command:
-                process.platform === "win32"
-                    ? "exit 7"
-                    : "exit 7",
+            command: "exit 7",
         });
         assertToolError(bashFail, "bash non-zero");
+
+        if (process.platform !== "win32") {
+            const timeoutStarted = Date.now();
+            const bashTimeout = await mcp.callTool("bash", {
+                command: "trap '' TERM; while :; do sleep 1; done",
+                timeout_ms: 250,
+            });
+            assertToolError(bashTimeout, "bash timeout escalation");
+            assert.equal(
+                (bashTimeout.structuredContent as { timedOut?: boolean }).timedOut,
+                true,
+            );
+            assert.ok(Date.now() - timeoutStarted < 5_000, "bash timeout should escalate to SIGKILL");
+        }
 
         // exec_command short (finishes, no processId)
         const execShort = await mcp.callTool("exec_command", {
@@ -208,12 +368,23 @@ async function main(): Promise<void> {
         assert.equal(execShortData.processId, undefined);
         assert.match(execShortData.output ?? "", /exec-ok/);
 
+        const execFail = await mcp.callTool("exec_command", {
+            command: "exit 9",
+            yield_time_ms: 5_000,
+        });
+        assertToolError(execFail, "exec_command non-zero");
+        assert.equal(
+            (execFail.structuredContent as { exitCode?: number }).exitCode,
+            9,
+        );
+
         // exec_command long-running → processId → write_stdin poll → process_kill
         const execBg = await mcp.callTool("exec_command", {
             command:
                 process.platform === "win32"
-                    ? "Start-Sleep -Seconds 60"
-                    : "sleep 60",
+                    ? "Start-Sleep -Milliseconds 700; Write-Output 'managed-late'; Start-Sleep -Seconds 60"
+                    : "sleep 0.7; printf 'managed-late\\n'; sleep 60",
+            name: "e2e-managed",
             yield_time_ms: 400,
         });
         assert.notEqual(execBg.isError, true, toolText(execBg));
@@ -228,31 +399,101 @@ async function main(): Promise<void> {
         );
         const processId = execBgData.processId;
 
-        const poll = await mcp.callTool("write_stdin", {
-            processId,
-            yield_time_ms: 200,
-        });
-        assert.notEqual(poll.isError, true, toolText(poll));
-        assert.equal(
-            (poll.structuredContent as { running?: boolean }).running,
-            true,
-            toolText(poll),
-        );
+        const reconnectMcp = await connectMcpClient(ctx.mcpUrl);
+        try {
+            const processList = await reconnectMcp.callTool("process_list", {});
+            assert.notEqual(processList.isError, true, toolText(processList));
+            const processRows = (processList.structuredContent as {
+                processes?: Array<{ processId: number; name?: string }>;
+            }).processes ?? [];
+            assert.ok(
+                processRows.some(
+                    (process) =>
+                        process.processId === processId && process.name === "e2e-managed",
+                ),
+                "process_list should recover the process handle across MCP sessions",
+            );
 
-        const killed = await mcp.callTool("process_kill", {
-            processId,
-        });
-        assert.notEqual(killed.isError, true, toolText(killed));
-        assert.equal(
-            (killed.structuredContent as { running?: boolean }).running,
-            false,
-            toolText(killed),
-        );
+            const processStatus = await reconnectMcp.callTool("process_status", { processId });
+            assert.notEqual(processStatus.isError, true, toolText(processStatus));
+            assert.equal(
+                (processStatus.structuredContent as { running?: boolean; name?: string }).name,
+                "e2e-managed",
+            );
+
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            const processOutput = await reconnectMcp.callTool("process_output", { processId });
+            assert.notEqual(processOutput.isError, true, toolText(processOutput));
+            assert.match(
+                (processOutput.structuredContent as { output?: string }).output ?? "",
+                /managed-late/,
+            );
+
+            const poll = await reconnectMcp.callTool("write_stdin", {
+                processId,
+                yield_time_ms: 200,
+            });
+            assert.notEqual(poll.isError, true, toolText(poll));
+            assert.equal(
+                (poll.structuredContent as { running?: boolean }).running,
+                true,
+                "a second MCP session for the same local owner must see the process",
+            );
+            assert.match(
+                (poll.structuredContent as { output?: string }).output ?? "",
+                /managed-late/,
+                "process_output must not consume buffered output before write_stdin",
+            );
+
+            const killed = await reconnectMcp.callTool("process_kill", {
+                processId,
+            });
+            assert.notEqual(killed.isError, true, toolText(killed));
+            assert.equal(
+                (killed.structuredContent as { running?: boolean }).running,
+                false,
+                toolText(killed),
+            );
+        } finally {
+            await reconnectMcp.close().catch(() => undefined);
+        }
 
         const killMiss = await mcp.callTool("process_kill", {
             processId,
         });
         assertToolError(killMiss, "process_kill unknown id");
+
+        const runtimeStatus = await mcp.callTool("runtime_status", {});
+        assert.notEqual(runtimeStatus.isError, true, toolText(runtimeStatus));
+        const runtimeData = runtimeStatus.structuredContent as {
+            sampleWindow?: number;
+            tools?: Array<{
+                tool: string;
+                calls: number;
+                errors: number;
+                p50Ms: number;
+                p95Ms: number;
+                responseBytes: { total: number; average: number; max: number };
+            }>;
+            http?: { requests: number; active: number; aborted: number };
+            processes?: {
+                running: number;
+                retained: number;
+                bufferedChars: number;
+                starts: number;
+                completions: number;
+                outputTruncations: number;
+            };
+        };
+        assert.equal(runtimeData.sampleWindow, 256);
+        assert.ok((runtimeData.http?.requests ?? 0) > 0);
+        assert.ok((runtimeData.http?.active ?? 0) >= 1, "runtime_status should observe its own active HTTP request");
+        const readMetric = runtimeData.tools?.find((metric) => metric.tool === "read");
+        assert.ok(readMetric && readMetric.calls >= 1);
+        assert.ok((readMetric?.responseBytes.total ?? 0) > 0);
+        assert.ok((runtimeData.processes?.starts ?? 0) >= 3);
+        assert.ok((runtimeData.processes?.completions ?? 0) >= 3);
+        assert.equal(runtimeData.processes?.running, 0);
 
         // grep hit + empty
         const grepHit = await mcp.callTool("grep", {
@@ -270,7 +511,13 @@ async function main(): Promise<void> {
         assert.notEqual(grepEmpty.isError, true, toolText(grepEmpty));
         assert.equal((grepEmpty.structuredContent as { matchCount?: number }).matchCount, 0);
 
-        // glob hit + empty
+        // glob hit + empty + true recursive globstar
+        await mkdir(join(ctx.fixtureRoot, "deep", "nested"), { recursive: true });
+        await writeFile(
+            join(ctx.fixtureRoot, "deep", "nested", "deep.ts"),
+            "export const deep = true;\n",
+            "utf8",
+        );
         const globHit = await mcp.callTool("glob", {
             pattern: "**/*.txt",
         });
@@ -281,11 +528,81 @@ async function main(): Promise<void> {
             `glob **/*.txt should include hello.txt, got: ${JSON.stringify(globFiles)}`,
         );
 
+        const deepGlob = await mcp.callTool("glob", { pattern: "**/*.ts" });
+        assert.notEqual(deepGlob.isError, true, toolText(deepGlob));
+        const deepFiles = (deepGlob.structuredContent as { files?: string[] }).files ?? [];
+        assert.ok(
+            deepFiles.includes("deep/nested/deep.ts"),
+            `recursive glob should include deep/nested/deep.ts: ${JSON.stringify(deepFiles)}`,
+        );
+
         const globEmpty = await mcp.callTool("glob", {
             pattern: "**/*.nope-extension",
         });
         assert.notEqual(globEmpty.isError, true, toolText(globEmpty));
         assert.equal((globEmpty.structuredContent as { count?: number }).count, 0);
+
+        // A static path prefix must narrow traversal before the global discovery cap.
+        // The tiny test cap simulates a very large workspace without creating 50k files.
+        await mkdir(join(ctx.fixtureRoot, "aaa-noise"), { recursive: true });
+        await Promise.all(
+            ["1.txt", "2.txt", "3.txt"].map((name) =>
+                writeFile(join(ctx.fixtureRoot, "aaa-noise", name), "noise\n", "utf8"),
+            ),
+        );
+        await mkdir(join(ctx.fixtureRoot, "zzz-target"), { recursive: true });
+        await writeFile(
+            join(ctx.fixtureRoot, "zzz-target", "package.json"),
+            "{}\n",
+            "utf8",
+        );
+        const focusedExactGlob = await listGlobFiles(
+            ctx.server.project,
+            "zzz-target/package.json",
+            2,
+        );
+        assert.deepEqual(focusedExactGlob.files, ["zzz-target/package.json"]);
+        assert.equal(focusedExactGlob.scanTruncated, false);
+        const focusedWildcardGlob = await listGlobFiles(
+            ctx.server.project,
+            "zzz-target/*.json",
+            2,
+        );
+        assert.deepEqual(focusedWildcardGlob.files, ["zzz-target/package.json"]);
+        assert.equal(focusedWildcardGlob.scanTruncated, false);
+        const focusedTopLevelWildcardGlob = await listGlobFiles(
+            ctx.server.project,
+            "zzz-*/package.json",
+            2,
+        );
+        assert.deepEqual(focusedTopLevelWildcardGlob.files, ["zzz-target/package.json"]);
+        assert.equal(focusedTopLevelWildcardGlob.scanTruncated, false);
+
+        const broadLimitedGlob = await listGlobFiles(ctx.server.project, "**/*.txt", 2);
+        assert.equal(
+            broadLimitedGlob.scanTruncated,
+            true,
+            "broad globs must retain the traversal safety cap",
+        );
+
+        await mkdir(join(ctx.fixtureRoot, "node_modules"), { recursive: true });
+        await writeFile(
+            join(ctx.fixtureRoot, "node_modules", "package.json"),
+            "{}\n",
+            "utf8",
+        );
+        const ignoredExactGlob = await listGlobFiles(
+            ctx.server.project,
+            "node_modules/package.json",
+            2,
+        );
+        assert.deepEqual(ignoredExactGlob.files, []);
+        const ignoredPrefixedGlob = await listGlobFiles(
+            ctx.server.project,
+            "node_modules/*.json",
+            2,
+        );
+        assert.deepEqual(ignoredPrefixedGlob.files, []);
 
         // ls success + not a directory
         const lsOk = await mcp.callTool("ls", {
@@ -301,29 +618,13 @@ async function main(): Promise<void> {
         });
         assertToolError(lsFile, "ls file");
 
-        // webfetch local server
-        const pageHtml =
-            "<html><body><h1>FetchFixture</h1><p>hello-fetch</p></body></html>";
-        const local = createServer((req, res) => {
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            res.end(pageHtml);
-        });
-        await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", () => resolve()));
-        const address = local.address();
-        assert.ok(address && typeof address === "object");
-        const fetchUrl = `http://127.0.0.1:${address.port}/doc`;
-        localFetchClose = () =>
-            new Promise<void>((resolve, reject) => {
-                local.close((error) => (error ? reject(error) : resolve()));
-            });
-
-        const fetchOk = await mcp.callTool("webfetch", {
-            url: fetchUrl,
+        // webfetch rejects non-http and SSRF destinations before connecting.
+        const fetchPrivate = await mcp.callTool("webfetch", {
+            url: "http://127.0.0.1:65535/private",
             format: "markdown",
         });
-        assert.notEqual(fetchOk.isError, true, toolText(fetchOk));
-        const fetchBody = (fetchOk.structuredContent as { body?: string }).body ?? "";
-        assert.match(fetchBody, /FetchFixture|hello-fetch/);
+        assertToolError(fetchPrivate, "webfetch loopback SSRF");
+        assert.match(toolText(fetchPrivate), /Private or reserved network address/i);
 
         const fetchBad = await mcp.callTool("webfetch", {
             url: "file:///etc/passwd",
@@ -331,6 +632,12 @@ async function main(): Promise<void> {
         assertToolError(fetchBad, "webfetch non-http");
 
         // summary checkpoint (keeps the tool loop alive)
+        const summaryMissingNext = await mcp.callTool("summary", {
+            summary: "Work remains but no next step was supplied",
+            done: false,
+        });
+        assertToolError(summaryMissingNext, "summary done=false without next");
+
         const summaryContinue = await mcp.callTool("summary", {
             summary: "Listed project files",
             next: "Read hello.txt",
@@ -385,7 +692,6 @@ async function main(): Promise<void> {
         console.log("All MCP client e2e tool tests passed.");
     } finally {
         await mcp.close().catch(() => undefined);
-        if (localFetchClose) await localFetchClose().catch(() => undefined);
         await ctx.server.close().catch(() => undefined);
     }
 }

@@ -5,7 +5,14 @@ import {
     resolveWidgetDomain,
     type ServerConfig,
 } from "../../src/config.js";
-import { createHttpServer, type RunningHttpServer } from "../../src/http-server.js";
+import {
+    createHttpServer,
+    type CreateHttpServerOptions,
+    type RunningHttpServer,
+} from "../../src/http-server.js";
+import { AgentInstructionRegistry } from "../../src/agents/registry.js";
+import { ProjectContext } from "../../src/project.js";
+import { TOOL_NAMES } from "../../src/tools/names.js";
 
 export interface TestServerContext {
     fixtureRoot: string;
@@ -18,7 +25,9 @@ export interface TestServerContext {
  *
  * @returns Server handle, fixture path, and MCP URL
  */
-export async function startTestServer(): Promise<TestServerContext> {
+export async function startTestServer(
+    options: CreateHttpServerOptions = {},
+): Promise<TestServerContext> {
     // Keep e2e stdout focused on assertions, not tool call logs.
     process.env.CODING_MCP_LOG_TOOLS = "0";
 
@@ -37,12 +46,21 @@ export async function startTestServer(): Promise<TestServerContext> {
     const config: ServerConfig = {
         host,
         port,
+        local: true,
+        oauthRequired: false,
         projectRoot: fixtureRoot,
         allowedHosts,
         widgetDomain: resolveWidgetDomain(allowedHosts, host, port),
     };
 
-    const server = createHttpServer(config);
+    const server = createHttpServer(config, {
+        ...options,
+        agents:
+            options.agents ??
+            new AgentInstructionRegistry(new ProjectContext(fixtureRoot), fixtureRoot),
+        allowedToolsResolver:
+            options.allowedToolsResolver ?? (() => new Set<string>(TOOL_NAMES)),
+    });
     await server.listen();
 
     return {

@@ -1,5 +1,7 @@
 import { toolLabel } from "./tool-labels.js";
 import {
+    hiddenCommandLabel,
+    safeUrlForDisplay,
     summarizeOutcome,
     summarizeToolCall,
     type UiParamRow,
@@ -58,6 +60,14 @@ function toArgsMap(
         if (value === undefined || value === null || value === "") continue;
         if (key === "chars" && typeof value === "string") {
             out[key] = value.length;
+            continue;
+        }
+        if (key === "command" && typeof value === "string") {
+            out[key] = hiddenCommandLabel(value);
+            continue;
+        }
+        if (key === "url" && typeof value === "string") {
+            out[key] = safeUrlForDisplay(value);
             continue;
         }
         if (typeof value === "string") {

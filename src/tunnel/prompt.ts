@@ -36,12 +36,12 @@ export async function askYesNo(
     question: string,
     defaultYes = true,
 ): Promise<boolean> {
-    const hint = defaultYes ? "Y/n" : "y/N";
+    const hint = defaultYes ? "回车=是 / n=否" : "y=是 / 回车=否";
     const answer = (await askLine(`${question} [${hint}]`)).trim().toLowerCase();
     if (!answer) {
         return defaultYes;
     }
-    return answer === "y" || answer === "yes";
+    return answer === "y" || answer === "yes" || answer === "是";
 }
 
 /**
@@ -69,5 +69,59 @@ export async function askLine(
         return trimmed;
     } finally {
         rl.close();
+    }
+}
+
+/**
+ * Read a secret from an interactive TTY without echoing it.
+ *
+ * @param question - Prompt text
+ * @returns Secret text without the trailing newline
+ */
+export async function askSecret(question: string): Promise<string> {
+    if (!canPromptInteractively() || typeof input.setRawMode !== "function") {
+        throw new Error("这里需要在可以输入内容的终端里运行，才能安全输入密码");
+    }
+
+    output.write(`${question}: `);
+    const wasRaw = input.isRaw === true;
+    input.setRawMode(true);
+    input.resume();
+
+    try {
+        return await new Promise<string>((resolve, reject) => {
+            let value = "";
+            const onData = (chunk: Buffer | string): void => {
+                const text = chunk.toString();
+                for (const char of text) {
+                    if (char === "\r" || char === "\n") {
+                        cleanup();
+                        output.write("\n");
+                        resolve(value);
+                        return;
+                    }
+                    if (char === "\u0003") {
+                        cleanup();
+                        output.write("\n");
+                        reject(new Error("已取消输入"));
+                        return;
+                    }
+                    if (char === "\u007f" || char === "\b") {
+                        value = value.slice(0, -1);
+                        continue;
+                    }
+                    if (char >= " " && char !== "\u007f") {
+                        value += char;
+                    }
+                }
+            };
+            const cleanup = (): void => {
+                input.off("data", onData);
+            };
+            input.on("data", onData);
+        });
+    } finally {
+        input.setRawMode(wasRaw);
+        if (!wasRaw) input.pause();
     }
 }

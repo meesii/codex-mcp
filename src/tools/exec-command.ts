@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import { registerTool } from "../lib/tool-log.js";
-import { destructiveAnnotations, withNoAuth } from "../lib/tool-meta.js";
+import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
 import { truncateText } from "../lib/truncate.js";
 import type { ProjectContext } from "../project.js";
@@ -23,7 +23,7 @@ export function registerExecCommandTool(
     registerTool(
         server,
         "exec_command",
-        withNoAuth({
+        withToolAuth({
             title: "Execute command",
             description:
                 "Run a command in the project root, returning output or a processId for ongoing interaction (Codex exec_command style). Short commands finish in one call. Long-running commands (npm run dev, watchers) return processId while still running — then write_stdin to poll/write stdin, process_kill to stop. Prefer this over bash for servers/watchers. Windows: PowerShell; Unix: bash. Do NOT use this to read or edit source files.",
@@ -34,6 +34,12 @@ export function registerExecCommandTool(
                     .describe(
                         "Shell command to execute (cwd is project root). Windows: PowerShell; Unix: bash.",
                     ),
+                name: z
+                    .string()
+                    .min(1)
+                    .max(64)
+                    .optional()
+                    .describe("Optional short label used by process_list/status."),
                 yield_time_ms: z
                     .number()
                     .int()
@@ -64,6 +70,7 @@ export function registerExecCommandTool(
         }),
         async ({
             command,
+            name,
             yield_time_ms: yieldTimeMs,
             max_output_chars: maxOutputChars,
         }) => {
@@ -71,6 +78,7 @@ export function registerExecCommandTool(
                 const snapshot = await processes.start({
                     command,
                     cwd: project.root,
+                    ...(name ? { name } : {}),
                     yieldTimeMs,
                     maxOutputChars,
                 });
@@ -81,8 +89,7 @@ export function registerExecCommandTool(
                       ? `Process exited after signal ${snapshot.signal}.`
                       : `Process exited with code ${snapshot.exitCode ?? "unknown"}.`;
                 const text = output ? `${output}\n${status}` : status;
-
-                return okResult(text, {
+                const structured = {
                     processId: snapshot.processId,
                     running: snapshot.running,
                     exitCode: snapshot.exitCode,
@@ -90,7 +97,18 @@ export function registerExecCommandTool(
                     wallTimeMs: snapshot.wallTimeMs,
                     output,
                     outputTruncated: snapshot.outputTruncated,
-                });
+                };
+                const failed =
+                    !snapshot.running &&
+                    (snapshot.signal !== undefined ||
+                        (snapshot.exitCode !== undefined && snapshot.exitCode !== 0));
+                if (failed) {
+                    return {
+                        ...errorResult(text),
+                        structuredContent: structured,
+                    };
+                }
+                return okResult(text, structured);
             } catch (error) {
                 const message =
                     error instanceof AccessDeniedError || error instanceof Error

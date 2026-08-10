@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { normalizeHostname } from "../src/user-config.js";
 import {
     isStdioMcpServer,
     isUrlMcpServer,
@@ -31,24 +32,38 @@ async function withTempHome(run: (home: string) => Promise<void>): Promise<void>
 }
 
 async function main(): Promise<void> {
+    assert.equal(normalizeHostname("HTTPS://MCP.Example.COM:443/path"), "mcp.example.com");
+    assert.equal(normalizeHostname("例子.测试"), "xn--fsqu00a.xn--0zwm56d");
+    for (const invalid of [
+        "127.0.0.1",
+        "localhost",
+        "foo..example.com",
+        "https://user:pass@example.com",
+        "ftp://example.com",
+    ]) {
+        assert.throws(() => normalizeHostname(invalid), /域名格式不正确/);
+    }
+
     await withTempHome(async (home) => {
-        const { loadUserMcpConfig } = await import("../src/user-mcp-config.js");
+        const { loadUserMcpConfig, loadUserMcpOverrides } = await import("../src/user-mcp-config.js");
         const empty = loadUserMcpConfig();
         assert.deepEqual(empty, { mcpServers: {} });
 
+        process.env.CODEX_MCP_TEST_TOKEN = "x";
+        const mcpConfigPath = join(home, ".codex-mcp", "mcp.json");
         await writeFile(
-            join(home, ".codex-mcp", "mcp.json"),
+            mcpConfigPath,
             JSON.stringify(
                 {
                     mcpServers: {
                         github: {
                             command: "npx",
                             args: ["-y", "@modelcontextprotocol/server-github"],
-                            env: { TOKEN: "x" },
+                            env: { TOKEN: "${CODEX_MCP_TEST_TOKEN}" },
                         },
                         remote: {
                             url: "https://example.com/mcp",
-                            headers: { Authorization: "Bearer x" },
+                            headers: { Authorization: "Bearer ${CODEX_MCP_TEST_TOKEN}" },
                         },
                         off: {
                             command: "echo",
@@ -63,18 +78,30 @@ async function main(): Promise<void> {
         );
 
         const config = loadUserMcpConfig();
+        assert.deepEqual(loadUserMcpOverrides().disabledServers, ["off"]);
         const enabled = listEnabledMcpServers(config);
         assert.equal(enabled.length, 2);
         assert.equal(enabled[0]!.name, "github");
         assert.equal(enabled[1]!.name, "remote");
         assert.ok(isStdioMcpServer(enabled[0]!.config));
         assert.ok(isUrlMcpServer(enabled[1]!.config));
+        if (isStdioMcpServer(enabled[0]!.config)) {
+            assert.equal(enabled[0]!.config.env?.TOKEN, "x");
+        }
+        if (isUrlMcpServer(enabled[1]!.config)) {
+            assert.equal(enabled[1]!.config.headers?.Authorization, "Bearer x");
+        }
+        if (process.platform !== "win32") {
+            assert.equal((await stat(mcpConfigPath)).mode & 0o077, 0);
+        }
+        delete process.env.CODEX_MCP_TEST_TOKEN;
     });
 
     await withTempHome(async (home) => {
         const { loadUserMcpConfig } = await import("../src/user-mcp-config.js");
+        const path = join(home, ".codex-mcp", "mcp.json");
         await writeFile(
-            join(home, ".codex-mcp", "mcp.json"),
+            path,
             JSON.stringify({
                 mcpServers: {
                     bad: { command: "x", url: "https://example.com/mcp" },
@@ -83,6 +110,49 @@ async function main(): Promise<void> {
             "utf8",
         );
         assert.throws(() => loadUserMcpConfig(), /command or url/);
+
+        await writeFile(
+            path,
+            JSON.stringify({
+                mcpServers: {
+                    bad: {
+                        url: "https://example.com/mcp",
+                        headers: { Authorization: "Bearer plaintext-secret" },
+                    },
+                },
+            }),
+            "utf8",
+        );
+        assert.throws(() => loadUserMcpConfig(), /sensitive.*environment reference/i);
+
+        await writeFile(
+            path,
+            JSON.stringify({
+                mcpServers: {
+                    bad: {
+                        url: "https://example.com/mcp",
+                        headers: { Authorization: "Bearer ${MISSING_CODEX_MCP_SECRET}" },
+                    },
+                },
+            }),
+            "utf8",
+        );
+        assert.throws(() => loadUserMcpConfig(), /missing environment variable/i);
+
+        await writeFile(
+            path,
+            JSON.stringify({ mcpServers: { bad: { url: "http://example.com/mcp" } } }),
+            "utf8",
+        );
+        assert.throws(() => loadUserMcpConfig(), /must use HTTPS/i);
+
+        await writeFile(
+            path,
+            JSON.stringify({ mcpServers: { local: { url: "http://127.0.0.1:9999/mcp" } } }),
+            "utf8",
+        );
+        const local = loadUserMcpConfig();
+        assert.ok(isUrlMcpServer(local.mcpServers.local!));
     });
 
     console.log("user-mcp-config.test.ts: ok");

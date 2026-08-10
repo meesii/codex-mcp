@@ -16,6 +16,10 @@ import {
     suggestCloudflaredBin,
 } from "./bin.js";
 import { runCloudflared, runCloudflaredInherit } from "./exec.js";
+import {
+    requireDnsOverwriteConfirmation,
+    requireTunnelDeleteConfirmation,
+} from "./confirm.js";
 import { askLine, askYesNo, canPromptInteractively } from "./prompt.js";
 import {
     getCloudflaredConfigPath,
@@ -84,9 +88,7 @@ export async function ensureTunnelSetup(
     }
 
     if (!canPromptInteractively()) {
-        throw new Error(
-            "No domain in ~/.codex-mcp/config.json. Run `codex-mcp` in an interactive terminal (not `tsx watch`), or set domain manually.",
-        );
+        throw new Error("还没有设置公网地址，请先在终端运行 `codex-mcp setup`");
     }
 
     return await runConfigWizard(userConfig, host, port);
@@ -116,8 +118,8 @@ async function runConfigWizard(
     const existingYml = tryReadExistingYml();
 
     console.log("");
-    console.log("=== codex-mcp setup ===");
-    console.log(`Config file: ${configPath}`);
+    console.log("设置公网连接");
+    console.log(`配置保存在：${configPath}`);
     console.log("");
 
     // 1) Domain first — always.
@@ -127,12 +129,12 @@ async function runConfigWizard(
     while (!domainRaw) {
         domainRaw = (
             await askLine(
-                "Public domain for ChatGPT (e.g. mcp.example.com)",
+                "给 ChatGPT 使用的域名（例如 mcp.example.com）",
                 domainDefault,
             )
         ).trim();
         if (!domainRaw) {
-            console.log("Domain is required.");
+            console.log("需要填写一个域名。没有域名时可用 `codex-mcp --local` 只在本机运行。");
         }
     }
     const domain = normalizeHostname(domainRaw);
@@ -142,19 +144,17 @@ async function runConfigWizard(
         port,
         domain,
     });
-    console.log(`Saved domain → ${configPath}`);
+    console.log(`✓ 域名已保存：${domain}`);
     console.log("");
 
     // 2) Optional cloudflared.
     const useCloudflared = await askYesNo(
-        "Use cloudflared to expose this server?",
+        "要让 codex-mcp 自动配置 Cloudflare Tunnel 吗？",
         true,
     );
     if (!useCloudflared) {
         userConfig = saveUserConfig({ useCloudflared: false });
-        console.log(
-            "OK. Domain saved. Start cloudflared yourself, or re-run: codex-mcp tunnel",
-        );
+        console.log("✓ 域名已保存。请你自己准备 HTTPS 公网入口；需要自动配置时可重新运行 `codex-mcp tunnel`。");
         console.log("");
         return { userConfig, domain, useCloudflared: false };
     }
@@ -164,7 +164,7 @@ async function runConfigWizard(
     const tunnelName =
         (
             await askLine(
-                "Tunnel name",
+                "Tunnel 名称",
                 userConfig.tunnelName ?? "codex-mcp",
             )
         ).trim() || "codex-mcp";
@@ -179,9 +179,7 @@ async function runConfigWizard(
 
     const credentialsFile = getCredentialsPath(tunnelId);
     if (!existsSync(credentialsFile)) {
-        throw new Error(
-            `Tunnel credentials missing: ${credentialsFile}. Re-run create or check ~/.cloudflared.`,
-        );
+        throw new Error(`没有找到 Tunnel 凭据：${credentialsFile}。请重新运行 \`codex-mcp tunnel\``);
     }
 
     const serviceUrl = localServiceUrl(host, port);
@@ -195,7 +193,7 @@ async function runConfigWizard(
         },
         cloudflaredConfigPath,
     );
-    console.log(`Wrote ${cloudflaredConfigPath}`);
+    console.log(`✓ Tunnel 配置已保存：${cloudflaredConfigPath}`);
 
     userConfig = saveUserConfig({
         useCloudflared: true,
@@ -203,7 +201,7 @@ async function runConfigWizard(
         tunnelName,
         tunnelId,
     });
-    console.log(`Saved ${configPath}`);
+    console.log(`✓ codex-mcp 配置已保存：${configPath}`);
     console.log("");
 
     return {
@@ -231,9 +229,7 @@ async function finalizeCloudflared(
 ): Promise<TunnelSetupResult> {
     const domain = userConfig.domain!;
     if (!userConfig.cloudflaredBin) {
-        throw new Error(
-            "useCloudflared is on but cloudflaredBin is missing. Run: codex-mcp tunnel",
-        );
+        throw new Error("已启用 Cloudflare Tunnel，但找不到 cloudflared。请运行 `codex-mcp tunnel` 重新设置");
     }
     const bin = await resolveCloudflaredBin(userConfig.cloudflaredBin);
     const configPath = getCloudflaredConfigPath();
@@ -241,9 +237,7 @@ async function finalizeCloudflared(
     let tunnelId = userConfig.tunnelId;
     if (!tunnelId) {
         if (!existsSync(configPath)) {
-            throw new Error(
-                `domain is set but ${configPath} is missing. Run: codex-mcp tunnel`,
-            );
+            throw new Error(`已经设置了域名，但缺少 Tunnel 配置：${configPath}。请运行 \`codex-mcp tunnel\` 重新设置`);
         }
         tunnelId = readCloudflaredYml(configPath).tunnelId;
         saveUserConfig({ tunnelId });
@@ -251,9 +245,7 @@ async function finalizeCloudflared(
 
     const credentialsFile = getCredentialsPath(tunnelId);
     if (!existsSync(credentialsFile)) {
-        throw new Error(
-            `Tunnel credentials missing: ${credentialsFile}. Run: codex-mcp tunnel`,
-        );
+        throw new Error(`缺少 Tunnel 凭据：${credentialsFile}。请运行 \`codex-mcp tunnel\` 重新设置`);
     }
 
     writeCloudflaredYml(
@@ -292,16 +284,16 @@ function localServiceUrl(host: string, port: number): string {
 async function ensureLogin(bin: string): Promise<void> {
     const certPath = expandHomePath("~/.cloudflared/cert.pem");
     if (existsSync(certPath)) {
-        console.log("Cloudflare cert already present (login skipped).");
+        console.log("✓ 已登录 Cloudflare，无需重复登录。");
         return;
     }
-    console.log("Opening Cloudflare login (browser)...");
+    console.log("正在打开浏览器，请登录 Cloudflare 并完成授权…");
     const code = await runCloudflaredInherit(bin, ["tunnel", "login"]);
     if (code !== 0) {
-        throw new Error("cloudflared tunnel login failed");
+        throw new Error("Cloudflare 登录没有完成，请重新运行 `codex-mcp tunnel`");
     }
     if (!existsSync(certPath)) {
-        throw new Error(`Login finished but cert not found: ${certPath}`);
+        throw new Error(`Cloudflare 登录完成了，但没有找到登录凭据：${certPath}`);
     }
 }
 
@@ -322,26 +314,27 @@ async function ensureTunnelCreated(
     tunnelName: string,
     knownId?: string,
 ): Promise<string> {
-    if (knownId && existsSync(getCredentialsPath(knownId))) {
-        console.log(`Reusing tunnel ${tunnelName} (${knownId})`);
+    const existing = await findTunnelIdByName(bin, tunnelName);
+    if (knownId && existing === knownId && existsSync(getCredentialsPath(knownId))) {
+        console.log(`✓ 继续使用现有 Tunnel：${tunnelName}`);
         return knownId;
     }
+    if (knownId && existsSync(getCredentialsPath(knownId)) && existing !== knownId) {
+        console.log(`本机保存的 Tunnel 和 Cloudflare 上的记录不一致，将重新确认配置。`);
+    }
 
-    const existing = await findTunnelIdByName(bin, tunnelName);
     if (existing && existsSync(getCredentialsPath(existing))) {
-        console.log(`Reusing tunnel ${tunnelName} (${existing})`);
+        console.log(`✓ 继续使用现有 Tunnel：${tunnelName}`);
         return existing;
     }
 
     if (existing) {
-        console.log(
-            `Tunnel "${tunnelName}" exists in Cloudflare (${existing}) but local credentials JSON is missing.`,
-        );
-        console.log("Deleting and recreating to download new credentials...");
+        console.log(`Cloudflare 上已经有同名 Tunnel，但这台电脑缺少它的凭据。`);
+        await requireTunnelDeleteConfirmation(tunnelName);
         await deleteTunnel(bin, tunnelName, existing);
     }
 
-    console.log(`Creating tunnel ${tunnelName}...`);
+    console.log(`正在创建 Tunnel：${tunnelName}…`);
     const result = await runCloudflared(
         bin,
         ["tunnel", "create", tunnelName],
@@ -351,23 +344,19 @@ async function ensureTunnelCreated(
     const created = combined.match(TUNNEL_ID_RE)?.[0];
     if (result.code === 0 && created) {
         if (!existsSync(getCredentialsPath(created))) {
-            throw new Error(
-                `Tunnel created (${created}) but credentials file was not written to ~/.cloudflared.`,
-            );
+            throw new Error("Tunnel 已创建，但这台电脑没有拿到对应凭据。请重新运行 `codex-mcp tunnel`");
         }
-        console.log(`Created tunnel id ${created}`);
+        console.log("✓ Tunnel 已创建。");
         return created;
     }
 
     const again = await findTunnelIdByName(bin, tunnelName);
     if (again && existsSync(getCredentialsPath(again))) {
-        console.log(`Using tunnel ${tunnelName} (${again})`);
+        console.log(`✓ 使用现有 Tunnel：${tunnelName}`);
         return again;
     }
 
-    throw new Error(
-        `Failed to create tunnel ${tunnelName}: ${(result.stderr || result.stdout).trim()}`,
-    );
+    throw new Error(`创建 Tunnel 失败：${(result.stderr || result.stdout).trim()}`);
 }
 
 /**
@@ -436,13 +425,25 @@ async function findTunnelIdByName(
         allowFailure: true,
         timeoutMs: 60_000,
     });
-    const text = `${list.stdout}\n${list.stderr}`;
+    return findTunnelIdInListText(`${list.stdout}\n${list.stderr}`, tunnelName);
+}
+
+/** Resolve an exact tunnel name from cloudflared's text-table fallback. */
+export function findTunnelIdInListText(
+    text: string,
+    tunnelName: string,
+): string | undefined {
+    const exactName = new RegExp(`(?:^|\\s)${escapeRegExp(tunnelName)}(?:\\s|$)`);
     for (const line of text.split(/\r?\n/)) {
-        if (!line.includes(tunnelName)) continue;
+        if (!exactName.test(line)) continue;
         const id = line.match(TUNNEL_ID_RE)?.[0];
         if (id) return id;
     }
     return undefined;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -456,23 +457,21 @@ async function askAndResolveCloudflaredBin(
 ): Promise<string> {
     const hint = await suggestCloudflaredBin(configured);
     if (!hint) {
-        console.log(
-            "Tip: on Windows you can use the repo binary, e.g. D:\\tmp\\codex-mcp\\bin\\cloudflared.exe",
-        );
+        console.log("没有找到 cloudflared。请先安装 cloudflared，然后把它的路径填在下面。");
     }
     let answer = "";
     while (!answer) {
         answer = (
-            await askLine("cloudflared binary path", hint || undefined)
+            await askLine("cloudflared 程序路径", hint || undefined)
         ).trim();
         if (!answer) {
-            console.log("Path is required when using cloudflared.");
+            console.log("使用 Cloudflare Tunnel 时需要填写 cloudflared 的路径。");
         }
     }
     const bin = await resolveCloudflaredBin(answer);
     const version = await probeCloudflaredVersion(bin);
-    console.log(`Using ${version}`);
-    console.log(`Binary: ${bin}`);
+    console.log(`✓ 找到 ${version}`);
+    console.log(`程序位置：${bin}`);
     return bin;
 }
 
@@ -500,7 +499,7 @@ function tryReadExistingYml():
  * cloudflared has no "list hostname routes" command, so we:
  * 1. Try `route dns` without overwrite
  * 2. On conflict, resolve public CNAME — skip if it already targets this tunnel
- * 3. Otherwise `route dns --overwrite-dns` (covers proxied CF records / old tunnels)
+ * 3. Otherwise require explicit user confirmation before `--overwrite-dns`
  *
  * @param bin - cloudflared path
  * @param tunnelName - Tunnel name
@@ -513,46 +512,39 @@ async function ensureDnsRoute(
     domain: string,
     tunnelId: string,
 ): Promise<void> {
-    console.log(`Routing DNS ${domain} → tunnel ${tunnelName}...`);
+    console.log(`正在把域名 ${domain} 连接到 Tunnel…`);
     const create = await runCloudflared(
         bin,
         ["tunnel", "route", "dns", tunnelName, domain],
         { allowFailure: true, timeoutMs: 120_000 },
     );
     if (create.code === 0) {
-        console.log("DNS route created.");
+        console.log("✓ 域名连接已配置。启动时会再做一次真实连通检查。");
         return;
     }
 
     if (!isDnsRecordConflict(create.stderr, create.stdout)) {
-        throw new Error(
-            `cloudflared tunnel route dns failed: ${(create.stderr || create.stdout).trim()}`,
-        );
+        throw new Error(`配置域名失败：${(create.stderr || create.stdout).trim()}`);
     }
 
     const pointsHere = await dnsPointsToTunnel(domain, tunnelId);
     if (pointsHere) {
-        console.log(
-            `DNS ${domain} already points to ${tunnelId}.cfargotunnel.com (ok).`,
-        );
+        console.log("✓ 这个域名已经连接到当前 Tunnel。");
         return;
     }
 
-    console.log(
-        `DNS record for ${domain} exists but does not point to this tunnel; overwriting...`,
-    );
+    console.log(`域名 ${domain} 已经有其它 DNS 记录，需要确认是否替换。`);
+    await requireDnsOverwriteConfirmation(domain);
     const overwrite = await runCloudflared(
         bin,
         ["tunnel", "route", "dns", "--overwrite-dns", tunnelName, domain],
         { allowFailure: true, timeoutMs: 120_000 },
     );
     if (overwrite.code === 0) {
-        console.log("DNS route overwritten.");
+        console.log("✓ DNS 已更新。启动时会再做一次真实连通检查。");
         return;
     }
-    throw new Error(
-        `cloudflared tunnel route dns --overwrite-dns failed: ${(overwrite.stderr || overwrite.stdout).trim()}`,
-    );
+    throw new Error(`更新域名 DNS 失败：${(overwrite.stderr || overwrite.stdout).trim()}`);
 }
 
 /**

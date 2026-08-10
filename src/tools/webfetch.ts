@@ -1,8 +1,9 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { htmlToMarkdown } from "../lib/html-to-markdown.js";
+import { safeHttpGet } from "../lib/safe-http.js";
 import { registerTool } from "../lib/tool-log.js";
-import { openWorldAnnotations, withNoAuth } from "../lib/tool-meta.js";
+import { openWorldAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
 import { truncateText } from "../lib/truncate.js";
 
@@ -10,87 +11,56 @@ const MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 
-/**
- * Fetch a URL and return text in the requested format.
- *
- * @param url - http(s) URL
- * @param format - Response formatting mode
- * @param timeoutMs - Request timeout
- * @returns Formatted body text
- */
+/** Fetch a public HTTP(S) URL with streaming byte and SSRF protection. */
 export async function fetchUrlContent(
     url: string,
     format: "text" | "markdown" | "html",
     timeoutMs: number,
 ): Promise<string> {
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        throw new Error("URL must start with http:// or https://");
+    const response = await safeHttpGet(url, {
+        maxBytes: MAX_BYTES,
+        timeoutMs,
+        maxRedirects: 5,
+        headers: {
+            Accept:
+                format === "html"
+                    ? "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"
+                    : format === "text"
+                      ? "text/plain,text/markdown;q=0.9,text/html;q=0.8,*/*;q=0.1"
+                      : "text/markdown,text/html;q=0.9,text/plain;q=0.8,*/*;q=0.1",
+        },
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-        const response = await fetch(url, {
-            signal: controller.signal,
-            headers: {
-                "User-Agent":
-                    "Mozilla/5.0 (compatible; codex-mcp/0.1; +https://localhost)",
-                Accept:
-                    format === "html"
-                        ? "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"
-                        : format === "text"
-                          ? "text/plain,text/markdown;q=0.9,text/html;q=0.8,*/*;q=0.1"
-                          : "text/markdown,text/html;q=0.9,text/plain;q=0.8,*/*;q=0.1",
-            },
-            redirect: "follow",
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status} ${response.statusText}`);
-        }
-
-        const buffer = Buffer.from(await response.arrayBuffer());
-        if (buffer.byteLength > MAX_BYTES) {
-            throw new Error(`Response exceeds ${MAX_BYTES} bytes`);
-        }
-
-        const body = buffer.toString("utf8");
-        const contentType = response.headers.get("content-type") ?? "";
-
-        if (format === "html") {
-            return body;
-        }
-        if (format === "text") {
-            if (contentType.includes("text/html")) {
-                return htmlToMarkdown(body).replace(/[#*_`>\[\]()]/g, "");
-            }
-            return body;
-        }
-
-        if (contentType.includes("text/html") || /<html[\s>]/i.test(body)) {
-            return htmlToMarkdown(body);
+    const body = response.body.toString("utf8");
+    const contentType = response.headers["content-type"] ?? "";
+    if (format === "html") return body;
+    if (format === "text") {
+        if (contentType.includes("text/html")) {
+            return htmlToMarkdown(body).replace(/[#*_`>\[\]()]/g, "");
         }
         return body;
-    } finally {
-        clearTimeout(timer);
     }
+    if (contentType.includes("text/html") || /<html[\s>]/i.test(body)) {
+        return htmlToMarkdown(body);
+    }
+    return body;
 }
 
-/**
- * Register the `webfetch` tool.
- *
- * @param server - MCP server instance
- */
+/** Register the `webfetch` tool. */
 export function registerWebfetchTool(server: McpServer): void {
-    registerTool(server, 
+    registerTool(
+        server,
         "webfetch",
-        withNoAuth({
+        withToolAuth({
             title: "Fetch URL",
             description:
-                "Fetch an http(s) URL and return the body as text, markdown, or html. Body text is in structuredContent.body.",
+                "Fetch a public http(s) URL and return text, markdown, or html. Private/loopback/link-local destinations and redirect hops are blocked. Body text is in structuredContent.body.",
             inputSchema: {
-                url: z.string().describe("http or https URL to fetch."),
+                url: z.string().url().describe("Public http or https URL to fetch."),
                 format: z
                     .enum(["text", "markdown", "html"])
                     .optional()

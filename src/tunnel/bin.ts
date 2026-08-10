@@ -29,9 +29,7 @@ export async function resolveCloudflaredBin(
         return suggested;
     }
 
-    throw new Error(
-        "cloudflared not found. Set cloudflaredBin in ~/.codex-mcp/config.json (e.g. path to bin/cloudflared.exe).",
-    );
+    throw new Error("没有找到 cloudflared。请先安装 cloudflared，再运行 `codex-mcp setup`");
 }
 
 /**
@@ -176,6 +174,6 @@ function assertExecutable(candidate: string): void {
     try {
         accessSync(candidate, constants.F_OK);
     } catch {
-        throw new Error(`cloudflared binary not found: ${candidate}`);
+        throw new Error(`找不到 cloudflared：${candidate}`);
     }
 }

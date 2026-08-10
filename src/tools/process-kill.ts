@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import { registerTool } from "../lib/tool-log.js";
-import { destructiveAnnotations, withNoAuth } from "../lib/tool-meta.js";
+import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
 import { truncateText } from "../lib/truncate.js";
 
@@ -19,7 +19,7 @@ export function registerProcessKillTool(
     registerTool(
         server,
         "process_kill",
-        withNoAuth({
+        withToolAuth({
             title: "Kill process",
             description:
                 "Force-stop a background process started by exec_command (Codex has no separate kill tool; this is the explicit stop). Use when npm run dev / servers should shut down. Prefer this over hoping write_stdin Ctrl-C succeeds.",
@@ -39,7 +39,7 @@ export function registerProcessKillTool(
                 output: z.string(),
                 outputTruncated: z.boolean(),
             },
-            annotations: destructiveAnnotations,
+            annotations: writeAnnotations,
         }),
         async ({ processId }) => {
             try {

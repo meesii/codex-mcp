@@ -1,8 +1,12 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config.js";
+import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import type { ProjectContext } from "../project.js";
+import type { SkillRegistry } from "../skills/registry.js";
+import type { WorkspaceRegistry } from "../workspace/registry.js";
+import { configureServerToolAuth } from "../lib/tool-meta.js";
 import { registerToolCardResource } from "../ui/register-ui.js";
 import { registerReadTool } from "./read.js";
 import { registerWriteTool } from "./write.js";
@@ -11,12 +15,20 @@ import { registerBashTool } from "./bash.js";
 import { registerExecCommandTool } from "./exec-command.js";
 import { registerWriteStdinTool } from "./write-stdin.js";
 import { registerProcessKillTool } from "./process-kill.js";
+import { registerProcessInspectTools } from "./process-inspect.js";
+import { registerRuntimeStatusTool } from "./runtime-status.js";
 import { registerGrepTool } from "./grep.js";
 import { registerGlobTool } from "./glob.js";
 import { registerLsTool } from "./ls.js";
 import { registerWebfetchTool } from "./webfetch.js";
 import { registerSummaryTool } from "./summary.js";
 import { registerMcpGatewayTools } from "./mcp-gateway.js";
+import { registerSkillTools } from "./skills.js";
+import { registerAgentTools } from "./agents.js";
+import { registerCapabilityTools } from "./capabilities.js";
+import { registerWorkspaceTools } from "./workspace.js";
+import { registerGitTools } from "./git.js";
+import { registerCodeExploreTool } from "./code-explore.js";
 
 export { TOOL_NAMES } from "./names.js";
 
@@ -27,7 +39,10 @@ export { TOOL_NAMES } from "./names.js";
  * @param config - Server configuration (widget domain / CSP)
  * @param project - Bound project context
  * @param processes - Shared process session manager
- * @param hub - Downstream MCP hub (from ~/.codex-mcp/mcp.json)
+ * @param hub - Downstream MCP hub imported from Codex plus local overrides
+ * @param skills - User-level Codex skill registry
+ * @param agents - Scoped Codex AGENTS.md registry
+ * @param workspace - Shared workspace registry
  */
 export function registerAllTools(
     server: McpServer,
@@ -35,7 +50,11 @@ export function registerAllTools(
     project: ProjectContext,
     processes: ProcessSessionManager,
     hub: DownstreamMcpHub,
+    skills: SkillRegistry,
+    agents: AgentInstructionRegistry,
+    workspace: WorkspaceRegistry,
 ): void {
+    configureServerToolAuth(server, config.oauthRequired);
     registerToolCardResource(server, config);
     registerReadTool(server, project);
     registerWriteTool(server, project);
@@ -44,12 +63,20 @@ export function registerAllTools(
     registerExecCommandTool(server, project, processes);
     registerWriteStdinTool(server, processes);
     registerProcessKillTool(server, processes);
+    registerProcessInspectTools(server, processes);
+    registerRuntimeStatusTool(server, processes);
     registerGrepTool(server, project);
     registerGlobTool(server, project);
     registerLsTool(server, project);
     registerWebfetchTool(server);
     registerSummaryTool(server);
-    if (hub.hasServers()) {
-        registerMcpGatewayTools(server, hub);
-    }
+    registerSkillTools(server, skills);
+    registerAgentTools(server, agents);
+    registerCapabilityTools(server, hub, skills);
+    registerWorkspaceTools(server, workspace, agents, skills, hub);
+    registerGitTools(server, project);
+    registerCodeExploreTool(server, project, workspace, hub);
+    // Gateway tools stay registered even when zero downstream servers are
+    // configured so hot-reloaded Codex MCPs become visible to existing sessions.
+    registerMcpGatewayTools(server, hub);
 }

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { terminateChildProcess } from "./process-tree.js";
 
 let cachedRgPath: string | null | undefined;
 
@@ -21,8 +22,17 @@ export async function findRipgrep(): Promise<string | null> {
                     shell: false,
                     windowsHide: true,
                 });
-                child.on("error", reject);
+                const timer = setTimeout(() => {
+                    void terminateChildProcess(child, 500, 500).catch(() => undefined);
+                    reject(new Error("ripgrep version probe timed out"));
+                }, 5_000);
+                timer.unref();
+                child.on("error", (error) => {
+                    clearTimeout(timer);
+                    reject(error);
+                });
                 child.on("exit", (code) => {
+                    clearTimeout(timer);
                     if (code === 0) resolve();
                     else reject(new Error(`exit ${code}`));
                 });
@@ -42,41 +52,80 @@ export interface RipgrepRunResult {
     stdout: string;
     stderr: string;
     exitCode: number;
+    truncated: boolean;
 }
 
 /**
- * Run ripgrep with the given arguments.
- *
- * @param rgPath - Ripgrep binary
- * @param args - CLI arguments
- * @param cwd - Working directory
- * @returns Captured stdout/stderr/exit code
+ * Run ripgrep with bounded output and wall-clock time.
+ * Output-budget termination and timeout both use TERM→KILL escalation.
  */
 export async function runRipgrep(
     rgPath: string,
     args: string[],
     cwd: string,
+    maxOutputChars = 1_000_000,
+    timeoutMs = 30_000,
 ): Promise<RipgrepRunResult> {
     return new Promise((resolve, reject) => {
         const child = spawn(rgPath, args, {
             cwd,
             stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true,
+            detached: process.platform !== "win32",
         });
         let stdout = "";
         let stderr = "";
-        child.stdout.on("data", (chunk: Buffer) => {
-            stdout += chunk.toString("utf8");
-        });
-        child.stderr.on("data", (chunk: Buffer) => {
-            stderr += chunk.toString("utf8");
-        });
-        child.on("error", reject);
+        let truncated = false;
+        let timedOut = false;
+        let terminating = false;
+        let settled = false;
+
+        const fail = (error: Error): void => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+        };
+        const terminate = (): void => {
+            if (terminating || !child.pid) return;
+            terminating = true;
+            void terminateChildProcess(child).catch(fail);
+        };
+        const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
+            if (truncated) return;
+            const text = chunk.toString("utf8");
+            const remaining = Math.max(0, maxOutputChars - stdout.length - stderr.length);
+            const clipped = text.slice(0, remaining);
+            if (target === "stdout") stdout += clipped;
+            else stderr += clipped;
+            if (clipped.length < text.length || stdout.length + stderr.length >= maxOutputChars) {
+                truncated = true;
+                terminate();
+            }
+        };
+
+        const timer = setTimeout(() => {
+            timedOut = true;
+            terminate();
+        }, timeoutMs);
+        timer.unref();
+
+        child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
+        child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
+        child.on("error", (error) => fail(error));
         child.on("close", (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (timedOut) {
+                reject(new Error(`ripgrep timed out after ${timeoutMs}ms`));
+                return;
+            }
             resolve({
                 stdout,
                 stderr,
-                exitCode: code ?? 1,
+                exitCode: truncated ? 0 : (code ?? 1),
+                truncated,
             });
         });
     });
