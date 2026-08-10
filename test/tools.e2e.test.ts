@@ -98,6 +98,93 @@ async function main(): Promise<void> {
         const missingSkill = await mcp.callTool("skill_read", { name: "missing" });
         assertToolError(missingSkill, "skill_read missing");
 
+        // Durable goal workflow: task progress + checkpoints + verification gate.
+        const goalStart = await mcp.callTool("goal_start", {
+            path: "src",
+            objective: "Verify the MCP goal workflow",
+            constraints: ["Keep the fixture project unchanged"],
+            tasks: [
+                { title: "Record progress" },
+                { title: "Pass completion gate" },
+            ],
+            acceptance_criteria: [
+                "Checkpoint state is readable in a later MCP request",
+                "goal_finish rejects incomplete or unverified work",
+            ],
+        });
+        assert.notEqual(goalStart.isError, true, toolText(goalStart));
+        const startedGoal = (goalStart.structuredContent as {
+            goal?: { id?: string; tasks?: Array<{ id?: string }> };
+        }).goal;
+        assert.match(startedGoal?.id ?? "", /^goal_/);
+
+        const goalUpdate = await mcp.callTool("goal_update", {
+            path: "src",
+            task_updates: [
+                { task_id: "task_1", status: "done" },
+                { task_id: "task_2", status: "in_progress" },
+            ],
+            checkpoint: {
+                summary: "First task completed.",
+                next: "Exercise the completion gate.",
+                findings: ["Goal state survived a separate MCP tool request"],
+            },
+        });
+        assert.notEqual(goalUpdate.isError, true, toolText(goalUpdate));
+
+        const goalStatus = await mcp.callTool("goal_status", { path: "src" });
+        assert.notEqual(goalStatus.isError, true, toolText(goalStatus));
+        const goalStatusData = goalStatus.structuredContent as {
+            activeGoals?: Array<{ id?: string; scopePath?: string }>;
+            goal?: {
+                id?: string;
+                scopePath?: string;
+                checkpoints?: Array<{ next?: string }>;
+            } | null;
+        };
+        assert.equal(goalStatusData.activeGoals?.[0]?.id, startedGoal?.id);
+        assert.equal(goalStatusData.activeGoals?.[0]?.scopePath, "src");
+        assert.equal(goalStatusData.goal?.scopePath, "src");
+        assert.equal(goalStatusData.goal?.checkpoints?.[0]?.next, "Exercise the completion gate.");
+
+        const verifyFirst = await mcp.callTool("goal_verify", {
+            path: "src",
+            criterion_id: "criterion_1",
+            status: "passed",
+            evidence: "goal_status in a later MCP request returned the persisted checkpoint.",
+        });
+        assert.notEqual(verifyFirst.isError, true, toolText(verifyFirst));
+
+        const finishTooEarly = await mcp.callTool("goal_finish", {
+            path: "src",
+            summary: "Should not finish yet",
+        });
+        assertToolError(finishTooEarly, "goal_finish incomplete");
+        assert.match(toolText(finishTooEarly), /unfinished tasks: task_2/i);
+        assert.match(toolText(finishTooEarly), /criterion_2/i);
+
+        const finishTasks = await mcp.callTool("goal_update", {
+            path: "src",
+            task_updates: [{ task_id: "task_2", status: "done" }],
+        });
+        assert.notEqual(finishTasks.isError, true, toolText(finishTasks));
+        const verifySecond = await mcp.callTool("goal_verify", {
+            path: "src",
+            criterion_id: "criterion_2",
+            status: "passed",
+            evidence: "goal_finish returned an MCP error until the remaining task and criterion were complete.",
+        });
+        assert.notEqual(verifySecond.isError, true, toolText(verifySecond));
+        const goalFinish = await mcp.callTool("goal_finish", {
+            path: "src",
+            summary: "Goal workflow verified end to end.",
+        });
+        assert.notEqual(goalFinish.isError, true, toolText(goalFinish));
+        assert.equal(
+            ((goalFinish.structuredContent as { goal?: { status?: string } }).goal?.status),
+            "completed",
+        );
+
         const listedTools = await mcp.client.listTools();
         const readTool = listedTools.tools.find((tool) => tool.name === "read");
         assert.ok(readTool);

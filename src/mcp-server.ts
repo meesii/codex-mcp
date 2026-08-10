@@ -7,6 +7,7 @@ import { configureToolRegistrationPolicy } from "./lib/tool-log.js";
 import type { ProjectContext } from "./project.js";
 import type { SkillRegistry } from "./skills/registry.js";
 import type { WorkspaceRegistry } from "./workspace/registry.js";
+import type { GoalStore } from "./goals/store.js";
 import { registerAllTools } from "./tools/register.js";
 import { PACKAGE_VERSION } from "./version.js";
 
@@ -72,6 +73,12 @@ export function buildServerInstructions(
     addTool("server_info", "inspect the running version/toolset fingerprint when connector schema freshness is uncertain.");
     addTool("webfetch", "fetch a public http(s) URL body.");
     addTool("summary", "mid-task user-visible progress (done=false + next) or final checkpoint (done=true).");
+    addTool("goal_start", "persist a long-running project objective with constraints, tasks, and acceptance criteria across chat turns.");
+    addTool("goal_status", "restore the active/recent project goal, task board, checkpoints, and verification state.");
+    addTool("goal_update", "update goal tasks/constraints and append meaningful checkpoints; can pause/resume the goal.");
+    addTool("goal_verify", "record concrete pass/fail evidence for an acceptance criterion.");
+    addTool("goal_finish", "complete a goal only after every task is done and every acceptance criterion is passed.");
+    addTool("goal_cancel", "cancel an abandoned/replaced goal while preserving its history.");
     addTool("skills_list", "list skills imported from local Codex skill roots.");
     addTool("skill_read", "read a matching skill's SKILL.md or referenced text file before following it.");
     addTool("agents_for_path", "load global + nested AGENTS.md rules for a project path.");
@@ -102,6 +109,12 @@ export function buildServerInstructions(
         limits.push(
             "- Mid-task status: summary(done=false); do not use plain chat for partial progress.",
             "- summary(done=true) only when the full user task is finished.",
+        );
+    }
+    if (["goal_start", "goal_status", "goal_update", "goal_verify", "goal_finish"].every(allows)) {
+        limits.push(
+            "- Long-running project work that may span chat turns: goal_start → goal_update checkpoints/tasks → goal_verify acceptance criteria → goal_finish. Restore with goal_status before continuing in a later turn/chat.",
+            "- Do not use goal_finish as a narrative claim: it intentionally fails unless all goal tasks are done and all acceptance criteria have passed evidence.",
         );
     }
     if (["edit", "apply_patch", "write", "bash"].some(allows)) {
@@ -155,6 +168,7 @@ export function buildServerInstructions(
  * @param skills - Codex skill registry
  * @param agents - Scoped Codex AGENTS.md registry
  * @param workspace - Shared workspace registry for cached repo topology and search
+ * @param goals - Durable project goal store shared across stateless MCP requests
  * @param allowedTools - Concrete tool set allowed for this client/session
  * @returns Connected-ready McpServer
  */
@@ -166,6 +180,7 @@ export function createMcpServer(
     skills: SkillRegistry,
     agents: AgentInstructionRegistry,
     workspace: WorkspaceRegistry,
+    goals: GoalStore,
     allowedTools?: ReadonlySet<string>,
 ): McpServer {
     const server = new McpServer(
@@ -185,6 +200,6 @@ export function createMcpServer(
     );
 
     configureToolRegistrationPolicy(server, allowedTools);
-    registerAllTools(server, config, project, processes, hub, skills, agents, workspace);
+    registerAllTools(server, config, project, processes, hub, skills, agents, workspace, goals);
     return server;
 }

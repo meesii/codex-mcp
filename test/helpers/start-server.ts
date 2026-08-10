@@ -32,6 +32,7 @@ export async function startTestServer(
     process.env.CODING_MCP_LOG_TOOLS = "0";
 
     const fixtureRoot = await mkdtemp(join(tmpdir(), "codex-mcp-"));
+    const goalStorageDir = await mkdtemp(join(tmpdir(), "codex-mcp-goals-"));
     await mkdir(join(fixtureRoot, "src"), { recursive: true });
     await writeFile(
         join(fixtureRoot, "hello.txt"),
@@ -55,6 +56,7 @@ export async function startTestServer(
 
     const server = createHttpServer(config, {
         ...options,
+        goalStorageDir: options.goalStorageDir ?? goalStorageDir,
         agents:
             options.agents ??
             new AgentInstructionRegistry(new ProjectContext(fixtureRoot), fixtureRoot),

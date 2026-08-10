@@ -12,6 +12,7 @@
 - **文件与搜索**：`read` / `read_many` / `write` / `edit` / `apply_patch`；`grep` / `workspace_search` / `context_pack` / `code_explore` fallback 共用结构化 `rg --json` 搜索内核，`grep` 额外支持 glob / exclude / context / files-only / result-limit；另有 `glob` / `ls`
 - **命令执行与恢复**：短命令 `bash`、长任务 `exec_command` 都支持 project-root 内安全 `cwd` 与 `summary` / `tail` / `head_tail` / `full` 输出策略；长任务再配合 `write_stdin` / `process_kill`，并可用 `process_list` / `process_status` / `process_output` 跨 HTTP/MCP 请求找回同一 owner 的运行中进程
 - **有界运行观测**：`runtime_status` 返回 tool/HTTP/downstream 的 calls/errors/p50/p95/max、tool response bytes、downstream cache hit/miss/reconnect，以及 process 计数与 buffer 聚合；recent latency sample 固定 256 条，不保存参数、命令、路径、正文或凭据
+- **长期 Goal 状态**：面向普通 ChatGPT 网页/App 对话，把复杂项目任务的 Goal、Task、Checkpoint、约束和验收条件持久化到 `~/.codex-mcp/goals`；Goal 可按 workspace 内的项目/子目录 scope 独立存在，后续 MCP request 或新对话可恢复进度，`goal_finish` 只有在所有 Task 完成且所有验收条件都有通过证据时才允许结束
 - **安全网页拉取**：`webfetch` 支持 text / markdown / html，阻止 loopback/private/link-local SSRF，并流式限制响应大小
 - **Codex MCP 自动桥接 + 热更新**：默认通过有 timeout / 输出预算的异步 `codex mcp list --json` 导入本机 Codex 已启用 MCP；`~/.codex-mcp/mcp.json` 仅用于额外配置/同名覆盖；配置变化自动 diff reload，也可显式 `capabilities_reload`
 - **完整 MCP Gateway**：代理下游 tools、resources、resource templates、prompts；per-server 生命周期串行化，reload/reconnect 与 in-flight 调用不会复活旧连接，并对 stdio stderr、分页、列表和单次结果设置资源预算
@@ -31,6 +32,8 @@
 | `process_kill` | 结束由 `exec_command` 启动的后台进程 |
 | `process_list` / `process_status` / `process_output` | owner-scope 内发现进程、查看状态、非消费式 peek 输出；`process_output` 共用 bounded output modes |
 | `runtime_status` / `server_info` | 前者提供只读聚合 telemetry；后者返回当前运行版本、启动时间、project root 与 toolset fingerprint，用于判断 connector 是否仍连着旧进程/schema |
+| `goal_start` / `goal_status` / `goal_update` | 按 workspace 内 path/scope 建立、恢复和推进长期 Goal；维护 Task、约束和 Checkpoint，状态跨 MCP request / Chat 对话持久化 |
+| `goal_verify` / `goal_finish` / `goal_cancel` | 给验收条件记录 pass/fail 证据；只有全部 Task 完成且全部条件通过后才能 finish，也可以保留历史后取消目标 |
 | `grep` / `glob` / `ls` | 搜索与目录浏览；`grep` 返回结构化 path/line/column/text/kind，`glob` 支持 subtree scope / exclude / result-limit |
 | `workspace_projects` / `workspace_search` | 多仓 Git 项目发现；`workspace_search` 与 `grep` 共用 `rg --json` 结构化搜索内核 |
 | `context_pack` | 按 scope 聚合相关项目、排序后的文件证据、AGENTS、高置信度 Skill 候选与 CodeGraph availability；传 `path` 时不返回无关仓库 |
@@ -117,6 +120,24 @@ codex-mcp
 启动成功后终端会显示 **连接地址**。把这个地址添加到 ChatGPT 的 MCP / Developer Mode 中即可。
 
 > 每个人都应该在自己的电脑上运行自己的 codex-mcp。不要把一个实例和互不信任的人共用，因为它具备文件修改和命令执行能力。
+
+## 长期 Goal
+
+普通 ChatGPT 网页/App 对话本身不会在一轮结束后自动继续运行。对于可能跨很多工具调用或多轮对话的项目任务，codex-mcp 提供一层本机持久化 Goal 状态，让 ChatGPT 可以在后续 request 或新对话中恢复“做到哪里、下一步是什么、哪些条件还没有验证”。
+
+推荐流程：
+
+```text
+goal_start
+    ↓
+goal_update       更新 Task / 约束，并在阶段边界写 Checkpoint
+    ↓
+goal_verify       给每条验收条件记录实际证据
+    ↓
+goal_finish       仅当所有 Task=done 且所有验收条件=passed 时成功
+```
+
+`goal_start.path` 可以把 Goal 绑定到 workspace 内的具体项目/子目录，例如 `codex-mcp` 或 `framepilot`；同一 scope 同时只允许一个未结束 Goal，不同 scope 可以并存。`goal_status` 可按 `path` 或 `goal_id` 恢复；如果整个 workspace 只有一个活动 Goal，也可以都不传。多个 scope 同时活动时会返回 `activeGoals` 让 ChatGPT 明确选择，避免串任务。Goal 数据保存在 `~/.codex-mcp/goals`，不写入项目仓库。取消目标使用 `goal_cancel`，历史仍然保留。
 
 ## 常用命令
 

@@ -31,6 +31,13 @@ export const writeAnnotations = {
     openWorldHint: false,
 };
 
+/** Durable task/goal metadata changes local state but does not mutate project files. */
+export const stateWriteAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+};
+
 /** Shell/process interactions can mutate local state and reach external systems. */
 export const destructiveAnnotations = {
     readOnlyHint: false,
