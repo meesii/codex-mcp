@@ -1,11 +1,12 @@
 import { Algorithm, hash, verify } from "@node-rs/argon2";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { getUserConfigDir } from "../user-config.js";
 import { readJsonFile, writePrivateJson } from "./storage.js";
 
 const AUTH_FILE_VERSION = 1;
 const MIN_PASSWORD_LENGTH = 12;
+const GENERATED_PASSWORD_BYTES = 18;
 
 interface AuthCredentialFile {
     version: 1;
@@ -15,6 +16,11 @@ interface AuthCredentialFile {
 
 export function getAuthCredentialPath(): string {
     return join(getUserConfigDir(), "auth.json");
+}
+
+/** Generate a strong URL-safe password for first-time setup. */
+export function generateAdminPassword(): string {
+    return randomBytes(GENERATED_PASSWORD_BYTES).toString("base64url");
 }
 
 export async function hasAdminPassword(): Promise<boolean> {

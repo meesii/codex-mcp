@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { loadConfig } from "./config.js";
 import { runDoctorChecks, type DoctorLevel } from "./doctor.js";
 import {
+    generateAdminPassword,
     hasAdminPassword,
     setAdminPassword,
     verifyAdminPassword,
@@ -48,7 +49,7 @@ function printUsage(): void {
   codex-mcp                         启动当前项目
   codex-mcp setup                   首次设置
   codex-mcp doctor                  检查安装和配置
-  codex-mcp auth                    重新设置连接密码
+  codex-mcp auth                    修改连接密码
   codex-mcp tunnel                  重新设置公网连接
   codex-mcp --local                 只在本机启动，不开放公网
   codex-mcp --root <目录>           指定项目目录
@@ -413,10 +414,10 @@ async function runFirstTimeSetup(): Promise<void> {
 
     console.log("");
     console.log(paint(["bold", "cyan"], "开始设置 codex-mcp"));
-    printInfo("只需要完成两步：设置连接密码，然后设置公网连接。");
+    printInfo("首次使用会自动生成连接密码，然后设置公网连接。");
     console.log("");
 
-    await configureAdminPassword();
+    await ensureGeneratedAdminPassword();
     const result = await runTunnelWizard();
 
     console.log("");
@@ -468,34 +469,56 @@ function getPackageVersion(): string {
     }
 }
 
-/** Configure or replace the public access password. */
+/** Configure or replace the public access password manually. */
 async function configureAdminPassword(): Promise<void> {
     if (!canPromptInteractively()) {
-        throw new Error("设置连接密码需要在可以输入内容的终端里运行");
+        throw new Error("修改连接密码需要在可以输入内容的终端里运行");
     }
     console.log("");
-    printInfo("设置连接密码。");
+    printInfo("修改连接密码。");
     printWarning("密码要求：至少 12 个字符。");
-    const password = await askSecret("连接密码");
+    const password = await askSecret("新密码");
     const confirmation = await askSecret("再输入一次");
     if (password !== confirmation) {
         throw new Error("两次输入的密码不一样，请重新设置");
     }
+    await saveAndVerifyAdminPassword(password);
+    printSuccess("连接密码已修改。");
+}
+
+/** Ensure first-time public access has a generated password without overwriting an existing one. */
+async function ensureGeneratedAdminPassword(): Promise<void> {
+    if (await hasAdminPassword()) {
+        printSuccess("连接密码已经存在，保持不变。");
+        printInfo("需要修改时运行：codex-mcp auth");
+        return;
+    }
+
+    const password = generateAdminPassword();
+    await saveAndVerifyAdminPassword(password);
+    printSuccess("连接密码已自动生成。");
+    printWarning("请保存下面的密码，连接 ChatGPT 时需要输入：");
+    console.log("");
+    console.log(paint(["bold", "green"], `  ${password}`));
+    console.log("");
+    printInfo("电脑不会保存密码明文；忘记后可运行 `codex-mcp auth` 设置新密码。");
+}
+
+async function saveAndVerifyAdminPassword(password: string): Promise<void> {
     await setAdminPassword(password);
     if (!(await verifyAdminPassword(password))) {
         throw new Error("连接密码保存后校验失败，请重新运行 `codex-mcp setup`");
     }
-    printSuccess("连接密码已保存。");
 }
 
 async function ensureAdminPasswordConfigured(): Promise<void> {
     if (await hasAdminPassword()) return;
     if (!canPromptInteractively()) {
-        throw new Error("还没有设置连接密码，请先运行 `codex-mcp setup`");
+        throw new Error("还没有连接密码，请先运行 `codex-mcp setup`");
     }
     console.log("");
-    printWarning("第一次使用需要先设置一个连接密码。");
-    await configureAdminPassword();
+    printWarning("第一次使用需要生成连接密码。");
+    await ensureGeneratedAdminPassword();
 }
 
 async function chooseProjectRoot(

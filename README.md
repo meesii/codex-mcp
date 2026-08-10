@@ -91,7 +91,7 @@ codex-mcp setup
 
 向导会依次完成：
 
-1. 设置连接密码。这个密码只保存在当前电脑，不保存明文。
+1. 自动生成并显示连接密码。请把它保存好；电脑上只保存密码哈希，不保存明文。
 2. 填写给 ChatGPT 使用的域名。
 3. 登录 Cloudflare。
 4. 创建或复用 Tunnel，并配置 DNS。
@@ -122,9 +122,9 @@ codex-mcp
 | 命令 | 说明 |
 | --- | --- |
 | `codex-mcp` | 启动当前项目 |
-| `codex-mcp setup` | 第一次设置，或重新完整设置 |
+| `codex-mcp setup` | 第一次设置；已有密码不会被覆盖 |
 | `codex-mcp doctor` | 检查安装和配置，不做修改 |
-| `codex-mcp auth` | 只重新设置连接密码 |
+| `codex-mcp auth` | 修改连接密码 |
 | `codex-mcp tunnel` | 只重新设置公网连接 |
 | `codex-mcp --local` | 只在本机启动，不开放公网 |
 | `codex-mcp --no-tunnel` | 不自动启动 Cloudflare Tunnel |
@@ -199,7 +199,7 @@ OAuth state 不保存 client secret；`private_key_jwt` 客户端只依赖其公
 1. 启动 `codex-mcp` 并确认公网 URL，例如 `https://mcp.example.com/mcp`
 2. ChatGPT → Settings → Apps / Developer Mode → 添加 MCP server URL
 3. ChatGPT 发现 Protected Resource Metadata / Authorization Server Metadata 后会进入 OAuth 流程
-4. 浏览器显示 codex-mcp 连接页面；输入你在 `codex-mcp setup` 中设置的连接密码
+4. 浏览器显示 codex-mcp 连接页面；输入 `codex-mcp setup` 自动生成并显示给你的连接密码
 5. ChatGPT 在 `/token` / `/revoke` 使用 CIMD 声明的 `private_key_jwt` 做客户端认证；codex-mcp 验签成功后签发/轮换 Bearer token
 6. 授权完成后 ChatGPT 使用 Bearer token 调用 MCP；refresh token 用于保持长期连接
 
