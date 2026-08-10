@@ -1,7 +1,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
-import { findRipgrep, runRipgrep } from "../lib/ripgrep.js";
 import { runGitReadOnly } from "../lib/git-readonly.js";
+import { structuredSearch } from "../lib/structured-search.js";
 import type { ProjectContext } from "../project.js";
 
 const DEFAULT_MAX_REPOS = 100;
@@ -35,6 +35,7 @@ export interface WorkspaceSearchMatch {
     line: number;
     column: number;
     text: string;
+    kind: "match" | "context";
 }
 
 interface WorkspaceProjectTopology {
@@ -99,54 +100,47 @@ export class WorkspaceRegistry {
         path?: string;
         caseInsensitive?: boolean;
         maxMatches?: number;
+        include?: string[];
+        exclude?: string[];
+        beforeContext?: number;
+        afterContext?: number;
     }): Promise<{ matches: WorkspaceSearchMatch[]; truncated: boolean }> {
-        const rgPath = await findRipgrep();
-        if (!rgPath) {
-            throw new Error("workspace_search requires ripgrep (rg) on PATH");
-        }
-        const searchRoot = this.project.resolvePath(input.path?.trim() || ".");
-        const maxMatches = Math.max(1, Math.min(Math.floor(input.maxMatches ?? 200), 1_000));
-        const args = [
-            "--line-number",
-            "--column",
-            "--no-heading",
-            "--color",
-            "never",
-            "--hidden",
-            "--glob",
-            "!.git/**",
-            "--glob",
-            "!node_modules/**",
-            "--glob",
-            "!dist/**",
-            "--glob",
-            "!build/**",
-            "--glob",
-            "!unpackage/**",
-        ];
-        if (input.caseInsensitive) args.push("--ignore-case");
-        args.push("--", input.pattern, ".");
+        const result = await structuredSearch(this.project, {
+            pattern: input.pattern,
+            hidden: true,
+            ...(input.path ? { path: input.path } : {}),
+            ...(input.caseInsensitive !== undefined
+                ? { caseInsensitive: input.caseInsensitive }
+                : {}),
+            ...(input.maxMatches !== undefined ? { maxResults: input.maxMatches } : {}),
+            ...(input.include ? { include: input.include } : {}),
+            ...(input.exclude ? { exclude: input.exclude } : {}),
+            ...(input.beforeContext !== undefined
+                ? { beforeContext: input.beforeContext }
+                : {}),
+            ...(input.afterContext !== undefined
+                ? { afterContext: input.afterContext }
+                : {}),
+        });
+        return { matches: result.matches, truncated: result.truncated };
+    }
 
-        const result = await runRipgrep(rgPath, args, searchRoot, 600_000, 30_000);
-        if (result.exitCode !== 0 && result.exitCode !== 1) {
-            throw new Error(result.stderr.trim() || `ripgrep exited with code ${result.exitCode}`);
-        }
-        const lines = result.stdout.split(/\r?\n/).filter(Boolean);
-        const matches: WorkspaceSearchMatch[] = [];
-        for (const line of lines.slice(0, maxMatches)) {
-            const parsed = parseRgLine(line);
-            if (!parsed) continue;
-            matches.push({
-                path: relative(this.project.root, join(searchRoot, parsed.path)).replaceAll("\\", "/"),
-                line: parsed.line,
-                column: parsed.column,
-                text: parsed.text,
-            });
-        }
-        return {
-            matches,
-            truncated: result.truncated || lines.length > maxMatches,
-        };
+    /** Return only Git projects relevant to a project-relative scope. */
+    async projectsForPath(path: string, maxDepth = DEFAULT_MAX_DEPTH): Promise<WorkspaceProjectInfo[]> {
+        const scope = path.trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "") || ".";
+        const projects = await this.listProjects(maxDepth);
+        if (scope === ".") return projects;
+
+        const containing = projects
+            .filter((item) =>
+                item.path === "."
+                    ? true
+                    : scope === item.path || scope.startsWith(`${item.path}/`),
+            )
+            .sort((left, right) => right.path.length - left.path.length);
+        if (containing.length > 0) return [containing[0]!];
+
+        return projects.filter((item) => item.path === scope || item.path.startsWith(`${scope}/`));
     }
 }
 
@@ -306,15 +300,4 @@ async function pathExists(path: string): Promise<boolean> {
     } catch {
         return false;
     }
-}
-
-function parseRgLine(line: string): WorkspaceSearchMatch | undefined {
-    const match = line.match(/^(.*?):(\d+):(\d+):(.*)$/);
-    if (!match) return undefined;
-    return {
-        path: match[1]!,
-        line: Number(match[2]),
-        column: Number(match[3]),
-        text: match[4]!,
-    };
 }

@@ -3,8 +3,10 @@ import type { ToolName } from "../tools/names.js";
 /** Chinese display labels for coding tools (UI card only). */
 export const TOOL_LABELS: Record<ToolName, string> = {
     read: "读取文件",
+    read_many: "批量读取文件",
     write: "写入文件",
     edit: "修改文件",
+    apply_patch: "应用补丁",
     bash: "执行命令",
     exec_command: "后台命令",
     write_stdin: "进程交互",
@@ -13,6 +15,7 @@ export const TOOL_LABELS: Record<ToolName, string> = {
     process_status: "查看进程",
     process_output: "查看进程输出",
     runtime_status: "查看运行指标",
+    server_info: "查看服务信息",
     grep: "搜索内容",
     glob: "查找文件",
     ls: "列出目录",
@@ -44,8 +47,10 @@ export const TOOL_LABELS: Record<ToolName, string> = {
 /** Host invoking / invoked status text (≤64 chars each). */
 export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }> = {
     read: { invoking: "正在读取文件…", invoked: "文件读取完成" },
+    read_many: { invoking: "正在批量读取文件…", invoked: "批量读取完成" },
     write: { invoking: "正在写入文件…", invoked: "文件写入完成" },
     edit: { invoking: "正在修改文件…", invoked: "文件修改完成" },
+    apply_patch: { invoking: "正在应用补丁…", invoked: "补丁应用完成" },
     bash: { invoking: "正在执行命令…", invoked: "命令执行完成" },
     exec_command: { invoking: "正在启动后台命令…", invoked: "后台命令已就绪" },
     write_stdin: { invoking: "正在与进程交互…", invoked: "进程交互完成" },
@@ -54,6 +59,7 @@ export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }
     process_status: { invoking: "正在查看进程…", invoked: "进程状态已读取" },
     process_output: { invoking: "正在查看进程输出…", invoked: "进程输出已读取" },
     runtime_status: { invoking: "正在读取运行指标…", invoked: "运行指标已读取" },
+    server_info: { invoking: "正在读取服务信息…", invoked: "服务信息已读取" },
     grep: { invoking: "正在搜索内容…", invoked: "内容搜索完成" },
     glob: { invoking: "正在查找文件…", invoked: "文件查找完成" },
     ls: { invoking: "正在列出目录…", invoked: "目录列表完成" },

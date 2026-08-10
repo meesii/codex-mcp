@@ -75,6 +75,9 @@ async function main(): Promise<void> {
         ".gitattributes": "*.conv diff=reviewconv\n",
         "sample.conv": "textconv-original\n",
         "src/app.ts": "export const sharedMarker = 'workspace-marker';\n",
+        "src/capabilities/policy.ts": "export function resolveAllowedTools(clientId: string) { return filterToolsByClientCapability(clientId); }\nfunction filterToolsByClientCapability(clientId: string) { return clientId ? ['read'] : []; }\n",
+        "src/tools/register.ts": "export function registerCodingTools() { return 'registered tool capability'; }\n",
+        "src/managed-tools/noise.ts": "export const tools = ['ripgrep', 'cloudflared'];\n",
         "src/context-budget.ts": [
             `context-budget-marker ${"x".repeat(2_000)}`,
             ...Array.from({ length: 39 }, (_, index) => `context-budget-marker ${index}`),
@@ -165,9 +168,17 @@ async function main(): Promise<void> {
         assert.match(JSON.stringify(context.structuredContent), /GLOBAL-WORKSPACE-RULE/);
         assert.match(JSON.stringify(context.structuredContent), /ROOT-WORKSPACE-RULE/);
         const contextData = context.structuredContent as {
+            projects?: Array<{ path: string }>;
             files?: Array<{ text: string }>;
             searchTruncated?: boolean;
+            codegraphProjects?: string[];
         };
+        assert.deepEqual(
+            (contextData.projects ?? []).map((item) => item.path),
+            ["repo-a"],
+            "scoped context_pack must omit unrelated workspace projects",
+        );
+        assert.deepEqual(contextData.codegraphProjects ?? [], []);
         assert.ok((contextData.files?.length ?? 0) <= 20);
         assert.equal(contextData.searchTruncated, true);
         assert.ok(
@@ -196,6 +207,28 @@ async function main(): Promise<void> {
         const status = await mcp.callTool("git_status", { path: "repo-a" });
         assert.notEqual(status.isError, true, toolText(status));
         assert.equal((status.structuredContent as { dirty?: boolean }).dirty, true);
+
+        const filteredStatus = await mcp.callTool("git_status", {
+            path: "repo-a",
+            paths: ["src/app.ts"],
+            max_files: 1,
+        });
+        assert.notEqual(filteredStatus.isError, true, toolText(filteredStatus));
+        const filteredStatusData = filteredStatus.structuredContent as {
+            changedFiles?: number;
+            files?: Array<{ path: string }>;
+        };
+        assert.equal(filteredStatusData.changedFiles, 1);
+        assert.deepEqual((filteredStatusData.files ?? []).map((item) => item.path), ["src/app.ts"]);
+
+        const summaryStatus = await mcp.callTool("git_status", {
+            path: "repo-a",
+            summary_only: true,
+        });
+        assert.notEqual(summaryStatus.isError, true, toolText(summaryStatus));
+        assert.ok(((summaryStatus.structuredContent as { changedFiles?: number }).changedFiles ?? 0) >= 2);
+        assert.deepEqual((summaryStatus.structuredContent as { files?: unknown[] }).files ?? [], []);
+
         const indexAfter = await stat(join(repoA, ".git", "index"));
         assert.equal(
             indexAfter.mtimeMs,
@@ -210,6 +243,25 @@ async function main(): Promise<void> {
         assert.match(diffData.diff ?? "", /workspace-marker-dirty-2/);
         assert.equal(diffData.truncated, true, "large diffs must truncate instead of throwing ENOBUFS");
         await assert.rejects(access(textconvMarker), /ENOENT/);
+
+        const filteredDiff = await mcp.callTool("git_diff", {
+            path: "repo-a",
+            paths: ["src/app.ts"],
+        });
+        assert.notEqual(filteredDiff.isError, true, toolText(filteredDiff));
+        const filteredDiffData = filteredDiff.structuredContent as {
+            diff?: string;
+            truncated?: boolean;
+        };
+        assert.match(filteredDiffData.diff ?? "", /workspace-marker-dirty-2/);
+        assert.doesNotMatch(filteredDiffData.diff ?? "", /src\/large\.txt/);
+        assert.equal(filteredDiffData.truncated, false);
+
+        const escapedDiff = await mcp.callTool("git_diff", {
+            path: "repo-a",
+            paths: ["../repo-b/src/page.vue"],
+        });
+        assert.equal(escapedDiff.isError, true, "git_diff paths must stay inside the selected repository");
 
         const log = await mcp.callTool("git_log", { path: "repo-a", limit: 5 });
         assert.notEqual(log.isError, true, toolText(log));
@@ -238,6 +290,39 @@ async function main(): Promise<void> {
             "workspace_search",
         );
         assert.match(JSON.stringify(explore.structuredContent), /repo-a\/src\/app\.ts/);
+
+        const naturalExplore = await mcp.callTool("code_explore", {
+            query: "how are coding tools registered and filtered by client capabilities",
+            project_path: "repo-a",
+            max_files: 4,
+        });
+        assert.notEqual(naturalExplore.isError, true, toolText(naturalExplore));
+        const naturalMatches = (naturalExplore.structuredContent as {
+            matches?: Array<{ path: string }>;
+        }).matches ?? [];
+        const naturalPaths = [...new Set(naturalMatches.map((item) => item.path))];
+        assert.equal(naturalPaths[0], "repo-a/src/capabilities/policy.ts");
+        assert.ok(naturalPaths.includes("repo-a/src/tools/register.ts"), JSON.stringify(naturalPaths));
+        assert.notEqual(
+            naturalPaths[0],
+            "repo-a/src/managed-tools/noise.ts",
+            "common 'tools' token must not dominate natural-language fallback ranking",
+        );
+
+        const chineseExplore = await mcp.callTool("code_explore", {
+            query: "工具是怎么按客户端能力注册和过滤的",
+            project_path: "repo-a",
+            max_files: 3,
+        });
+        assert.notEqual(chineseExplore.isError, true, toolText(chineseExplore));
+        const chinesePaths = [
+            ...new Set(
+                ((chineseExplore.structuredContent as { matches?: Array<{ path: string }> }).matches ?? [])
+                    .map((item) => item.path),
+            ),
+        ];
+        assert.equal(chinesePaths[0], "repo-a/src/capabilities/policy.ts");
+        assert.ok(chinesePaths.includes("repo-a/src/tools/register.ts"), JSON.stringify(chinesePaths));
 
         assert.equal(git(repoA, ["status", "--porcelain=v1"]).includes("src/app.ts"), true);
         assert.match(git(repoB, ["status", "--porcelain=v1"]), /untracked file\.txt/);

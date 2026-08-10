@@ -9,8 +9,8 @@
 - **内置 OAuth**：单一管理员密码、Authorization Code + PKCE S256、refresh token rotation、CIMD 优先 + DCR fallback
 - **单项目绑定**：启动前选择 project root；文件工具做 canonical path 校验并阻止 symlink 逃逸
 - **Cloudflare Tunnel（可选）**：使用 codex-mcp 自己的 cloudflared 配置，不覆盖用户全局配置；sidecar 固定 HTTP/2 + IPv4 edge，避开双栈网络中 IPv6 TCP/7844 不通导致的启动超时；远端删除/DNS 覆盖必须显式确认
-- **文件与搜索**：`read` / `write` / `edit`、`grep` / `glob` / `ls`
-- **命令执行与恢复**：短命令 `bash`；长任务 `exec_command` + `write_stdin` / `process_kill`，并可用 `process_list` / `process_status` / `process_output` 跨 HTTP/MCP 请求找回同一 owner 的运行中进程
+- **文件与搜索**：`read` / `read_many` / `write` / `edit` / `apply_patch`；`grep` / `workspace_search` / `context_pack` / `code_explore` fallback 共用结构化 `rg --json` 搜索内核，`grep` 额外支持 glob / exclude / context / files-only / result-limit；另有 `glob` / `ls`
+- **命令执行与恢复**：短命令 `bash`、长任务 `exec_command` 都支持 project-root 内安全 `cwd` 与 `summary` / `tail` / `head_tail` / `full` 输出策略；长任务再配合 `write_stdin` / `process_kill`，并可用 `process_list` / `process_status` / `process_output` 跨 HTTP/MCP 请求找回同一 owner 的运行中进程
 - **有界运行观测**：`runtime_status` 返回 tool/HTTP/downstream 的 calls/errors/p50/p95/max、tool response bytes、downstream cache hit/miss/reconnect，以及 process 计数与 buffer 聚合；recent latency sample 固定 256 条，不保存参数、命令、路径、正文或凭据
 - **安全网页拉取**：`webfetch` 支持 text / markdown / html，阻止 loopback/private/link-local SSRF，并流式限制响应大小
 - **Codex MCP 自动桥接 + 热更新**：默认通过有 timeout / 输出预算的异步 `codex mcp list --json` 导入本机 Codex 已启用 MCP；`~/.codex-mcp/mcp.json` 仅用于额外配置/同名覆盖；配置变化自动 diff reload，也可显式 `capabilities_reload`
@@ -23,18 +23,19 @@
 
 | 工具 | 说明 |
 | --- | --- |
-| `read` / `write` / `edit` | 读写与精确替换，路径限制在 project root |
-| `bash` | 短命令前台执行（Windows: `pwsh`，Unix: `bash`） |
-| `exec_command` | 长任务可返回 `processId` |
-| `write_stdin` | 轮询进程输出或写 stdin |
+| `read` / `read_many` | 单文件或批量有界读取，路径限制在 project root |
+| `write` / `edit` / `apply_patch` | 完整写入、精确替换或多文件 unified diff patch；均受 canonical path 约束，并在成功后返回 bounded diff 便于直接确认修改 |
+| `bash` | 短命令前台执行；支持安全 `cwd` 与 bounded output mode |
+| `exec_command` | 长任务可返回 `processId`；支持安全 `cwd` 与 bounded output mode |
+| `write_stdin` | 轮询进程输出或写 stdin；与 `exec_command` 共用 `summary` / `tail` / `head_tail` / `full` 输出策略 |
 | `process_kill` | 结束由 `exec_command` 启动的后台进程 |
-| `process_list` / `process_status` / `process_output` | owner-scope 内发现进程、查看状态、非消费式 peek 输出 |
-| `runtime_status` | 只读聚合 telemetry：tool/HTTP/downstream latency/error/bytes/cache/reconnect + process runtime stats；不保留 payload/命令/路径 |
-| `grep` / `glob` / `ls` | 搜索与目录浏览，均有结果/资源预算 |
-| `workspace_projects` / `workspace_search` | 多仓 Git 项目发现与结构化跨仓搜索 |
-| `context_pack` | 聚合项目、相关文件、AGENTS、Skill 候选、CodeGraph availability |
-| `git_status` / `git_diff` / `git_log` / `git_show` / `git_branches` | 异步 bounded Git 查询；禁 optional index writes/fsmonitor，diff/show 额外禁 ext-diff/textconv helper |
-| `code_explore` | 有 CodeGraph index + MCP 时优先 `codegraph_explore`，否则 bounded workspace search fallback |
+| `process_list` / `process_status` / `process_output` | owner-scope 内发现进程、查看状态、非消费式 peek 输出；`process_output` 共用 bounded output modes |
+| `runtime_status` / `server_info` | 前者提供只读聚合 telemetry；后者返回当前运行版本、启动时间、project root 与 toolset fingerprint，用于判断 connector 是否仍连着旧进程/schema |
+| `grep` / `glob` / `ls` | 搜索与目录浏览；`grep` 返回结构化 path/line/column/text/kind，`glob` 支持 subtree scope / exclude / result-limit |
+| `workspace_projects` / `workspace_search` | 多仓 Git 项目发现；`workspace_search` 与 `grep` 共用 `rg --json` 结构化搜索内核 |
+| `context_pack` | 按 scope 聚合相关项目、排序后的文件证据、AGENTS、高置信度 Skill 候选与 CodeGraph availability；传 `path` 时不返回无关仓库 |
+| `git_status` / `git_diff` / `git_log` / `git_show` / `git_branches` | 异步 bounded Git 查询；`git_status` 支持 `paths` / `max_files` / `summary_only`，`git_diff` 支持 `paths`；禁 optional index writes/fsmonitor，diff/show 额外禁 ext-diff/textconv helper |
+| `code_explore` | 有 CodeGraph index + MCP 时优先 `codegraph_explore`；否则对自然语言 query 去停用词、按文件 token coverage/path relevance 排序 structured-search 候选，而不是裸 OR grep |
 | `webfetch` | 拉取公开 http(s) 页面，带 SSRF 与 byte-limit 防护 |
 | `skills_list` / `skill_read` | 发现/按需读取本机 Codex Skills |
 | `agents_for_path` | 读取某路径适用的全局 + 项目层级 `AGENTS.md` |

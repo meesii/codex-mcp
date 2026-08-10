@@ -8,6 +8,7 @@ import type { ProjectContext } from "./project.js";
 import type { SkillRegistry } from "./skills/registry.js";
 import type { WorkspaceRegistry } from "./workspace/registry.js";
 import { registerAllTools } from "./tools/register.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 /**
  * Resolve the shell name advertised in MCP instructions.
@@ -53,19 +54,22 @@ export function buildServerInstructions(
         if (allows(name)) toolMap.push(`- ${name} — ${text}`);
     };
     addTool("read", "file contents before explain/change (not bash cat/type).");
-    addTool("grep", "regex search in files (not bash Select-String/grep).");
+    addTool("read_many", "batch-read related files with a bounded combined output budget.");
+    addTool("grep", "structured ripgrep-style search with glob/exclude/context/result limits.");
     addTool("glob", "find paths by pattern (e.g. **/*.ts).");
     addTool("ls", "list one directory.");
     addTool("edit", "small exact string replace on an existing file.");
-    addTool("write", "create file or full overwrite; use edit for small patches.");
-    addTool("bash", `short foreground ${shell} (install/test/build/git); cwd=project_root; not for source read/edit.`);
-    addTool("exec_command", "long-running or interactive command; returns processId while running.");
-    addTool("write_stdin", "poll or send stdin to a processId from exec_command.");
+    addTool("apply_patch", "standard unified diff for multi-hunk or multi-file changes.");
+    addTool("write", "create file or full overwrite; use edit/apply_patch for existing files.");
+    addTool("bash", `short foreground ${shell} (install/test/build/git); optional safe cwd + bounded output modes; not for source read/edit.`);
+    addTool("exec_command", "long-running or interactive command; optional safe cwd + bounded output modes; returns processId while running.");
+    addTool("write_stdin", "poll or send stdin to a processId from exec_command; uses the same bounded output modes as exec_command.");
     addTool("process_kill", "force-stop a processId.");
     addTool("process_list", "recover managed process handles for the current stable owner.");
     addTool("process_status", "inspect a managed process without consuming output.");
-    addTool("process_output", "peek buffered process output without consuming it.");
+    addTool("process_output", "peek buffered process output without consuming it; supports summary/tail/head_tail/full.");
     addTool("runtime_status", "inspect bounded aggregate runtime telemetry without exposing payloads or commands.");
+    addTool("server_info", "inspect the running version/toolset fingerprint when connector schema freshness is uncertain.");
     addTool("webfetch", "fetch a public http(s) URL body.");
     addTool("summary", "mid-task user-visible progress (done=false + next) or final checkpoint (done=true).");
     addTool("skills_list", "list skills imported from local Codex skill roots.");
@@ -74,7 +78,7 @@ export function buildServerInstructions(
     addTool("capabilities_reload", "force-refresh imported Codex MCPs and skills; automatic watching is also enabled in the CLI.");
     addTool("workspace_projects", "discover Git projects under project_root.");
     addTool("workspace_search", "bounded structured search across the workspace.");
-    addTool("context_pack", "assemble lightweight project/files/instructions/skills context for a task.");
+    addTool("context_pack", "assemble scope-focused project/files/AGENTS/skills context; after using it for a scope, do not re-load agents_for_path unless moving deeper.");
     addTool("git_status", "structured read-only Git status.");
     addTool("git_diff", "bounded read-only Git diff.");
     addTool("git_log", "structured recent Git commits.");
@@ -99,14 +103,9 @@ export function buildServerInstructions(
             "- Mid-task status: summary(done=false); do not use plain chat for partial progress.",
             "- summary(done=true) only when the full user task is finished.",
         );
-        if (["read", "grep", "glob", "ls"].some(allows)) {
-            limits.push(
-                "- After ~6 inspect calls (read/grep/glob/ls) without summary, call summary before more inspect.",
-            );
-        }
     }
-    if (["edit", "write", "bash"].some(allows)) {
-        const recoveryTools = ["edit", "write", "bash"].filter(allows).join("/");
+    if (["edit", "apply_patch", "write", "bash"].some(allows)) {
+        const recoveryTools = ["edit", "apply_patch", "write", "bash"].filter(allows).join("/");
         limits.push(`- On tool failure: inspect the returned error/output, then use ${recoveryTools} when appropriate and retry.`);
     }
     if (["mcp_servers", "mcp_tools", "mcp_resources", "mcp_prompts"].some(allows)) {
@@ -172,7 +171,7 @@ export function createMcpServer(
     const server = new McpServer(
         {
             name: "codex-mcp",
-            version: "0.1.0",
+            version: PACKAGE_VERSION,
         },
         {
             instructions: buildServerInstructions(

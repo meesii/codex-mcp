@@ -23,11 +23,22 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
             title: "Read Git status",
             description:
                 "Return structured Git branch/status for a repository inside project_root. Uses Git with optional index writes and fsmonitor disabled.",
-            inputSchema: { path: z.string().optional() },
+            inputSchema: {
+                path: z.string().optional(),
+                paths: z
+                    .array(z.string().min(1).max(2_000))
+                    .min(1)
+                    .max(100)
+                    .optional()
+                    .describe("Optional repository-relative file/path filters."),
+                max_files: z.number().int().min(1).max(1_000).optional(),
+                summary_only: z.boolean().optional(),
+            },
             outputSchema: {
                 repository: z.string(),
                 branch: z.string(),
                 dirty: z.boolean(),
+                changedFiles: z.number().int(),
                 files: z.array(
                     z.object({
                         path: z.string(),
@@ -39,26 +50,38 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ path }) => {
+        async ({ path, paths, max_files: maxFiles, summary_only: summaryOnly }) => {
             try {
                 const repo = await resolveRepository(project, path);
                 const branchResult = await runGitReadOnly(repo.absolute, ["branch", "--show-current"], {
                     maxOutputBytes: 64 * 1024,
                 });
-                const statusResult = await runGitReadOnly(
-                    repo.absolute,
-                    ["status", "--porcelain=v1", "-z", "-uall"],
-                    { maxOutputBytes: MAX_GIT_STATUS_BYTES, allowTruncation: true },
-                );
+                const statusArgs = ["status", "--porcelain=v1", "-z", "-uall"];
+                if (paths?.length) {
+                    statusArgs.push(
+                        "--",
+                        ...paths.map((item: string) =>
+                            validateRepositoryRelativePath(repo.absolute, item),
+                        ),
+                    );
+                }
+                const statusResult = await runGitReadOnly(repo.absolute, statusArgs, {
+                    maxOutputBytes: MAX_GIT_STATUS_BYTES,
+                    allowTruncation: true,
+                });
                 const rows = parsePorcelainV1Z(statusResult.stdout, statusResult.truncated);
-                const files = rows.slice(0, MAX_STATUS_FILES);
-                const truncated = statusResult.truncated || rows.length > files.length;
+                const resultLimit = maxFiles ?? MAX_STATUS_FILES;
+                const files = summaryOnly ? [] : rows.slice(0, resultLimit);
+                const truncated =
+                    statusResult.truncated || (!summaryOnly && rows.length > files.length);
+                const changedFiles = rows.length;
                 return okResult(
-                    `Git status: ${files.length}${truncated ? "+" : ""} changed file(s).`,
+                    `Git status: ${statusResult.truncated ? "at least " : ""}${changedFiles} changed file(s)${summaryOnly ? " (summary only)" : truncated ? " (file list truncated)" : ""}.`,
                     {
                         repository: repo.relative,
                         branch: branchResult.stdout.trim() || "(detached)",
-                        dirty: rows.length > 0 || statusResult.truncated,
+                        dirty: changedFiles > 0 || statusResult.truncated,
+                        changedFiles,
                         files,
                         truncated,
                     },
@@ -78,6 +101,12 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
                 "Return a bounded unified diff for a repository inside project_root. External diff and textconv helpers are disabled. Set staged=true for the index diff.",
             inputSchema: {
                 path: z.string().optional(),
+                paths: z
+                    .array(z.string().min(1).max(2_000))
+                    .min(1)
+                    .max(100)
+                    .optional()
+                    .describe("Optional repository-relative file/path filters."),
                 staged: z.boolean().optional(),
             },
             outputSchema: {
@@ -88,11 +117,17 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ path, staged }) => {
+        async ({ path, paths, staged }) => {
             try {
                 const repo = await resolveRepository(project, path);
                 const args = ["diff", "--no-ext-diff", "--no-textconv", "--unified=3"];
                 if (staged) args.push("--cached");
+                if (paths?.length) {
+                    args.push(
+                        "--",
+                        ...paths.map((item: string) => validateRepositoryRelativePath(repo.absolute, item)),
+                    );
+                }
                 const result = await runGitReadOnly(repo.absolute, args, {
                     maxOutputBytes: MAX_GIT_DIFF_BYTES,
                     allowTruncation: true,
@@ -321,6 +356,20 @@ function isInside(root: string, candidate: string): boolean {
         relationship === "" ||
         (!isAbsolute(relationship) && relationship !== ".." && !relationship.startsWith(`..${sep}`))
     );
+}
+
+function validateRepositoryRelativePath(repository: string, input: string): string {
+    const value = input.trim();
+    if (!value) throw new Error("Git diff path filters must not be empty");
+    if (isAbsolute(value) || value.startsWith(":")) {
+        throw new Error(`Git diff path must be repository-relative without pathspec magic: ${input}`);
+    }
+    const candidate = resolve(repository, value);
+    const relationship = relative(repository, candidate);
+    if (!isInside(repository, candidate)) {
+        throw new Error(`Git diff path escapes repository: ${input}`);
+    }
+    return relationship.replaceAll("\\", "/") || ".";
 }
 
 function errorMessage(error: unknown): string {

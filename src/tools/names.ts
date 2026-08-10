@@ -1,8 +1,10 @@
 /** Local coding tools (always registered). */
 export const CORE_TOOL_NAMES = [
     "read",
+    "read_many",
     "write",
     "edit",
+    "apply_patch",
     "bash",
     "exec_command",
     "write_stdin",
@@ -11,6 +13,7 @@ export const CORE_TOOL_NAMES = [
     "process_status",
     "process_output",
     "runtime_status",
+    "server_info",
     "grep",
     "glob",
     "ls",

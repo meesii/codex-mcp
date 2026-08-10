@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildServerInstructions } from "../src/mcp-server.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 import { TOOL_CARD_ENABLED, TOOL_CARD_URI, SUMMARY_CARD_URI } from "../src/ui/constants.js";
 import { listGlobFiles } from "../src/tools/glob.js";
 import { TOOL_NAMES } from "../src/tools/names.js";
@@ -68,11 +69,28 @@ async function main(): Promise<void> {
         assert.match(instructions, /Tool map/i);
         assert.doesNotMatch(instructions, /You are /i);
         assert.match(instructions, /summary\(done=false/i);
-        assert.match(instructions, /~6 inspect|6 inspect/i);
+        assert.doesNotMatch(instructions, /~6 inspect|6 inspect/i);
+        assert.match(instructions, /do not re-load agents_for_path unless moving deeper/i);
         assert.match(instructions, /skills_list/);
         assert.match(instructions, /skill_read/);
         assert.match(instructions, /mcp_tools/i);
         assert.doesNotMatch(instructions, /Downstream MCP servers/);
+
+        const serverInfo = await mcp.callTool("server_info", {});
+        assert.notEqual(serverInfo.isError, true, toolText(serverInfo));
+        const serverInfoData = serverInfo.structuredContent as {
+            version?: string;
+            projectRoot?: string;
+            toolsetHash?: string;
+            restartRequiredForCoreToolChanges?: boolean;
+            capabilities?: { structuredSearch?: boolean; mutationDiff?: boolean };
+        };
+        assert.equal(serverInfoData.version, PACKAGE_VERSION);
+        assert.equal(serverInfoData.projectRoot, ctx.server.project.root);
+        assert.match(serverInfoData.toolsetHash ?? "", /^[a-f0-9]{16}$/);
+        assert.equal(serverInfoData.restartRequiredForCoreToolChanges, true);
+        assert.equal(serverInfoData.capabilities?.structuredSearch, true);
+        assert.equal(serverInfoData.capabilities?.mutationDiff, true);
 
         const emptySkills = await mcp.callTool("skills_list", {});
         assert.notEqual(emptySkills.isError, true, toolText(emptySkills));
@@ -195,6 +213,16 @@ async function main(): Promise<void> {
         });
         assertToolError(readMissing, "read missing");
 
+        const readMany = await mcp.callTool("read_many", {
+            files: [{ path: "hello.txt", limit: 1 }, { path: "missing.txt" }],
+        });
+        assert.notEqual(readMany.isError, true, toolText(readMany));
+        const readManyRows = (readMany.structuredContent as {
+            files?: Array<{ path: string; content: string; error: string | null }>;
+        }).files ?? [];
+        assert.match(readManyRows.find((item) => item.path === "hello.txt")?.content ?? "", /hello world/);
+        assert.match(readManyRows.find((item) => item.path === "missing.txt")?.error ?? "", /ENOENT/i);
+
         await writeFile(
             join(ctx.fixtureRoot, "large.txt"),
             `${"x".repeat(120_000)}\nsecond-line\n`,
@@ -215,6 +243,14 @@ async function main(): Promise<void> {
             content: "written-by-test\n",
         });
         assert.notEqual(writeOk.isError, true, toolText(writeOk));
+        const writeData = writeOk.structuredContent as {
+            filesChanged?: number;
+            diff?: string;
+            diffTruncated?: boolean;
+        };
+        assert.equal(writeData.filesChanged, 1);
+        assert.match(writeData.diff ?? "", /\+written-by-test/);
+        assert.equal(writeData.diffTruncated, false);
         const written = await readFile(join(ctx.fixtureRoot, "notes", "out.txt"), "utf8");
         assert.equal(written, "written-by-test\n");
 
@@ -252,6 +288,19 @@ async function main(): Promise<void> {
             "edit symlink escape",
         );
         assertToolError(
+            await mcp.callTool("apply_patch", {
+                patch: [
+                    "--- a/outside-link/secret.txt",
+                    "+++ b/outside-link/secret.txt",
+                    "@@ -1,1 +1,1 @@",
+                    "-outside-secret",
+                    "+changed",
+                    "",
+                ].join("\n"),
+            }),
+            "apply_patch symlink escape",
+        );
+        assertToolError(
             await mcp.callTool("ls", { path: "outside-link" }),
             "ls symlink escape",
         );
@@ -278,6 +327,15 @@ async function main(): Promise<void> {
             new_string: "unique-marker-beta",
         });
         assert.notEqual(editOk.isError, true, toolText(editOk));
+        const editData = editOk.structuredContent as {
+            filesChanged?: number;
+            diff?: string;
+            diffTruncated?: boolean;
+        };
+        assert.equal(editData.filesChanged, 1);
+        assert.match(editData.diff ?? "", /-.*unique-marker-alpha/);
+        assert.match(editData.diff ?? "", /\+.*unique-marker-beta/);
+        assert.equal(editData.diffTruncated, false);
         const edited = await readFile(join(ctx.fixtureRoot, "hello.txt"), "utf8");
         assert.match(edited, /unique-marker-beta/);
 
@@ -319,6 +377,66 @@ async function main(): Promise<void> {
             "alpha2\r\nbeta2\r\ngamma\r\n",
         );
 
+        // apply_patch multi-file + preflight failure must not partially modify files
+        await writeFile(join(ctx.fixtureRoot, "patch-a.txt"), "one\ntwo\nthree\n", "utf8");
+        const patchOk = await mcp.callTool("apply_patch", {
+            patch: [
+                "--- a/patch-a.txt",
+                "+++ b/patch-a.txt",
+                "@@ -1,3 +1,3 @@",
+                " one",
+                "-two",
+                "+TWO",
+                " three",
+                "--- /dev/null",
+                "+++ b/patch-new.txt",
+                "@@ -0,0 +1,2 @@",
+                "+alpha",
+                "+beta",
+                "",
+            ].join("\n"),
+        });
+        assert.notEqual(patchOk.isError, true, toolText(patchOk));
+        assert.equal(await readFile(join(ctx.fixtureRoot, "patch-a.txt"), "utf8"), "one\nTWO\nthree\n");
+        assert.equal(await readFile(join(ctx.fixtureRoot, "patch-new.txt"), "utf8"), "alpha\nbeta\n");
+        assert.equal((patchOk.structuredContent as { filesChanged?: number }).filesChanged, 2);
+
+        await writeFile(join(ctx.fixtureRoot, "patch-delete.txt"), "gone\n", "utf8");
+        const patchDelete = await mcp.callTool("apply_patch", {
+            patch: [
+                "--- a/patch-delete.txt",
+                "+++ /dev/null",
+                "@@ -1,1 +0,0 @@",
+                "-gone",
+                "",
+            ].join("\n"),
+        });
+        assert.notEqual(patchDelete.isError, true, toolText(patchDelete));
+        await assert.rejects(readFile(join(ctx.fixtureRoot, "patch-delete.txt"), "utf8"), /ENOENT/);
+
+        const patchBeforeFailure = await readFile(join(ctx.fixtureRoot, "patch-a.txt"), "utf8");
+        const patchFail = await mcp.callTool("apply_patch", {
+            patch: [
+                "--- a/patch-a.txt",
+                "+++ b/patch-a.txt",
+                "@@ -1,1 +1,1 @@",
+                "-one",
+                "+ONE",
+                "--- a/missing-patch-source.txt",
+                "+++ b/missing-patch-source.txt",
+                "@@ -1,1 +1,1 @@",
+                "-missing",
+                "+changed",
+                "",
+            ].join("\n"),
+        });
+        assertToolError(patchFail, "apply_patch preflight failure");
+        assert.equal(
+            await readFile(join(ctx.fixtureRoot, "patch-a.txt"), "utf8"),
+            patchBeforeFailure,
+            "failed patch must not partially modify earlier files",
+        );
+
         // bash success + non-zero
         const bashOk = await mcp.callTool("bash", {
             command:
@@ -328,8 +446,43 @@ async function main(): Promise<void> {
         });
         assert.notEqual(bashOk.isError, true, toolText(bashOk));
         assert.match(toolText(bashOk), /exit_code=0/);
-        const bashStructured = bashOk.structuredContent as { stdout?: string };
+        const bashStructured = bashOk.structuredContent as { stdout?: string; outputMode?: string };
         assert.match(bashStructured.stdout ?? "", /bash-ok/);
+        assert.equal(bashStructured.outputMode, "summary");
+
+        await mkdir(join(ctx.fixtureRoot, "command-cwd"), { recursive: true });
+        const bashCwd = await mcp.callTool("bash", {
+            command: process.platform === "win32" ? "(Get-Location).Path" : "pwd",
+            cwd: "command-cwd",
+            output_mode: "tail",
+        });
+        assert.notEqual(bashCwd.isError, true, toolText(bashCwd));
+        assert.match(
+            (bashCwd.structuredContent as { stdout?: string }).stdout ?? "",
+            /command-cwd/,
+        );
+        const bashEscapeCwd = await mcp.callTool("bash", {
+            command: "echo nope",
+            cwd: "../outside",
+        });
+        assertToolError(bashEscapeCwd, "bash cwd escape");
+
+        const bashTail = await mcp.callTool("bash", {
+            command:
+                process.platform === "win32"
+                    ? "Write-Output ('x' * 20000)"
+                    : "printf '%20000s' x",
+            output_mode: "tail",
+            max_output_chars: 1_000,
+        });
+        assert.notEqual(bashTail.isError, true, toolText(bashTail));
+        const bashTailData = bashTail.structuredContent as {
+            stdout?: string;
+            outputTruncated?: boolean;
+        };
+        assert.equal(bashTailData.outputTruncated, true);
+        assert.ok((bashTailData.stdout ?? "").length < 1_100);
+        assert.match(bashTailData.stdout ?? "", /x$/);
 
         const bashFail = await mcp.callTool("bash", {
             command: "exit 7",
@@ -367,6 +520,18 @@ async function main(): Promise<void> {
         assert.equal(execShortData.running, false);
         assert.equal(execShortData.processId, undefined);
         assert.match(execShortData.output ?? "", /exec-ok/);
+
+        const execCwd = await mcp.callTool("exec_command", {
+            command: process.platform === "win32" ? "(Get-Location).Path" : "pwd",
+            cwd: "command-cwd",
+            output_mode: "tail",
+            yield_time_ms: 5_000,
+        });
+        assert.notEqual(execCwd.isError, true, toolText(execCwd));
+        assert.match(
+            (execCwd.structuredContent as { output?: string }).output ?? "",
+            /command-cwd/,
+        );
 
         const execFail = await mcp.callTool("exec_command", {
             command: "exit 9",
@@ -424,10 +589,12 @@ async function main(): Promise<void> {
             await new Promise((resolve) => setTimeout(resolve, 800));
             const processOutput = await reconnectMcp.callTool("process_output", { processId });
             assert.notEqual(processOutput.isError, true, toolText(processOutput));
-            assert.match(
-                (processOutput.structuredContent as { output?: string }).output ?? "",
-                /managed-late/,
-            );
+            const processOutputData = processOutput.structuredContent as {
+                output?: string;
+                outputMode?: string;
+            };
+            assert.match(processOutputData.output ?? "", /managed-late/);
+            assert.equal(processOutputData.outputMode, "summary");
 
             const poll = await reconnectMcp.callTool("write_stdin", {
                 processId,
@@ -438,6 +605,10 @@ async function main(): Promise<void> {
                 (poll.structuredContent as { running?: boolean }).running,
                 true,
                 "a second MCP session for the same local owner must see the process",
+            );
+            assert.equal(
+                (poll.structuredContent as { outputMode?: string }).outputMode,
+                "summary",
             );
             assert.match(
                 (poll.structuredContent as { output?: string }).output ?? "",
@@ -500,9 +671,13 @@ async function main(): Promise<void> {
             pattern: "unique-marker-beta",
         });
         assert.notEqual(grepHit.isError, true, toolText(grepHit));
-        const grepHitStructured = grepHit.structuredContent as { matches?: string[] };
+        const grepHitStructured = grepHit.structuredContent as {
+            matches?: Array<{ path: string; line: number; column: number; text: string; kind: string }>;
+        };
         assert.ok(
-            (grepHitStructured.matches ?? []).some((line) => line.includes("unique-marker-beta")),
+            (grepHitStructured.matches ?? []).some(
+                (match) => match.text.includes("unique-marker-beta") && match.kind === "match",
+            ),
         );
 
         const grepEmpty = await mcp.callTool("grep", {
@@ -511,11 +686,77 @@ async function main(): Promise<void> {
         assert.notEqual(grepEmpty.isError, true, toolText(grepEmpty));
         assert.equal((grepEmpty.structuredContent as { matchCount?: number }).matchCount, 0);
 
+        await mkdir(join(ctx.fixtureRoot, "grep-options"), { recursive: true });
+        await writeFile(
+            join(ctx.fixtureRoot, "grep-options", "keep.ts"),
+            "before\nadvanced-grep-marker\nafter\n",
+            "utf8",
+        );
+        await writeFile(
+            join(ctx.fixtureRoot, "grep-options", "skip.spec.ts"),
+            "advanced-grep-marker\n",
+            "utf8",
+        );
+        const grepFiltered = await mcp.callTool("grep", {
+            pattern: "advanced-grep-marker",
+            path: "grep-options",
+            glob: "**/*.ts",
+            exclude: "**/*.spec.ts",
+            before_context: 1,
+            after_context: 1,
+            max_results: 10,
+        });
+        assert.notEqual(grepFiltered.isError, true, toolText(grepFiltered));
+        const grepFilteredMatches = (grepFiltered.structuredContent as {
+            matches?: Array<{ path: string; text: string; kind: string }>;
+        }).matches ?? [];
+        assert.ok(grepFilteredMatches.some((match) => match.path.endsWith("grep-options/keep.ts")));
+        assert.ok(
+            grepFilteredMatches.some(
+                (match) => match.text.includes("before") && match.kind === "context",
+            ),
+        );
+        assert.ok(grepFilteredMatches.every((match) => !match.path.includes("skip.spec.ts")));
+
+        const grepTightBudget = await mcp.callTool("grep", {
+            pattern: "advanced-grep-marker",
+            path: "grep-options/keep.ts",
+            before_context: 1,
+            after_context: 1,
+            max_results: 1,
+        });
+        assert.notEqual(grepTightBudget.isError, true, toolText(grepTightBudget));
+        const grepTightMatches = (grepTightBudget.structuredContent as {
+            matches?: Array<{ text: string; kind: string }>;
+        }).matches ?? [];
+        assert.equal(grepTightMatches.length, 1);
+        assert.equal(grepTightMatches[0]?.kind, "match");
+        assert.match(grepTightMatches[0]?.text ?? "", /advanced-grep-marker/);
+
+        const grepFilesOnly = await mcp.callTool("grep", {
+            pattern: "advanced-grep-marker",
+            path: "grep-options",
+            files_only: true,
+            max_results: 1,
+        });
+        assert.notEqual(grepFilesOnly.isError, true, toolText(grepFilesOnly));
+        const grepFilesOnlyData = grepFilesOnly.structuredContent as {
+            matches?: unknown[];
+            files?: string[];
+        };
+        assert.equal((grepFilesOnlyData.matches ?? []).length, 0);
+        assert.equal((grepFilesOnlyData.files ?? []).length, 1);
+
         // glob hit + empty + true recursive globstar
         await mkdir(join(ctx.fixtureRoot, "deep", "nested"), { recursive: true });
         await writeFile(
             join(ctx.fixtureRoot, "deep", "nested", "deep.ts"),
             "export const deep = true;\n",
+            "utf8",
+        );
+        await writeFile(
+            join(ctx.fixtureRoot, "deep", "nested", "deep.spec.ts"),
+            "export const skipped = true;\n",
             "utf8",
         );
         const globHit = await mcp.callTool("glob", {
@@ -535,6 +776,16 @@ async function main(): Promise<void> {
             deepFiles.includes("deep/nested/deep.ts"),
             `recursive glob should include deep/nested/deep.ts: ${JSON.stringify(deepFiles)}`,
         );
+
+        const scopedGlob = await mcp.callTool("glob", {
+            pattern: "**/*.ts",
+            path: "deep",
+            exclude: "**/*.spec.ts",
+            max_results: 1,
+        });
+        assert.notEqual(scopedGlob.isError, true, toolText(scopedGlob));
+        const scopedFiles = (scopedGlob.structuredContent as { files?: string[] }).files ?? [];
+        assert.deepEqual(scopedFiles, ["deep/nested/deep.ts"]);
 
         const globEmpty = await mcp.callTool("glob", {
             pattern: "**/*.nope-extension",

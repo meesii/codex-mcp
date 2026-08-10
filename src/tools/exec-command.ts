@@ -4,9 +4,11 @@ import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import { registerTool } from "../lib/tool-log.js";
 import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
-import { truncateText } from "../lib/truncate.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
 import type { ProjectContext } from "../project.js";
 import { AccessDeniedError } from "../project.js";
+
+const DEFAULT_OUTPUT_CHARS = 12_000;
 
 /**
  * Register Codex-style `exec_command` (supports long-running processId).
@@ -26,14 +28,16 @@ export function registerExecCommandTool(
         withToolAuth({
             title: "Execute command",
             description:
-                "Run a command in the project root, returning output or a processId for ongoing interaction (Codex exec_command style). Short commands finish in one call. Long-running commands (npm run dev, watchers) return processId while still running — then write_stdin to poll/write stdin, process_kill to stop. Prefer this over bash for servers/watchers. Windows: PowerShell; Unix: bash. Do NOT use this to read or edit source files.",
+                "Run a command in project_root or an optional guarded project-relative cwd, returning bounded output or a processId for ongoing interaction (Codex exec_command style). Short commands finish in one call. Long-running commands (npm run dev, watchers) return processId while still running — then write_stdin to poll/write stdin, process_kill to stop. Output defaults to summary mode. Prefer this over bash for servers/watchers. Windows: PowerShell; Unix: bash. Do NOT use this to read or edit source files.",
             inputSchema: {
                 command: z
                     .string()
                     .min(1)
-                    .describe(
-                        "Shell command to execute (cwd is project root). Windows: PowerShell; Unix: bash.",
-                    ),
+                    .describe("Shell command to execute. Windows: PowerShell; Unix: bash."),
+                cwd: z
+                    .string()
+                    .optional()
+                    .describe("Optional working directory relative to project_root."),
                 name: z
                     .string()
                     .min(1)
@@ -49,13 +53,17 @@ export function registerExecCommandTool(
                     .describe(
                         "Max time to wait before returning a processId for a still-running command. Finished commands return immediately. Default 10000 ms (range 0-30000).",
                     ),
+                output_mode: z
+                    .enum(OUTPUT_MODES)
+                    .optional()
+                    .describe("Output selection: summary (default), tail, head_tail, or full."),
                 max_output_chars: z
                     .number()
                     .int()
-                    .positive()
+                    .min(256)
                     .max(200_000)
                     .optional()
-                    .describe("Output character budget (default 40000)."),
+                    .describe("Output character budget (default 12000)."),
             },
             outputSchema: {
                 processId: z.number().int().optional(),
@@ -64,25 +72,32 @@ export function registerExecCommandTool(
                 signal: z.string().optional(),
                 wallTimeMs: z.number(),
                 output: z.string(),
+                outputMode: z.enum(OUTPUT_MODES),
                 outputTruncated: z.boolean(),
             },
             annotations: destructiveAnnotations,
         }),
         async ({
             command,
+            cwd,
             name,
             yield_time_ms: yieldTimeMs,
+            output_mode: outputMode,
             max_output_chars: maxOutputChars,
         }) => {
             try {
+                const effectiveCwd = project.resolvePath(cwd ?? ".");
+                const effectiveMode: OutputMode = outputMode ?? "summary";
+                const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
                 const snapshot = await processes.start({
                     command,
-                    cwd: project.root,
+                    cwd: effectiveCwd,
                     ...(name ? { name } : {}),
                     yieldTimeMs,
-                    maxOutputChars,
+                    maxOutputChars: effectiveMaxChars,
                 });
-                const output = truncateText(snapshot.output);
+                const formatted = formatOutput(snapshot.output, effectiveMode, effectiveMaxChars);
+                const output = formatted.text;
                 const status = snapshot.running
                     ? `Process running with processId=${snapshot.processId}. Use write_stdin to poll or process_kill to stop.`
                     : snapshot.signal
@@ -96,7 +111,8 @@ export function registerExecCommandTool(
                     signal: snapshot.signal,
                     wallTimeMs: snapshot.wallTimeMs,
                     output,
-                    outputTruncated: snapshot.outputTruncated,
+                    outputMode: effectiveMode,
+                    outputTruncated: snapshot.outputTruncated || formatted.truncated,
                 };
                 const failed =
                     !snapshot.running &&

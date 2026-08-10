@@ -7,6 +7,11 @@ import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool-log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
+import {
+    queryToSearchPattern,
+    rankMatchesByFile,
+    significantQueryTokens,
+} from "../lib/query-relevance.js";
 
 const CONTEXT_PACK_SEARCH_CANDIDATES = 80;
 const CONTEXT_PACK_MAX_MATCHES = 20;
@@ -29,6 +34,7 @@ const searchMatchSchema = z.object({
     line: z.number().int(),
     column: z.number().int(),
     text: z.string(),
+    kind: z.enum(["match", "context"]),
 });
 
 /** Register bounded multi-repo discovery/search/context tools. */
@@ -113,7 +119,7 @@ export function registerWorkspaceTools(
         withToolAuth({
             title: "Build task context pack",
             description:
-                "Build a lightweight context pack for a coding task: workspace projects, relevant file matches, scoped AGENTS.md rules, matching Codex skills, and CodeGraph availability. It does not modify files or execute project code.",
+                "Build a scope-focused context pack for a coding task: the relevant project, ranked file matches, applicable AGENTS.md rules, high-confidence Codex skills, and CodeGraph availability. When path is supplied, unrelated workspace projects are omitted.",
             inputSchema: {
                 query: z.string().min(1).max(2_000),
                 path: z.string().optional(),
@@ -147,8 +153,7 @@ export function registerWorkspaceTools(
         }),
         async ({ query, path }) => {
             try {
-                const projectsPromise = workspace.listProjects(3);
-                const searchPromise = workspace
+                const searchResult = await workspace
                     .search({
                         pattern: queryToSearchPattern(query),
                         ...(path ? { path } : {}),
@@ -160,7 +165,7 @@ export function registerWorkspaceTools(
                         search: undefined,
                         error: error instanceof Error ? error.message : String(error),
                     }));
-                const [projects, searchResult] = await Promise.all([projectsPromise, searchPromise]);
+
                 const rankedMatches = rankContextMatches(
                     query,
                     searchResult.search?.matches ?? [],
@@ -177,17 +182,23 @@ export function registerWorkspaceTools(
                 const searchError = searchResult.error;
 
                 const targetPath = path?.trim() || files[0]?.path || ".";
+                const projects =
+                    targetPath === "."
+                        ? await workspace.listProjects(3)
+                        : await workspace.projectsForPath(targetPath, 3);
                 const applicableAgents = agents.forPath(targetPath);
                 const skillMatches = rankSkills(query, skills.list()).slice(0, CONTEXT_PACK_MAX_SKILLS);
                 const codegraphProjects = projects
                     .filter((item) => item.codegraph)
                     .map((item) => item.path);
-                const codegraphMcpReady = hub.listServers().some(
-                    (item) => item.name === "codegraph" && item.status === "ready",
-                );
+                const codegraphMcpReady =
+                    codegraphProjects.length > 0 &&
+                    hub.listServers().some(
+                        (item) => item.name === "codegraph" && item.status === "ready",
+                    );
 
                 return okResult(
-                    `Built context pack with ${projects.length} project(s), ${files.length} file match(es), ${applicableAgents.length} AGENTS.md file(s), and ${skillMatches.length} skill candidate(s).`,
+                    `Built scoped context for ${targetPath}: ${projects.length} project(s), ${files.length} ranked file match(es), ${applicableAgents.length} AGENTS.md file(s), ${skillMatches.length} skill candidate(s).`,
                     {
                         query,
                         targetPath,
@@ -208,82 +219,36 @@ export function registerWorkspaceTools(
     );
 }
 
-function queryToSearchPattern(query: string): string {
-    const tokens = query.match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
-    const unique = [...new Set(tokens.map((token) => token.toLowerCase()))].slice(0, 8);
-    const selected = unique.length > 0 ? unique : [query];
-    return selected.map(escapeRegex).join("|");
-}
-
-/** @internal Rank context-pack matches by query relevance while preserving file diversity. */
-export function rankContextMatches<T extends { path: string; line: number; column: number; text: string }>(
+/** @internal Rank context-pack matches by file-level token coverage and preserve diversity. */
+export function rankContextMatches<
+    T extends { path: string; line: number; column: number; text: string },
+>(
     query: string,
     matches: T[],
     maxMatches = CONTEXT_PACK_MAX_MATCHES,
     maxMatchesPerFile = CONTEXT_PACK_MAX_MATCHES_PER_FILE,
 ): T[] {
-    const normalizedQuery = query.trim().toLowerCase();
-    const queryTokens = [...new Set(queryToTokens(normalizedQuery))];
-    const scored = matches.map((match, index) => {
-        const normalizedPath = match.path.replaceAll("\\", "/").toLowerCase();
-        const fileName = normalizedPath.split("/").at(-1) ?? normalizedPath;
-        const text = match.text.toLowerCase();
-        let score = 0;
-
-        if (normalizedQuery && fileName.includes(normalizedQuery)) score += 100;
-        if (normalizedQuery && normalizedPath.includes(normalizedQuery)) score += 40;
-        for (const token of queryTokens) {
-            if (fileName.includes(token)) score += 20;
-            else if (normalizedPath.includes(token)) score += 10;
-            if (text.includes(token)) score += 2;
-        }
-        return { match, index, normalizedPath, score };
-    });
-
-    scored.sort(
-        (left, right) =>
-            right.score - left.score ||
-            left.normalizedPath.localeCompare(right.normalizedPath) ||
-            left.match.line - right.match.line ||
-            left.match.column - right.match.column ||
-            left.index - right.index,
-    );
-
-    const selected: T[] = [];
-    const perFile = new Map<string, number>();
-    for (const item of scored) {
-        if (selected.length >= maxMatches) break;
-        const count = perFile.get(item.normalizedPath) ?? 0;
-        if (count >= maxMatchesPerFile) continue;
-        perFile.set(item.normalizedPath, count + 1);
-        selected.push(item.match);
-    }
-    return selected;
+    const maxFiles = Math.max(1, maxMatches);
+    return rankMatchesByFile(query, matches, maxFiles, maxMatchesPerFile)
+        .flatMap((item) => item.matches)
+        .slice(0, maxMatches);
 }
 
 function rankSkills<T extends { name: string; description: string }>(query: string, skills: T[]): T[] {
     const normalized = query.toLowerCase();
-    const queryTokens = new Set(queryToTokens(normalized));
+    const queryTokens = significantQueryTokens(query);
     return skills
         .map((skill) => {
+            const name = skill.name.toLowerCase();
             const text = `${skill.name} ${skill.description}`.toLowerCase();
-            let score = normalized.includes(skill.name.toLowerCase()) ? 20 : 0;
-            for (const token of queryTokens) {
-                if (text.includes(token)) score += 1;
-            }
-            return { skill, score };
+            const directNameMatch = normalized.includes(name);
+            const overlap = queryTokens.filter((token) => text.includes(token)).length;
+            const score = (directNameMatch ? 20 : 0) + overlap;
+            return { skill, directNameMatch, overlap, score };
         })
-        .filter((item) => item.score > 0)
+        .filter((item) => item.directNameMatch || item.overlap >= 2)
         .sort((left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name))
         .map((item) => item.skill);
-}
-
-function queryToTokens(value: string): string[] {
-    return value.match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
-}
-
-function escapeRegex(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function clipText(value: string, maxChars: number): string {

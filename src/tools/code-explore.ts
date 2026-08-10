@@ -8,6 +8,7 @@ import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool-log.js";
 import { openWorldAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult, resultText } from "../lib/tool-result.js";
+import { queryToSearchPattern, rankMatchesByFile } from "../lib/query-relevance.js";
 
 /** Prefer CodeGraph when an index/server is available, otherwise use bounded workspace search. */
 export function registerCodeExploreTool(
@@ -38,6 +39,7 @@ export function registerCodeExploreTool(
                         line: z.number().int(),
                         column: z.number().int(),
                         text: z.string(),
+                        kind: z.enum(["match", "context"]),
                     }),
                 ),
                 fallbackReason: z.string().nullable(),
@@ -86,19 +88,26 @@ export function registerCodeExploreTool(
                     pattern: queryToSearchPattern(query),
                     path: target,
                     caseInsensitive: true,
-                    maxMatches: 80,
+                    maxMatches: 240,
                 });
-                const text = search.matches
-                    .slice(0, 40)
-                    .map((match) => `${match.path}:${match.line}:${match.column}: ${match.text}`)
+                const rankedFiles = rankMatchesByFile(query, search.matches, maxFiles ?? 12, 3);
+                const matches = rankedFiles.flatMap((item) => item.matches);
+                const text = rankedFiles
+                    .map((file) => {
+                        const header = `${file.path} (coverage=${file.coverage}, score=${file.score})`;
+                        const evidence = file.matches
+                            .map((match) => `  ${match.line}:${match.column}: ${match.text}`)
+                            .join("\n");
+                        return `${header}\n${evidence}`;
+                    })
                     .join("\n");
                 return okResult(
-                    `CodeGraph unavailable for this request; returned ${search.matches.length} workspace match(es) instead.`,
+                    `CodeGraph unavailable; ranked ${rankedFiles.length} relevant file(s) from ${search.matches.length} structured search candidate(s).`,
                     {
                         source: "workspace_search" as const,
                         projectPath: target,
                         text,
-                        matches: search.matches,
+                        matches,
                         fallbackReason: fallbackReason ?? "no applicable CodeGraph index",
                     },
                 );
@@ -173,16 +182,6 @@ function isInside(root: string, candidate: string): boolean {
             relationship !== ".." &&
             !relationship.startsWith(`..${sep}`))
     );
-}
-
-function queryToSearchPattern(query: string): string {
-    const tokens = query.match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
-    const unique = [...new Set(tokens.map((token) => token.toLowerCase()))].slice(0, 8);
-    return (unique.length > 0 ? unique : [query]).map(escapeRegex).join("|");
-}
-
-function escapeRegex(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function clipText(value: string, maxChars: number): string {

@@ -8,8 +8,8 @@ import { AccessDeniedError } from "../project.js";
 import { registerTool } from "../lib/tool-log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
-import { truncateText } from "../lib/truncate.js";
-import { findRipgrep, runRipgrep } from "../lib/ripgrep.js";
+import { findRipgrep } from "../lib/ripgrep.js";
+import { structuredSearch, type StructuredSearchMatch } from "../lib/structured-search.js";
 
 const MAX_WALK_FILES = 50_000;
 const MAX_FALLBACK_FILE_BYTES = 2 * 1024 * 1024;
@@ -140,13 +140,21 @@ export async function runFallbackRegexGrep(
 
 /** Register the `grep` tool. */
 export function registerGrepTool(server: McpServer, project: ProjectContext): void {
+    const matchSchema = z.object({
+        path: z.string(),
+        line: z.number().int(),
+        column: z.number().int(),
+        text: z.string(),
+        kind: z.enum(["match", "context"]),
+    });
+
     registerTool(
         server,
         "grep",
         withToolAuth({
             title: "Search file contents",
             description:
-                "Search file contents with a regex (ripgrep when available). Prefer this over shell grep. Results are bounded and reported in structuredContent.matches.",
+                "Structured ripgrep-style regex search. Returns file/line/column/text records instead of CLI-formatted strings, with include/exclude globs, context, result limits, and files-only mode.",
             inputSchema: {
                 pattern: z
                     .string()
@@ -161,15 +169,47 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
                     .boolean()
                     .optional()
                     .describe("When true, search case-insensitively."),
+                glob: z
+                    .union([z.string(), z.array(z.string()).max(50)])
+                    .optional()
+                    .describe("Include glob pattern or patterns."),
+                exclude: z
+                    .union([z.string(), z.array(z.string()).max(50)])
+                    .optional()
+                    .describe("Exclude glob pattern or patterns."),
+                max_results: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(1_000)
+                    .optional()
+                    .describe("Maximum returned result records/files (default 200)."),
+                before_context: z.number().int().min(0).max(20).optional(),
+                after_context: z.number().int().min(0).max(20).optional(),
+                files_only: z
+                    .boolean()
+                    .optional()
+                    .describe("Return only unique matching file paths in structuredContent.files."),
             },
             outputSchema: {
                 matchCount: z.number().int(),
-                matches: z.array(z.string()),
+                matches: z.array(matchSchema),
+                files: z.array(z.string()),
                 truncated: z.boolean(),
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ pattern, path: scopePath, case_insensitive: caseInsensitive }) => {
+        async ({
+            pattern,
+            path: scopePath,
+            case_insensitive: caseInsensitive,
+            glob,
+            exclude,
+            max_results: maxResults,
+            before_context: beforeContext,
+            after_context: afterContext,
+            files_only: filesOnly,
+        }) => {
             try {
                 const scopedAbsolute = project.resolvePath(scopePath ?? ".");
                 const info = await stat(scopedAbsolute).catch(() => null);
@@ -178,44 +218,55 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
                 }
 
                 const rg = await findRipgrep();
-                let lines: string[];
-                let truncated = false;
-
                 if (rg) {
-                    const args = ["--line-number", "--no-heading", "--color", "never"];
-                    if (caseInsensitive) args.push("-i");
-                    args.push("--", pattern, scopePath ?? ".");
-                    const result = await runRipgrep(rg, args, project.root);
-                    if (result.exitCode !== 0 && result.exitCode !== 1) {
-                        return errorResult(
-                            result.stderr || `rg failed with code ${result.exitCode}`,
-                        );
-                    }
-                    lines = result.stdout
-                        .split(/\r?\n/)
-                        .map((line) => line.trimEnd())
-                        .filter(Boolean);
-                    truncated = result.truncated;
-                } else {
-                    const fallback = await runFallbackRegexGrep(
-                        project.root,
-                        scopedAbsolute,
+                    const result = await structuredSearch(project, {
                         pattern,
-                        caseInsensitive === true,
+                        ...(scopePath ? { path: scopePath } : {}),
+                        ...(caseInsensitive !== undefined ? { caseInsensitive } : {}),
+                        include: normalizePatterns(glob),
+                        exclude: normalizePatterns(exclude),
+                        ...(maxResults !== undefined ? { maxResults } : {}),
+                        ...(beforeContext !== undefined ? { beforeContext } : {}),
+                        ...(afterContext !== undefined ? { afterContext } : {}),
+                        ...(filesOnly !== undefined ? { filesOnly } : {}),
+                    });
+                    return okResult(
+                        `Found ${result.truncated ? "at least " : ""}${result.matchCount} match(es) in ${result.files.length} file(s)${result.truncated ? " (truncated)" : ""}.`,
+                        { ...result },
                     );
-                    lines = fallback.matches;
-                    truncated = fallback.truncated;
                 }
 
-                const limited = lines
-                    .slice(0, MAX_RETURNED_MATCHES)
-                    .map((line) => truncateText(line, 2000));
-                truncated = truncated || lines.length > limited.length;
+                if (
+                    glob !== undefined ||
+                    exclude !== undefined ||
+                    filesOnly === true ||
+                    (beforeContext ?? 0) > 0 ||
+                    (afterContext ?? 0) > 0
+                ) {
+                    return errorResult(
+                        "Advanced grep options require ripgrep; install/reload the managed ripgrep dependency or use basic pattern/path search.",
+                    );
+                }
+
+                const fallback = await runFallbackRegexGrep(
+                    project.root,
+                    scopedAbsolute,
+                    pattern,
+                    caseInsensitive === true,
+                );
+                const resultLimit = maxResults ?? MAX_RETURNED_MATCHES;
+                const allMatches = fallback.matches
+                    .map(parseFallbackMatch)
+                    .filter((item): item is StructuredSearchMatch => item !== undefined);
+                const matches = allMatches.slice(0, resultLimit);
+                const files = [...new Set(matches.map((item) => item.path))];
+                const truncated = fallback.truncated || allMatches.length > matches.length;
                 return okResult(
-                    `Found ${truncated ? "at least " : ""}${lines.length} matches${truncated ? " (truncated)" : ""}.`,
+                    `Found ${truncated ? "at least " : ""}${allMatches.length} match(es) in ${files.length} file(s)${truncated ? " (truncated)" : ""}.`,
                     {
-                        matchCount: lines.length,
-                        matches: limited,
+                        matchCount: allMatches.length,
+                        matches,
+                        files,
                         truncated,
                     },
                 );
@@ -228,4 +279,21 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
             }
         },
     );
+}
+
+function normalizePatterns(value: string | string[] | undefined): string[] {
+    if (value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+}
+
+function parseFallbackMatch(value: string): StructuredSearchMatch | undefined {
+    const match = /^(.*?):(\d+):(.*)$/.exec(value);
+    if (!match) return undefined;
+    return {
+        path: match[1]!,
+        line: Number(match[2]),
+        column: 1,
+        text: match[3]!,
+        kind: "match",
+    };
 }

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -7,6 +7,7 @@ import { AccessDeniedError } from "../project.js";
 import { registerTool } from "../lib/tool-log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
+import { buildMutationDiff } from "../lib/mutation-diff.js";
 
 /**
  * Register the `write` tool.
@@ -29,6 +30,9 @@ export function registerWriteTool(server: McpServer, project: ProjectContext): v
             outputSchema: {
                 path: z.string(),
                 bytes: z.number().int(),
+                filesChanged: z.number().int(),
+                diff: z.string(),
+                diffTruncated: z.boolean(),
             },
             annotations: writeAnnotations,
         }),
@@ -36,12 +40,22 @@ export function registerWriteTool(server: McpServer, project: ProjectContext): v
             try {
                 return await project.lock.runExclusive(async () => {
                     const absolutePath = project.resolvePath(filePath);
+                    const before = await readFile(absolutePath, "utf8").catch(
+                        (error: NodeJS.ErrnoException) => {
+                            if (error.code === "ENOENT") return null;
+                            throw error;
+                        },
+                    );
+                    const mutation = buildMutationDiff(filePath, before, content);
                     await mkdir(dirname(absolutePath), { recursive: true });
                     await writeFile(absolutePath, content, "utf8");
                     const bytes = Buffer.byteLength(content, "utf8");
-                    return okResult(`Wrote ${filePath} (${bytes} bytes).`, {
+                    return okResult(`Wrote ${filePath} (${bytes} bytes); bounded diff included.`, {
                         path: filePath,
                         bytes,
+                        filesChanged: 1,
+                        diff: mutation.diff,
+                        diffTruncated: mutation.diffTruncated,
                     });
                 });
             } catch (error) {

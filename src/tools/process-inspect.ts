@@ -4,6 +4,10 @@ import type { ProcessInfo, ProcessSessionManager } from "../lib/process-sessions
 import { registerTool } from "../lib/tool-log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
+
+const DEFAULT_OUTPUT_CHARS = 12_000;
+const PROCESS_CAPTURE_CHARS = 200_000;
 
 const processInfoSchema = z.object({
     processId: z.number().int(),
@@ -80,7 +84,17 @@ export function registerProcessInspectTools(
                 "Peek currently buffered stdout/stderr for a managed process without consuming it. write_stdin remains the consuming poll/interaction tool.",
             inputSchema: {
                 processId: z.number().int().positive(),
-                max_output_chars: z.number().int().positive().max(200_000).optional(),
+                output_mode: z
+                    .enum(OUTPUT_MODES)
+                    .optional()
+                    .describe("Output selection: summary (default), tail, head_tail, or full."),
+                max_output_chars: z
+                    .number()
+                    .int()
+                    .positive()
+                    .max(200_000)
+                    .optional()
+                    .describe("Returned output character budget (default 12000)."),
             },
             outputSchema: {
                 processId: z.number().int(),
@@ -89,23 +103,28 @@ export function registerProcessInspectTools(
                 signal: z.string().optional(),
                 wallTimeMs: z.number(),
                 output: z.string(),
+                outputMode: z.enum(OUTPUT_MODES),
                 outputTruncated: z.boolean(),
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ processId, max_output_chars: maxOutputChars }) => {
+        async ({ processId, output_mode: outputMode, max_output_chars: maxOutputChars }) => {
             try {
-                const snapshot = processes.peek(processId, maxOutputChars);
+                const effectiveMode: OutputMode = outputMode ?? "summary";
+                const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
+                const snapshot = processes.peek(processId, PROCESS_CAPTURE_CHARS);
+                const formatted = formatOutput(snapshot.output, effectiveMode, effectiveMaxChars);
                 return okResult(
-                    `Peeked ${snapshot.output.length} buffered character(s) from process #${processId}.`,
+                    `Peeked process #${processId} output (mode=${effectiveMode}${snapshot.outputTruncated || formatted.truncated ? ", truncated" : ""}).`,
                     {
                         processId,
                         running: snapshot.running,
                         exitCode: snapshot.exitCode,
                         signal: snapshot.signal,
                         wallTimeMs: snapshot.wallTimeMs,
-                        output: snapshot.output,
-                        outputTruncated: snapshot.outputTruncated,
+                        output: formatted.text,
+                        outputMode: effectiveMode,
+                        outputTruncated: snapshot.outputTruncated || formatted.truncated,
                     },
                 );
             } catch (error) {

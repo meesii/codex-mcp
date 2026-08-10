@@ -4,7 +4,10 @@ import type { ProcessSessionManager } from "../lib/process-sessions.js";
 import { registerTool } from "../lib/tool-log.js";
 import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
-import { truncateText } from "../lib/truncate.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
+
+const DEFAULT_OUTPUT_CHARS = 12_000;
+const PROCESS_CAPTURE_CHARS = 200_000;
 
 /**
  * Register Codex-style `write_stdin` (poll / write to a processId).
@@ -40,13 +43,17 @@ export function registerWriteStdinTool(
                     .max(30_000)
                     .optional()
                     .describe("Wait for more output before returning (default poll 5000 ms)."),
+                output_mode: z
+                    .enum(OUTPUT_MODES)
+                    .optional()
+                    .describe("Output selection: summary (default), tail, head_tail, or full."),
                 max_output_chars: z
                     .number()
                     .int()
                     .positive()
                     .max(200_000)
                     .optional()
-                    .describe("Output character budget for this call."),
+                    .describe("Returned output character budget (default 12000)."),
             },
             outputSchema: {
                 processId: z.number().int().optional(),
@@ -55,6 +62,7 @@ export function registerWriteStdinTool(
                 signal: z.string().optional(),
                 wallTimeMs: z.number(),
                 output: z.string(),
+                outputMode: z.enum(OUTPUT_MODES),
                 outputTruncated: z.boolean(),
             },
             annotations: destructiveAnnotations,
@@ -63,16 +71,20 @@ export function registerWriteStdinTool(
             processId,
             chars,
             yield_time_ms: yieldTimeMs,
+            output_mode: outputMode,
             max_output_chars: maxOutputChars,
         }) => {
             try {
+                const effectiveMode: OutputMode = outputMode ?? "summary";
+                const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
                 const snapshot = await processes.poll({
                     processId,
                     chars,
                     yieldTimeMs,
-                    maxOutputChars,
+                    maxOutputChars: PROCESS_CAPTURE_CHARS,
                 });
-                const output = truncateText(snapshot.output);
+                const formatted = formatOutput(snapshot.output, effectiveMode, effectiveMaxChars);
+                const output = formatted.text;
                 const status = snapshot.running
                     ? `Process still running (processId=${snapshot.processId}).`
                     : snapshot.signal
@@ -86,7 +98,8 @@ export function registerWriteStdinTool(
                     signal: snapshot.signal,
                     wallTimeMs: snapshot.wallTimeMs,
                     output,
-                    outputTruncated: snapshot.outputTruncated,
+                    outputMode: effectiveMode,
+                    outputTruncated: snapshot.outputTruncated || formatted.truncated,
                 };
                 const failed =
                     !snapshot.running &&

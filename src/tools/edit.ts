@@ -6,6 +6,7 @@ import { AccessDeniedError } from "../project.js";
 import { registerTool } from "../lib/tool-log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
 import { errorResult, okResult } from "../lib/tool-result.js";
+import { buildMutationDiff } from "../lib/mutation-diff.js";
 
 /**
  * Register the `edit` tool (exact string replacement).
@@ -32,6 +33,9 @@ export function registerEditTool(server: McpServer, project: ProjectContext): vo
             outputSchema: {
                 path: z.string(),
                 replaced: z.boolean(),
+                filesChanged: z.number().int(),
+                diff: z.string(),
+                diffTruncated: z.boolean(),
             },
             annotations: writeAnnotations,
         }),
@@ -52,10 +56,14 @@ export function registerEditTool(server: McpServer, project: ProjectContext): vo
                     // Replacement must be literal: String.replace(string, string)
                     // interprets $&, $`, $' and $$ sequences in newString.
                     const next = current.replace(oldString, () => newString);
+                    const mutation = buildMutationDiff(filePath, current, next);
                     await writeFile(absolutePath, next, "utf8");
-                    return okResult(`Edited ${filePath}.`, {
+                    return okResult(`Edited ${filePath}; bounded diff included.`, {
                         path: filePath,
                         replaced: true,
+                        filesChanged: 1,
+                        diff: mutation.diff,
+                        diffTruncated: mutation.diffTruncated,
                     });
                 });
             } catch (error) {

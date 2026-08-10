@@ -25,9 +25,11 @@ interface GlobWalkState {
 }
 
 async function walkGlobFiles(
-    root: string,
+    projectRoot: string,
+    scopeRoot: string,
     current: string,
     matcher: Minimatch,
+    excludes: Minimatch[],
     state: GlobWalkState,
     maxDiscoveredFiles: number,
 ): Promise<boolean> {
@@ -36,14 +38,17 @@ async function walkGlobFiles(
         if (entry.name === "node_modules" || entry.name === ".git") continue;
 
         const full = join(current, entry.name);
-        const relativePath = relative(root, full).replaceAll("\\", "/");
+        const scopeRelativePath = relative(scopeRoot, full).replaceAll("\\", "/");
+        const projectRelativePath = relative(projectRoot, full).replaceAll("\\", "/");
         if (entry.isDirectory()) {
-            if (matcher.negate || matcher.match(relativePath, true)) {
+            if (matcher.negate || matcher.match(scopeRelativePath, true)) {
                 if (
                     await walkGlobFiles(
-                        root,
+                        projectRoot,
+                        scopeRoot,
                         full,
                         matcher,
+                        excludes,
                         state,
                         maxDiscoveredFiles,
                     )
@@ -55,13 +60,15 @@ async function walkGlobFiles(
         }
         if (!entry.isFile()) continue;
 
-        const matches = matcher.match(relativePath);
-        if (!matches && !matcher.negate && !matcher.match(relativePath, true)) {
+        const matches = matcher.match(scopeRelativePath);
+        if (!matches && !matcher.negate && !matcher.match(scopeRelativePath, true)) {
             continue;
         }
 
         state.candidateCount += 1;
-        if (matches) state.files.push(relativePath);
+        if (matches && !excludes.some((item) => item.match(scopeRelativePath))) {
+            state.files.push(projectRelativePath);
+        }
         if (state.candidateCount >= maxDiscoveredFiles) return true;
     }
     return false;
@@ -72,13 +79,20 @@ export async function listGlobFiles(
     project: ProjectContext,
     pattern: string,
     maxDiscoveredFiles = MAX_DISCOVERED_FILES,
+    options: { path?: string; exclude?: string[] } = {},
 ): Promise<{ files: string[]; scanTruncated: boolean }> {
     const matcher = new Minimatch(pattern.replaceAll("\\", "/"), GLOB_OPTIONS);
+    const excludes = (options.exclude ?? []).map(
+        (item) => new Minimatch(item.replaceAll("\\", "/"), GLOB_OPTIONS),
+    );
+    const scopeRoot = project.resolvePath(options.path?.trim() || ".");
     const state: GlobWalkState = { candidateCount: 0, files: [] };
     const scanTruncated = await walkGlobFiles(
         project.root,
-        project.root,
+        scopeRoot,
+        scopeRoot,
         matcher,
+        excludes,
         state,
         maxDiscoveredFiles,
     );
@@ -93,13 +107,22 @@ export function registerGlobTool(server: McpServer, project: ProjectContext): vo
         withToolAuth({
             title: "Find files by glob",
             description:
-                "Find files by standard glob syntax under the project root. Paths are in structuredContent.files.",
+                "Find files by standard glob syntax with optional subtree scope, exclusion globs, and result limits. Returned paths stay project-relative.",
             inputSchema: {
                 pattern: z
                     .string()
                     .min(1)
                     .max(1024)
                     .describe("Glob pattern, e.g. **/*.ts or *.txt"),
+                path: z
+                    .string()
+                    .optional()
+                    .describe("Optional project-relative subtree; pattern is evaluated relative to this scope."),
+                exclude: z
+                    .union([z.string(), z.array(z.string()).max(50)])
+                    .optional()
+                    .describe("Optional scope-relative exclusion glob(s)."),
+                max_results: z.number().int().min(1).max(2_000).optional(),
             },
             outputSchema: {
                 count: z.number().int(),
@@ -108,10 +131,19 @@ export function registerGlobTool(server: McpServer, project: ProjectContext): vo
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ pattern }) => {
+        async ({ pattern, path, exclude, max_results: maxResults }) => {
             try {
-                const { files, scanTruncated } = await listGlobFiles(project, pattern);
-                const limited = files.slice(0, MAX_RETURNED_FILES);
+                const excludes = exclude === undefined ? [] : Array.isArray(exclude) ? exclude : [exclude];
+                const { files, scanTruncated } = await listGlobFiles(
+                    project,
+                    pattern,
+                    MAX_DISCOVERED_FILES,
+                    {
+                        ...(path ? { path } : {}),
+                        exclude: excludes,
+                    },
+                );
+                const limited = files.slice(0, maxResults ?? MAX_RETURNED_FILES);
                 const truncated = scanTruncated || files.length > limited.length;
                 return okResult(
                     `Found ${files.length}${scanTruncated ? "+" : ""} files${truncated ? " (truncated)" : ""}.`,
