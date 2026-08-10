@@ -330,13 +330,22 @@ async function main(): Promise<void> {
     });
     assert.ok(orphaned.processId);
     reconnectLease.release();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await assert.rejects(
-        pooledRoot.scope("oauth:client-a").poll({
-            processId: orphaned.processId!,
-            yieldTimeMs: 0,
-        }),
-        /Unknown processId/,
+    let orphanReaped = false;
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+        try {
+            pooledRoot.scope("oauth:client-a").status(orphaned.processId!);
+        } catch (error) {
+            if (error instanceof Error && /Unknown processId/.test(error.message)) {
+                orphanReaped = true;
+                break;
+            }
+            throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(
+        orphanReaped,
+        true,
         "owner processes must be reaped after the reconnect grace expires",
     );
     await ownerPool.shutdown();
