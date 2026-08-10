@@ -33,17 +33,8 @@ jobs:
       - name: Install
         run: npm ci --registry=https://registry.npmjs.org
 
-      - name: Install ripgrep (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
-      - name: Install ripgrep (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ripgrep
-
-      - name: Install ripgrep (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ripgrep -y
+      - name: Install managed ripgrep
+        run: npx tsx src/managed-tools-cli.ts ripgrep
 
       - name: Typecheck
         run: npm run typecheck
