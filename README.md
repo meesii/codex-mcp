@@ -48,19 +48,24 @@
 
 ## 使用前准备
 
-必须安装：
+必须准备：
 
 - Node.js `22` 或更高版本
-- 如果要让 ChatGPT 从公网连接：一个自己的域名、Cloudflare 账号和 `cloudflared`
+- 如果要让 ChatGPT 从公网连接：一个自己的域名和 Cloudflare 账号
+
+codex-mcp 会自己管理运行组件：
+
+- ripgrep：安装 codex-mcp 时自动准备，用于文件搜索
+- cloudflared：选择 Cloudflare Tunnel 时自动准备，不需要手动安装或填写程序路径
 
 可选安装：
 
+- Git：没有时 Git 状态、历史和差异相关工具不可用
 - Codex CLI：安装后 codex-mcp 会自动读取你已有的 Codex MCP
-- ripgrep：安装后文件搜索更快；没有也能用
 
 ## 一键安装
 
-Friends Beta 通过 GitHub Releases 分发，不需要下载源码，也不需要 `npm link`。程序安装在用户目录 `~/.codex-mcp/npm`，配置保存在 `~/.codex-mcp`；升级程序不会覆盖配置。
+Friends Beta 通过 GitHub Releases 分发，不需要下载源码，也不需要 `npm link`。程序安装在 `~/.codex-mcp/npm`，codex-mcp 自己管理的运行组件放在 `~/.codex-mcp/bin`，配置保存在 `~/.codex-mcp`；升级程序不会覆盖配置。
 
 **macOS / Linux：**
 
@@ -97,7 +102,7 @@ codex-mcp setup
 codex-mcp doctor
 ```
 
-`doctor` 只读取本机状态，不会修改配置。它会检查 Node.js、Codex、ripgrep、连接密码、域名、cloudflared 和 Tunnel 文件。真正的公网连通性会在每次启动 `codex-mcp` 时自动验证。
+`doctor` 只读取本机状态，不会修改配置。它会检查 Node.js、Git、Codex、文件搜索组件、连接密码、域名、公网连接组件和 Tunnel 文件。真正的公网连通性会在每次启动 `codex-mcp` 时自动验证。
 
 ## 启动项目
 
@@ -220,7 +225,6 @@ Windows：`%USERPROFILE%\.codex-mcp\config.json`。
     "port": 3920,
     "domain": "mcp.example.com",
     "useCloudflared": true,
-    "cloudflaredBin": "D:\\path\\to\\cloudflared.exe",
     "tunnelName": "codex-mcp",
     "tunnelId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
     "clientCapabilities": {
@@ -237,7 +241,7 @@ Windows：`%USERPROFILE%\.codex-mcp\config.json`。
 | --- | --- |
 | `domain` | 公网 Host；会 canonicalize 为 DNS hostname（含 IDN punycode），拒绝 IP/localhost/credentials/非法 label，并用于构造 OAuth resource URL |
 | `useCloudflared` | `true` 时 serve 自动启动 tunnel sidecar |
-| `cloudflaredBin` | cloudflared 可执行文件路径 |
+| `cloudflaredBin` | 自动保存的公网连接组件路径；通常不需要手动填写 |
 | `tunnelName` / `tunnelId` | Tunnel 标识 |
 | `host` / `port` | 正常 serve 的本机监听地址；`--local` 会忽略 host 并强制 `127.0.0.1` |
 | `clientCapabilities` | 可选的**顶层 tool registration policy**；`default` 和 `clients[client_id]` 接受精确工具名、单个 trailing `*` 前缀模式或 `*`。省略整个字段时默认所有工具可用。它不是多租户 sandbox：同一 codex-mcp 实例的已授权客户端共享 downstream Hub/runtime |
@@ -247,6 +251,7 @@ Windows：`%USERPROFILE%\.codex-mcp\config.json`。
 ```text
 ~/.codex-mcp/auth.json             # 管理员 Argon2id 密码哈希
 ~/.codex-mcp/oauth-state.json      # OAuth client/code/token digest 状态
+~/.codex-mcp/bin/                  # codex-mcp 自动管理的 rg / cloudflared
 ~/.codex-mcp/mcp.json              # 可选：额外 MCP / Codex MCP 同名覆盖
 ~/.codex-mcp/cloudflared.yml       # codex-mcp 专用 cloudflared ingress
 ~/.codex-mcp/logs/tunnel.log       # tunnel sidecar 日志

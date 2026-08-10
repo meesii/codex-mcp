@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expandHomePath } from "../config.js";
+import { getManagedToolPath } from "../managed-tools/paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +47,11 @@ export async function suggestCloudflaredBin(
         if (existsSync(candidate)) {
             return candidate;
         }
+    }
+
+    const managed = getManagedToolPath("cloudflared");
+    if (existsSync(managed)) {
+        return managed;
     }
 
     const fromPath = await findOnPath(

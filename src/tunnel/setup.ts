@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { resolveCname } from "node:dns/promises";
 import { expandHomePath } from "../config.js";
 import { printInfo, printSuccess, printWarning } from "../lib/terminal.js";
+import { ensureManagedTool } from "../managed-tools/install.js";
 import {
     ensureStarterUserConfig,
     ensureUserConfigDirs,
@@ -13,7 +14,6 @@ import {
 } from "../user-config.js";
 import {
     probeCloudflaredVersion,
-    resolveCloudflaredBin,
     suggestCloudflaredBin,
 } from "./bin.js";
 import { runCloudflared, runCloudflaredInherit } from "./exec.js";
@@ -55,7 +55,7 @@ export interface TunnelSetupOptions {
  * 1. Create `~/.codex-mcp/config.json` if missing
  * 2. Ask for public domain
  * 3. Ask whether to use cloudflared
- * 4. If yes: ask binary path, then login / create / DNS / write yml
+ * 4. If yes: prepare cloudflared automatically, then login / create / DNS / write yml
  *
  * @param options - Force / bind hints
  * @returns Resolved settings (sidecar fields only when useCloudflared)
@@ -160,8 +160,8 @@ async function runConfigWizard(
         return { userConfig, domain, useCloudflared: false };
     }
 
-    // 3) Binary path, then tunnel ops.
-    const bin = await askAndResolveCloudflaredBin(userConfig.cloudflaredBin);
+    // 3) Prepare cloudflared, then tunnel ops.
+    const bin = await resolveOrInstallCloudflaredBin(userConfig.cloudflaredBin);
     const tunnelName =
         (
             await askLine(
@@ -229,10 +229,18 @@ async function finalizeCloudflared(
     port: number,
 ): Promise<TunnelSetupResult> {
     const domain = userConfig.domain!;
-    if (!userConfig.cloudflaredBin) {
-        throw new Error("已启用 Cloudflare Tunnel，但找不到 cloudflared。请运行 `codex-mcp tunnel` 重新设置");
+    let bin = await suggestCloudflaredBin(userConfig.cloudflaredBin);
+    if (!bin) {
+        try {
+            bin = (await ensureManagedTool("cloudflared")).path;
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new Error(`公网连接组件缺失且自动恢复失败：${detail}`);
+        }
     }
-    const bin = await resolveCloudflaredBin(userConfig.cloudflaredBin);
+    if (bin !== userConfig.cloudflaredBin) {
+        userConfig = saveUserConfig({ cloudflaredBin: bin });
+    }
     const configPath = getCloudflaredConfigPath();
 
     let tunnelId = userConfig.tunnelId;
@@ -448,32 +456,31 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * Prompt for cloudflared path; default from config, PATH, or package `bin/`.
+ * Reuse an existing cloudflared binary or install codex-mcp's pinned copy.
  *
  * @param configured - Existing cloudflaredBin from user config
  * @returns Absolute validated binary path
  */
-async function askAndResolveCloudflaredBin(
+async function resolveOrInstallCloudflaredBin(
     configured?: string,
 ): Promise<string> {
-    const hint = await suggestCloudflaredBin(configured);
-    if (!hint) {
-        printWarning("没有找到 cloudflared。请先安装 cloudflared，然后把它的路径填在下面。");
+    const existing = await suggestCloudflaredBin(configured);
+    if (existing) {
+        const version = await probeCloudflaredVersion(existing);
+        printSuccess(`公网连接组件已就绪：${version}`);
+        return existing;
     }
-    let answer = "";
-    while (!answer) {
-        answer = (
-            await askLine("cloudflared 程序路径", hint || undefined)
-        ).trim();
-        if (!answer) {
-            printWarning("使用 Cloudflare Tunnel 时需要填写 cloudflared 的路径。");
-        }
+
+    printInfo("正在准备公网连接组件…");
+    try {
+        const installed = await ensureManagedTool("cloudflared");
+        const version = await probeCloudflaredVersion(installed.path);
+        printSuccess(`公网连接组件已准备：${version}`);
+        return installed.path;
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`公网连接组件准备失败：${detail}`);
     }
-    const bin = await resolveCloudflaredBin(answer);
-    const version = await probeCloudflaredVersion(bin);
-    printSuccess(`找到 ${version}`);
-    printInfo(`程序位置：${bin}`);
-    return bin;
 }
 
 /**

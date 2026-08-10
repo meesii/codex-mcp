@@ -1,5 +1,8 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$Utf8Output = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8Output
+$OutputEncoding = $Utf8Output
 
 $Package = $env:CODEX_MCP_PACKAGE
 if (-not $Package) {
@@ -62,6 +65,17 @@ $cmdPath = Join-Path $installRoot "codex-mcp.cmd"
 if (-not (Test-Path -LiteralPath $cmdPath)) {
     Fail "安装完成，但没有找到 codex-mcp 命令：$cmdPath"
 }
+
+$toolsCli = Join-Path $installRoot "node_modules\codex-mcp\dist\managed-tools-cli.js"
+if (-not (Test-Path -LiteralPath $toolsCli)) {
+    Fail "安装完成，但缺少运行组件管理程序。"
+}
+Info "正在准备必要组件…"
+& node $toolsCli bootstrap
+if ($LASTEXITCODE -ne 0) {
+    Fail "必要组件准备失败。请检查网络后重新运行安装。"
+}
+Success "必要组件已准备"
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $userPath) { $userPath = "" }

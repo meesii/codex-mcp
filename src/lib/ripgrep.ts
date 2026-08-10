@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { getManagedToolPath } from "../managed-tools/paths.js";
 import { terminateChildProcess } from "./process-tree.js";
 
 let cachedRgPath: string | null | undefined;
@@ -13,7 +14,10 @@ export async function findRipgrep(): Promise<string | null> {
         return cachedRgPath;
     }
 
-    const candidates = process.platform === "win32" ? ["rg.exe", "rg"] : ["rg"];
+    const candidates = [
+        getManagedToolPath("ripgrep"),
+        ...(process.platform === "win32" ? ["rg.exe", "rg"] : ["rg"]),
+    ];
     for (const candidate of candidates) {
         try {
             await new Promise<void>((resolve, reject) => {

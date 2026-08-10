@@ -68,6 +68,13 @@ jobs:
           CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
           sh scripts/install.sh
           "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version
+          test -x "$TEST_HOME/.codex-mcp/bin/rg"
+          "$TEST_HOME/.codex-mcp/bin/rg" --version
+
+          TOOLS_CLI="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/managed-tools-cli.js"
+          HOME="$TEST_HOME" node "$TOOLS_CLI" cloudflared
+          test -x "$TEST_HOME/.codex-mcp/bin/cloudflared"
+          "$TEST_HOME/.codex-mcp/bin/cloudflared" --version
 
           PASSWORD_MODULE="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/auth/password-store.js"
           HOME="$TEST_HOME" node --input-type=module --eval '
@@ -84,6 +91,7 @@ jobs:
 
           HOME="$TEST_HOME" sh scripts/uninstall.sh
           test ! -e "$TEST_HOME/.codex-mcp/npm"
+          test ! -e "$TEST_HOME/.codex-mcp/bin"
           test -f "$TEST_HOME/.codex-mcp/auth.json"
           ! grep -F '.codex-mcp/npm/bin' "$TEST_HOME/.profile"
 
@@ -95,6 +103,7 @@ jobs:
           $package = Join-Path $PWD "codex-mcp-$version.tgz"
           $testHome = Join-Path $env:RUNNER_TEMP "codex-mcp-install-home"
           $installRoot = Join-Path $testHome ".codex-mcp/npm"
+          $managedBin = Join-Path $testHome ".codex-mcp/bin"
           $shadowDir = Join-Path $env:RUNNER_TEMP "codex-mcp-old-shadow"
           $originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
           $baseProcessPath = $env:Path
@@ -115,7 +124,11 @@ jobs:
           $legacyCommand = "iex (Get-Content -Raw -Encoding UTF8 '$installerPath')"
           & powershell.exe -NoProfile -Command $legacyCommand
           if ($LASTEXITCODE -ne 0) {
-            throw "Windows PowerShell 5.1 installer smoke test failed"
+            throw "Windows PowerShell 5.1 iex installer smoke test failed"
+          }
+          & powershell.exe -NoProfile -File $installerPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell 5.1 -File installer smoke test failed"
           }
 
           $persistedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -137,6 +150,19 @@ jobs:
             throw "codex-mcp version resolution smoke test failed"
           }
 
+          $rgPath = Join-Path $managedBin "rg.exe"
+          if (-not (Test-Path -LiteralPath $rgPath)) { throw "managed ripgrep was not installed" }
+          & $rgPath --version
+          if ($LASTEXITCODE -ne 0) { throw "managed ripgrep smoke test failed" }
+
+          $toolsCli = Join-Path $installRoot "node_modules/codex-mcp/dist/managed-tools-cli.js"
+          & node $toolsCli cloudflared
+          if ($LASTEXITCODE -ne 0) { throw "managed cloudflared install smoke test failed" }
+          $cloudflaredPath = Join-Path $managedBin "cloudflared.exe"
+          if (-not (Test-Path -LiteralPath $cloudflaredPath)) { throw "managed cloudflared was not installed" }
+          & $cloudflaredPath --version
+          if ($LASTEXITCODE -ne 0) { throw "managed cloudflared smoke test failed" }
+
           $passwordModule = Join-Path $installRoot "node_modules/codex-mcp/dist/auth/password-store.js"
           $setPasswordScript = 'import { pathToFileURL } from "node:url"; const store = await import(pathToFileURL(process.argv[1]).href); await store.setAdminPassword("release smoke password 123");'
           & node --input-type=module --eval $setPasswordScript $passwordModule
@@ -146,9 +172,14 @@ jobs:
           & node --input-type=module --eval $verifyPasswordScript $passwordModule
           if ($LASTEXITCODE -ne 0) { throw "password persistence smoke test failed" }
 
-          & ./scripts/uninstall.ps1
+          $uninstallerPath = Join-Path $PWD "scripts/uninstall.ps1"
+          & powershell.exe -NoProfile -File $uninstallerPath
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 uninstaller smoke test failed" }
           if (Test-Path $installRoot) {
             throw "codex-mcp uninstall smoke test failed"
+          }
+          if (Test-Path $managedBin) {
+            throw "codex-mcp uninstall left managed binaries behind"
           }
           if (-not (Test-Path (Join-Path $testHome ".codex-mcp/auth.json"))) {
             throw "codex-mcp uninstall removed the saved password"

@@ -2,6 +2,7 @@
 set -eu
 
 INSTALL_ROOT="${HOME}/.codex-mcp/npm"
+MANAGED_BIN="${HOME}/.codex-mcp/bin"
 
 status() {
   marker="$1"
@@ -22,12 +23,12 @@ success() {
   status '✓' '32' "$1"
 }
 
-if [ ! -e "$INSTALL_ROOT" ]; then
+if [ ! -e "$INSTALL_ROOT" ] && [ ! -e "$MANAGED_BIN" ]; then
   info "codex-mcp 程序已经不在这台电脑上了。"
   exit 0
 fi
 
-rm -rf "$INSTALL_ROOT"
+rm -rf "$INSTALL_ROOT" "$MANAGED_BIN"
 
 remove_path_line() {
   profile="$1"

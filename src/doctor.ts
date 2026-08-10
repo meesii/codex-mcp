@@ -1,5 +1,6 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import { hasAdminPassword } from "./auth/password-store.js";
+import { findRipgrep } from "./lib/ripgrep.js";
 import { runSubprocess } from "./lib/subprocess.js";
 import { suggestCloudflaredBin, probeCloudflaredVersion } from "./tunnel/bin.js";
 import { getCloudflaredConfigPath, getCredentialsPath } from "./tunnel/yml.js";
@@ -34,7 +35,8 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
     });
 
     checks.push(await checkCommand("Codex", "codex", ["--version"], false));
-    checks.push(await checkCommand("ripgrep", "rg", ["--version"], false));
+    checks.push(await checkCommand("Git", "git", ["--version"], false));
+    checks.push(await checkRipgrep());
 
     let userConfig: ReturnType<typeof loadUserConfig> | undefined;
     try {
@@ -141,6 +143,43 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
     return { checks, errors, warnings };
 }
 
+async function checkRipgrep(): Promise<DoctorCheck> {
+    const binary = await findRipgrep();
+    if (!binary) {
+        return {
+            label: "文件搜索",
+            level: "error",
+            detail: "文件搜索组件缺失；重新运行安装脚本可以自动恢复",
+        };
+    }
+    try {
+        const result = await runSubprocess(binary, ["--version"], {
+            timeoutMs: 10_000,
+            maxStdoutBytes: 16 * 1024,
+            maxStderrBytes: 16 * 1024,
+            maxTotalBytes: 32 * 1024,
+        });
+        const firstLine = `${result.stdout}\n${result.stderr}`
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .find(Boolean);
+        return {
+            label: "文件搜索",
+            level: result.exitCode === 0 ? "ok" : "error",
+            detail:
+                result.exitCode === 0
+                    ? firstLine ?? "已安装"
+                    : "文件搜索组件存在，但无法正常启动",
+        };
+    } catch {
+        return {
+            label: "文件搜索",
+            level: "error",
+            detail: "文件搜索组件存在，但无法正常启动",
+        };
+    }
+}
+
 async function checkCommand(
     label: string,
     command: string,
@@ -177,7 +216,9 @@ async function checkCommand(
             detail:
                 label === "Codex"
                     ? "没有找到；核心功能仍可用，但不会自动继承 Codex 的 MCP"
-                    : "没有找到；仍可使用，只是文件搜索会慢一些",
+                    : label === "Git"
+                      ? "没有找到；Git 状态、历史和差异相关功能不可用"
+                      : "没有找到",
         };
     }
 }

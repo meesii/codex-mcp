@@ -1,4 +1,7 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
+$Utf8Output = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8Output
+$OutputEncoding = $Utf8Output
 
 function Write-Status([string]$Marker, [ConsoleColor]$Color, [string]$Message) {
     $text = "$Marker $Message"
@@ -18,9 +21,13 @@ function Success([string]$Message) {
 }
 
 $installRoot = Join-Path $env:USERPROFILE ".codex-mcp\npm"
+$managedBin = Join-Path $env:USERPROFILE ".codex-mcp\bin"
 
 if (Test-Path -LiteralPath $installRoot) {
     Remove-Item -LiteralPath $installRoot -Recurse -Force
+}
+if (Test-Path -LiteralPath $managedBin) {
+    Remove-Item -LiteralPath $managedBin -Recurse -Force
 }
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
