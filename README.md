@@ -125,11 +125,22 @@ codex-mcp
 | `codex-mcp setup` | 第一次设置；已有密码不会被覆盖 |
 | `codex-mcp doctor` | 检查安装和配置，不做修改 |
 | `codex-mcp auth` | 修改连接密码 |
+| `codex-mcp update` | 更新到最新版本，保留配置、密码和 Tunnel 信息 |
 | `codex-mcp tunnel` | 只重新设置公网连接 |
 | `codex-mcp --local` | 只在本机启动，不开放公网 |
 | `codex-mcp --no-tunnel` | 不自动启动 Cloudflare Tunnel |
 | `codex-mcp --root <目录>` | 指定项目目录 |
 | `codex-mcp --version` | 查看当前版本 |
+
+## 更新
+
+从支持自更新的版本开始，只需要运行：
+
+```bash
+codex-mcp update
+```
+
+它会安装 GitHub Release 的最新版，并保留配置、连接密码和 Tunnel 信息。更早的版本如果还没有 `update` 命令，只需要重新运行一次对应平台的安装命令；升级后以后都可以直接使用 `codex-mcp update`。
 
 ## 卸载
 

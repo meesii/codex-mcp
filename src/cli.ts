@@ -31,9 +31,10 @@ import {
     type TunnelSetupResult,
 } from "./tunnel/setup.js";
 import { loadUserConfig } from "./user-config.js";
+import { runSelfUpdate } from "./update.js";
 
 interface CliFlags {
-    command: "serve" | "setup" | "doctor" | "tunnel" | "auth" | "version" | "help";
+    command: "serve" | "setup" | "doctor" | "tunnel" | "auth" | "update" | "version" | "help";
     local: boolean;
     noTunnel: boolean;
     tunnelLogs: boolean;
@@ -50,6 +51,7 @@ function printUsage(): void {
   codex-mcp setup                   首次设置
   codex-mcp doctor                  检查安装和配置
   codex-mcp auth                    修改连接密码
+  codex-mcp update                  更新到最新版本
   codex-mcp tunnel                  重新设置公网连接
   codex-mcp --local                 只在本机启动，不开放公网
   codex-mcp --root <目录>           指定项目目录
@@ -205,6 +207,8 @@ function parseArgv(argv: string[]): CliFlags {
         command = "tunnel";
     } else if (positionals[0] === "auth") {
         command = "auth";
+    } else if (positionals[0] === "update") {
+        command = "update";
     } else if (positionals[0] === "version") {
         command = "version";
     } else if (positionals[0] === "serve" || positionals[0] === undefined) {
@@ -249,6 +253,11 @@ async function main(argv: string[]): Promise<void> {
 
     if (flags.command === "auth") {
         await configureAdminPassword();
+        return;
+    }
+
+    if (flags.command === "update") {
+        await runSelfUpdate();
         return;
     }
 

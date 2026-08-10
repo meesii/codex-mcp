@@ -68,6 +68,10 @@ jobs:
           CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
           sh scripts/install.sh
           "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version
+          HOME="$TEST_HOME" \
+          CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
+          "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" update
+          test "$(HOME="$TEST_HOME" "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version)" = "$VERSION"
           test -x "$TEST_HOME/.codex-mcp/bin/rg"
           "$TEST_HOME/.codex-mcp/bin/rg" --version
 
@@ -148,6 +152,11 @@ jobs:
           }
           if ((& codex-mcp --version) -ne $version) {
             throw "codex-mcp version resolution smoke test failed"
+          }
+          & codex-mcp update
+          if ($LASTEXITCODE -ne 0) { throw "codex-mcp update smoke test failed" }
+          if ((& codex-mcp --version) -ne $version) {
+            throw "codex-mcp update changed to an unexpected version"
           }
 
           $rgPath = Join-Path $managedBin "rg.exe"

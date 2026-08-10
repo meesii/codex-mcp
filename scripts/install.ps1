@@ -55,7 +55,11 @@ if ($nodeMajor -lt 22) {
 $installRoot = Join-Path $env:USERPROFILE ".codex-mcp\npm"
 New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 
-Info "正在安装 codex-mcp…"
+if ($env:CODEX_MCP_UPDATE -eq "1") {
+    Info "正在更新 codex-mcp…"
+} else {
+    Info "正在安装 codex-mcp…"
+}
 & npm install --global --prefix $installRoot $Package
 if ($LASTEXITCODE -ne 0) {
     Fail "npm 安装没有完成。请检查上面的错误信息。"
@@ -98,5 +102,9 @@ Write-Host ""
 Success "codex-mcp $version"
 Success "命令目录已加入 PATH：$installRoot"
 Write-Host ""
-Info "第一次使用请运行：codex-mcp setup"
-Warn "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"
+if ($env:CODEX_MCP_UPDATE -eq "1") {
+    Success "更新完成。配置、连接密码和 Tunnel 信息保持不变。"
+} else {
+    Info "第一次使用请运行：codex-mcp setup"
+    Warn "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"
+}

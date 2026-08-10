@@ -47,7 +47,11 @@ command -v npm >/dev/null 2>&1 || fail "没有找到 npm。重新安装 Node.js 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 [ "$NODE_MAJOR" -ge 22 ] || fail "当前 Node.js 版本是 $(node -v)，需要 22 或更高版本。"
 
-info "正在安装 codex-mcp…"
+if [ "${CODEX_MCP_UPDATE:-}" = "1" ]; then
+  info "正在更新 codex-mcp…"
+else
+  info "正在安装 codex-mcp…"
+fi
 mkdir -p "$INSTALL_ROOT"
 npm install --global --prefix "$INSTALL_ROOT" "$PACKAGE"
 
@@ -89,5 +93,9 @@ say ""
 success "codex-mcp ${VERSION:-已安装}"
 success "命令目录已加入 PATH：${BIN_DIR}"
 say ""
-info "第一次使用请运行：codex-mcp setup"
-warn "如果当前终端还找不到 codex-mcp，请重新打开一个终端窗口。"
+if [ "${CODEX_MCP_UPDATE:-}" = "1" ]; then
+  success "更新完成。配置、连接密码和 Tunnel 信息保持不变。"
+else
+  info "第一次使用请运行：codex-mcp setup"
+  warn "如果当前终端还找不到 codex-mcp，请重新打开一个终端窗口。"
+fi

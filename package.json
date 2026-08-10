@@ -1,11 +1,13 @@
 {
     "name": "codex-mcp",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "description": "Lean local coding MCP server for ChatGPT with embedded OAuth and Streamable HTTP.",
     "type": "module",
     "main": "dist/cli.js",
     "files": [
         "dist/**/*.js",
+        "scripts/install.sh",
+        "scripts/install.ps1",
         "README.md",
         "LICENSE"
     ],
@@ -22,7 +24,7 @@
         "prepack": "npm run build",
         "start": "node dist/cli.js",
         "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-        "test": "tsx test/user-mcp-config.test.ts && tsx test/user-capabilities.test.ts && tsx test/codex-import.test.ts && tsx test/managed-tools.test.ts && tsx test/password-store.test.ts && tsx test/agents.test.ts && tsx test/skills.test.ts && tsx test/capability-watcher.test.ts && tsx test/tools.e2e.test.ts && tsx test/workspace-git.test.ts && tsx test/capability-policy.test.ts && tsx test/mcp-gateway.e2e.test.ts && tsx test/security-regressions.test.ts && tsx test/private-key-jwt.test.ts && tsx test/oauth.e2e.test.ts",
+        "test": "tsx test/user-mcp-config.test.ts && tsx test/user-capabilities.test.ts && tsx test/codex-import.test.ts && tsx test/managed-tools.test.ts && tsx test/password-store.test.ts && tsx test/update.test.ts && tsx test/agents.test.ts && tsx test/skills.test.ts && tsx test/capability-watcher.test.ts && tsx test/tools.e2e.test.ts && tsx test/workspace-git.test.ts && tsx test/capability-policy.test.ts && tsx test/mcp-gateway.e2e.test.ts && tsx test/security-regressions.test.ts && tsx test/private-key-jwt.test.ts && tsx test/oauth.e2e.test.ts",
         "bench:perf": "tsx test/performance-benchmark.ts"
     },
     "keywords": [
