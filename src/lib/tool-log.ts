@@ -191,13 +191,27 @@ export function registerTool(
             ? ((config as { _meta?: Record<string, unknown> })._meta ?? {})
             : {};
     const securitySchemes = securitySchemesForServer(server);
+    const generatedUiMeta = toolUiMeta(server, name);
+    const previousUi =
+        previousMeta.ui && typeof previousMeta.ui === "object"
+            ? (previousMeta.ui as Record<string, unknown>)
+            : undefined;
+    const generatedUi =
+        generatedUiMeta.ui && typeof generatedUiMeta.ui === "object"
+            ? (generatedUiMeta.ui as Record<string, unknown>)
+            : undefined;
+    const mergedUi =
+        previousUi || generatedUi
+            ? { ...(previousUi ?? {}), ...(generatedUi ?? {}) }
+            : undefined;
     const configWithUi = {
         ...config,
         securitySchemes,
         _meta: {
             ...previousMeta,
             securitySchemes,
-            ...toolUiMeta(name),
+            ...generatedUiMeta,
+            ...(mergedUi ? { ui: mergedUi } : {}),
         },
     };
 

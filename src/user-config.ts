@@ -11,6 +11,13 @@ export interface ClientCapabilitiesConfig {
     clients?: Record<string, string[]>;
 }
 
+export interface UserUiConfig {
+    /** Show custom cards for ordinary coding tools. Defaults to false. */
+    tools?: boolean;
+    /** Show custom cards for summary/goal status tools. Defaults to true. */
+    status?: boolean;
+}
+
 /** Persisted per-machine settings under `~/.codex-mcp/config.json`. */
 export interface UserConfig {
     host?: string;
@@ -27,6 +34,8 @@ export interface UserConfig {
     tunnelId?: string;
     /** Optional per-client tool registration policy; omitted means full compatibility. */
     clientCapabilities?: ClientCapabilitiesConfig;
+    /** ChatGPT-facing custom UI preferences. */
+    ui?: UserUiConfig;
 }
 
 /**
@@ -107,6 +116,9 @@ export function saveUserConfig(patch: UserConfig): UserConfig {
     if (patch.tunnelId !== undefined) merged.tunnelId = patch.tunnelId;
     if (patch.clientCapabilities !== undefined) {
         merged.clientCapabilities = normalizeClientCapabilities(patch.clientCapabilities);
+    }
+    if (patch.ui !== undefined) {
+        merged.ui = normalizeUserUiConfig({ ...(merged.ui ?? {}), ...patch.ui });
     }
     writeFileSync(getUserConfigPath(), `${JSON.stringify(merged, null, 4)}\n`, "utf8");
     return merged;
@@ -210,7 +222,27 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
     if (raw.clientCapabilities !== undefined) {
         config.clientCapabilities = normalizeClientCapabilities(raw.clientCapabilities);
     }
+    if (raw.ui !== undefined) {
+        config.ui = normalizeUserUiConfig(raw.ui);
+    }
     return config;
+}
+
+function normalizeUserUiConfig(value: unknown): UserUiConfig {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("ui must be an object");
+    }
+    const raw = value as Record<string, unknown>;
+    const result: UserUiConfig = {};
+    if (raw.tools !== undefined) {
+        if (typeof raw.tools !== "boolean") throw new Error("ui.tools must be a boolean");
+        result.tools = raw.tools;
+    }
+    if (raw.status !== undefined) {
+        if (typeof raw.status !== "boolean") throw new Error("ui.status must be a boolean");
+        result.status = raw.status;
+    }
+    return result;
 }
 
 function normalizeClientCapabilities(value: unknown): ClientCapabilitiesConfig {

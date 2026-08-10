@@ -1,15 +1,11 @@
-/**
- * When true, tools link the MCP Apps UI template (`outputTemplate`).
- * ChatGPT only shows the per-tool host status row (正在读取文件… / 文件读取完成)
- * when a template is linked — disabling this also drops that chrome.
- */
-export const TOOL_CARD_ENABLED = true;
-
-/** Stable shared MCP Apps UI resource URI (all tools except summary). */
+/** Stable shared MCP Apps UI resource URI for tool/goal cards. */
 export const TOOL_CARD_URI = "ui://codex-mcp/tool-card.html";
 
 /** Always-open progress panel for the `summary` tool. */
 export const SUMMARY_CARD_URI = "ui://codex-mcp/summary-card.html";
+
+/** Interactive ChatGPT-facing settings panel. */
+export const SETTINGS_CARD_URI = "ui://codex-mcp/settings-card.html";
 
 /**
  * Legacy URI prefix from the short-lived per-tool card experiment.

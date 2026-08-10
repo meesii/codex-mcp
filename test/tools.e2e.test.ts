@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildServerInstructions } from "../src/mcp-server.js";
 import { PACKAGE_VERSION } from "../src/version.js";
-import { TOOL_CARD_ENABLED, TOOL_CARD_URI, SUMMARY_CARD_URI } from "../src/ui/constants.js";
+import {
+    SETTINGS_CARD_URI,
+    SUMMARY_CARD_URI,
+    TOOL_CARD_URI,
+} from "../src/ui/constants.js";
 import { listGlobFiles } from "../src/tools/glob.js";
 import { TOOL_NAMES } from "../src/tools/names.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
@@ -223,44 +227,137 @@ async function main(): Promise<void> {
         assert.equal(runtimeStatusToolDescriptor?.annotations?.readOnlyHint, true);
         assert.equal(runtimeStatusToolDescriptor?.annotations?.openWorldHint, false);
 
-        if (TOOL_CARD_ENABLED) {
-            const resources = await mcp.client.listResources();
-            const toolCard = resources.resources.find(
-                (resource) => resource.uri === TOOL_CARD_URI,
-            );
-            assert.ok(toolCard, "shared tool card UI resource should be registered");
-            assert.equal(readMeta?.ui?.resourceUri, TOOL_CARD_URI);
-            assert.equal(readMeta?.["openai/outputTemplate"], TOOL_CARD_URI);
+        // UI defaults: ordinary tool cards are hidden, status cards stay on,
+        // and the settings control plane is always reachable.
+        assert.equal(readMeta?.ui?.resourceUri, undefined);
+        assert.equal(readMeta?.["openai/outputTemplate"], undefined);
 
-            const cardContents = await mcp.client.readResource({ uri: TOOL_CARD_URI });
-            const cardContent = cardContents.contents[0];
-            assert.ok(cardContent && "text" in cardContent);
-            const cardHtml = cardContent.text;
-            assert.doesNotMatch(cardHtml, /setInterval\(readHost,\s*250\)/);
-            assert.match(cardHtml, /pollAttempts\s*>=\s*40/);
+        const resources = await mcp.client.listResources();
+        const toolCard = resources.resources.find(
+            (resource) => resource.uri === TOOL_CARD_URI,
+        );
+        const settingsCardResource = resources.resources.find(
+            (resource) => resource.uri === SETTINGS_CARD_URI,
+        );
+        assert.ok(toolCard, "shared tool card resource should remain registered for cached clients");
+        assert.ok(settingsCardResource, "settings UI resource should be registered");
 
-            const summaryTool = listedTools.tools.find((tool) => tool.name === "summary");
-            assert.ok(summaryTool);
-            const summaryMeta = summaryTool._meta as
-                | {
-                      ui?: { resourceUri?: string };
-                      "openai/outputTemplate"?: string;
-                  }
-                | undefined;
-            assert.equal(summaryMeta?.ui?.resourceUri, SUMMARY_CARD_URI);
-            assert.equal(summaryMeta?.["openai/outputTemplate"], SUMMARY_CARD_URI);
-            const summaryCard = await mcp.client.readResource({ uri: SUMMARY_CARD_URI });
-            const summaryContent = summaryCard.contents[0];
-            assert.ok(summaryContent && "text" in summaryContent);
-            assert.match(summaryContent.text, /进度汇报/);
+        const cardContents = await mcp.client.readResource({ uri: TOOL_CARD_URI });
+        const cardContent = cardContents.contents[0];
+        assert.ok(cardContent && "text" in cardContent);
+        const cardHtml = cardContent.text;
+        assert.doesNotMatch(cardHtml, /setInterval\(readHost,\s*250\)/);
+        assert.match(cardHtml, /pollAttempts\s*>=\s*40/);
 
-            const legacyUri = "ui://codex-mcp/tool-card/write_stdin@v7.html";
-            const legacyContents = await mcp.client.readResource({ uri: legacyUri });
-            assert.equal(legacyContents.contents[0]?.uri, legacyUri);
-        } else {
-            assert.equal(readMeta?.ui?.resourceUri, undefined);
-            assert.equal(readMeta?.["openai/outputTemplate"], undefined);
-        }
+        const summaryTool = listedTools.tools.find((tool) => tool.name === "summary");
+        assert.ok(summaryTool);
+        const summaryMeta = summaryTool._meta as
+            | {
+                  ui?: { resourceUri?: string };
+                  "openai/outputTemplate"?: string;
+              }
+            | undefined;
+        assert.equal(summaryMeta?.ui?.resourceUri, SUMMARY_CARD_URI);
+        assert.equal(summaryMeta?.["openai/outputTemplate"], SUMMARY_CARD_URI);
+
+        const goalStatusTool = listedTools.tools.find((tool) => tool.name === "goal_status");
+        assert.equal(
+            (goalStatusTool?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui
+                ?.resourceUri,
+            TOOL_CARD_URI,
+        );
+
+        const settingsGetTool = listedTools.tools.find((tool) => tool.name === "settings_get");
+        const settingsUpdateTool = listedTools.tools.find(
+            (tool) => tool.name === "settings_update",
+        );
+        const settingsGetMeta = settingsGetTool?._meta as
+            | {
+                  ui?: { resourceUri?: string; visibility?: string[] };
+                  "openai/outputTemplate"?: string;
+                  "openai/widgetAccessible"?: boolean;
+              }
+            | undefined;
+        const settingsUpdateMeta = settingsUpdateTool?._meta as
+            | {
+                  ui?: { resourceUri?: string; visibility?: string[] };
+                  "openai/outputTemplate"?: string;
+                  "openai/widgetAccessible"?: boolean;
+              }
+            | undefined;
+        assert.equal(settingsGetMeta?.ui?.resourceUri, SETTINGS_CARD_URI);
+        assert.deepEqual(settingsGetMeta?.ui?.visibility, ["model", "app"]);
+        assert.equal(settingsGetMeta?.["openai/outputTemplate"], SETTINGS_CARD_URI);
+        assert.equal(settingsGetMeta?.["openai/widgetAccessible"], true);
+        assert.equal(settingsUpdateMeta?.ui?.resourceUri, SETTINGS_CARD_URI);
+        assert.deepEqual(settingsUpdateMeta?.ui?.visibility, ["model", "app"]);
+        assert.equal(settingsUpdateMeta?.["openai/widgetAccessible"], true);
+
+        const summaryCard = await mcp.client.readResource({ uri: SUMMARY_CARD_URI });
+        const summaryContent = summaryCard.contents[0];
+        assert.ok(summaryContent && "text" in summaryContent);
+        assert.match(summaryContent.text, /进度汇报/);
+
+        const settingsCard = await mcp.client.readResource({ uri: SETTINGS_CARD_URI });
+        const settingsContent = settingsCard.contents[0];
+        assert.ok(settingsContent && "text" in settingsContent);
+        assert.match(settingsContent.text, /codex-mcp 显示设置/);
+        assert.match(settingsContent.text, /callTool\("settings_update"/);
+
+        const settingsGet = await mcp.callTool("settings_get", {});
+        assert.notEqual(settingsGet.isError, true, toolText(settingsGet));
+        assert.deepEqual(
+            (settingsGet.structuredContent as { ui?: unknown }).ui,
+            { tools: false, status: true },
+        );
+
+        const settingsEnableTools = await mcp.callTool("settings_update", {
+            tools: true,
+            status: false,
+        });
+        assert.notEqual(settingsEnableTools.isError, true, toolText(settingsEnableTools));
+        assert.equal(
+            (settingsEnableTools.structuredContent as { toolListChangedRequested?: boolean })
+                .toolListChangedRequested,
+            true,
+        );
+
+        // tools/list is a fresh stateless request, so it must reflect persisted settings.
+        const toggledTools = await mcp.client.listTools();
+        const toggledRead = toggledTools.tools.find((tool) => tool.name === "read");
+        const toggledSummary = toggledTools.tools.find((tool) => tool.name === "summary");
+        const toggledGoal = toggledTools.tools.find((tool) => tool.name === "goal_status");
+        const toggledSettings = toggledTools.tools.find((tool) => tool.name === "settings_get");
+        assert.equal(
+            (toggledRead?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui?.resourceUri,
+            TOOL_CARD_URI,
+        );
+        assert.equal(
+            (toggledSummary?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui
+                ?.resourceUri,
+            undefined,
+        );
+        assert.equal(
+            (toggledGoal?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui
+                ?.resourceUri,
+            undefined,
+        );
+        assert.equal(
+            (toggledSettings?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui
+                ?.resourceUri,
+            SETTINGS_CARD_URI,
+        );
+
+        // Restore defaults so later e2e assertions run under the product default.
+        const settingsRestore = await mcp.callTool("settings_update", {
+            tools: false,
+            status: true,
+        });
+        assert.notEqual(settingsRestore.isError, true, toolText(settingsRestore));
+
+        const legacyUri = "ui://codex-mcp/tool-card/write_stdin@v7.html";
+        const legacyContents = await mcp.client.readResource({ uri: legacyUri });
+        assert.equal(legacyContents.contents[0]?.uri, legacyUri);
 
         // read success
         const readOk = await mcp.callTool("read", {

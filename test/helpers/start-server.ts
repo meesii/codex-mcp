@@ -13,6 +13,7 @@ import {
 import { AgentInstructionRegistry } from "../../src/agents/registry.js";
 import { ProjectContext } from "../../src/project.js";
 import { TOOL_NAMES } from "../../src/tools/names.js";
+import { createMemoryUiSettingsStore } from "../../src/ui/settings.js";
 
 export interface TestServerContext {
     fixtureRoot: string;
@@ -57,6 +58,7 @@ export async function startTestServer(
     const server = createHttpServer(config, {
         ...options,
         goalStorageDir: options.goalStorageDir ?? goalStorageDir,
+        uiSettings: options.uiSettings ?? createMemoryUiSettingsStore(),
         agents:
             options.agents ??
             new AgentInstructionRegistry(new ProjectContext(fixtureRoot), fixtureRoot),

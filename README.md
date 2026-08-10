@@ -20,7 +20,7 @@
 - **Codex AGENTS.md 继承**：自动应用 `~/.codex/AGENTS.md` 和项目根规则；进入嵌套路径时用 `agents_for_path` 加载更具体的 `AGENTS.md`
 - **Workspace / Git / CodeGraph 感知**：多仓发现、跨仓搜索、context pack、结构化只读 Git，以及优先 CodeGraph 的 `code_explore`
 - **按 client 能力治理**：可按 OAuth `client_id` 或 `local:noauth` 限制实际注册的工具，默认不配置时仍保持全工具兼容
-- **MCP Apps 摘要卡片**：只展示状态、路径、计数和短预览，不渲染完整文件或命令输出
+- **MCP Apps UI 可配置**：普通 read/edit/grep/bash/Git 等工具卡片默认关闭，Summary/Goal 状态卡默认开启；`settings_get` 可直接在 ChatGPT 对话里打开交互式设置面板，设置持久化到 `~/.codex-mcp/config.json`
 
 | 工具 | 说明 |
 | --- | --- |
@@ -34,6 +34,7 @@
 | `runtime_status` / `server_info` | 前者提供只读聚合 telemetry；后者返回当前运行版本、启动时间、project root 与 toolset fingerprint，用于判断 connector 是否仍连着旧进程/schema |
 | `goal_start` / `goal_status` / `goal_update` | 按 workspace 内 path/scope 建立、恢复和推进长期 Goal；维护 Task、约束和 Checkpoint，状态跨 MCP request / Chat 对话持久化 |
 | `goal_verify` / `goal_finish` / `goal_cancel` | 给验收条件记录 pass/fail 证据；只有全部 Task 完成且全部条件通过后才能 finish，也可以保留历史后取消目标 |
+| `settings_get` / `settings_update` | 在 ChatGPT 中查看/修改自定义 MCP UI 显示；普通工具卡默认关闭，Summary/Goal 状态卡默认开启，设置变化会请求客户端刷新 tool metadata |
 | `grep` / `glob` / `ls` | 搜索与目录浏览；`grep` 返回结构化 path/line/column/text/kind，`glob` 支持 subtree scope / exclude / result-limit |
 | `workspace_projects` / `workspace_search` | 多仓 Git 项目发现；`workspace_search` 与 `grep` 共用 `rg --json` 结构化搜索内核 |
 | `context_pack` | 按 scope 聚合相关项目、排序后的文件证据、AGENTS、高置信度 Skill 候选与 CodeGraph availability；传 `path` 时不返回无关仓库 |
@@ -138,6 +139,29 @@ goal_finish       仅当所有 Task=done 且所有验收条件=passed 时成功
 ```
 
 `goal_start.path` 可以把 Goal 绑定到 workspace 内的具体项目/子目录，例如 `codex-mcp` 或 `framepilot`；同一 scope 同时只允许一个未结束 Goal，不同 scope 可以并存。`goal_status` 可按 `path` 或 `goal_id` 恢复；如果整个 workspace 只有一个活动 Goal，也可以都不传。多个 scope 同时活动时会返回 `activeGoals` 让 ChatGPT 明确选择，避免串任务。Goal 数据保存在 `~/.codex-mcp/goals`，不写入项目仓库。取消目标使用 `goal_cancel`，历史仍然保留。
+
+## ChatGPT 中的 UI 设置
+
+codex-mcp 默认尽量减少长任务里的卡片噪音：
+
+- 普通工具 UI：**关闭**（read / edit / grep / bash / Git 等）
+- 状态 UI：**开启**（Summary / Goal）
+- 设置面板：始终可打开，避免把所有 UI 关闭后无法恢复
+
+在 ChatGPT 对话里直接说“打开 codex-mcp 设置”，模型会调用 `settings_get` 并显示交互式设置面板。切换开关后，面板通过标准 MCP Apps `tools/call` 调用 `settings_update`，设置写入 `~/.codex-mcp/config.json`，随后发送 `notifications/tools/list_changed` 请求 ChatGPT 重新读取工具显示 metadata。若某个客户端没有即时刷新，重新连接一次插件即可应用新的显示策略。
+
+也可以不打开面板，直接让 ChatGPT 调用 `settings_update`。对应配置为：
+
+```json
+{
+    "ui": {
+        "tools": false,
+        "status": true
+    }
+}
+```
+
+这个开关只控制 codex-mcp 自定义 UI 卡片，不影响工具执行、structuredContent、日志或 telemetry。
 
 ## 常用命令
 

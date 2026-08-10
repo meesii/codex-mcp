@@ -17,6 +17,7 @@ import { createMcpServer } from "./mcp-server.js";
 import { ProjectContext } from "./project.js";
 import { SkillRegistry } from "./skills/registry.js";
 import { GoalStore } from "./goals/store.js";
+import { UiSettingsStore } from "./ui/settings.js";
 import { WorkspaceRegistry } from "./workspace/registry.js";
 
 const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
@@ -32,6 +33,8 @@ export interface CreateHttpServerOptions {
     agents?: AgentInstructionRegistry;
     /** Optional goal storage directory override, primarily for isolated tests. */
     goalStorageDir?: string;
+    /** Optional UI settings store; defaults to ~/.codex-mcp/config.json persistence. */
+    uiSettings?: UiSettingsStore;
     /** Optional per-client tool policy resolver; omitted means all tools. */
     allowedToolsResolver?: (clientId?: string) => ReadonlySet<string> | undefined;
 }
@@ -43,6 +46,7 @@ export interface RunningHttpServer {
     skills: SkillRegistry;
     agents: AgentInstructionRegistry;
     goals: GoalStore;
+    uiSettings: UiSettingsStore;
     listen: () => Promise<NodeHttpServer>;
     close: () => Promise<void>;
     /** Bound URL after listen, e.g. http://127.0.0.1:3920/mcp */
@@ -93,6 +97,7 @@ export function createHttpServer(
     const workspace = new WorkspaceRegistry(project);
     const agents = options.agents ?? new AgentInstructionRegistry(project);
     const goals = new GoalStore(project, options.goalStorageDir);
+    const uiSettings = options.uiSettings ?? new UiSettingsStore();
     const allowedToolsResolver = options.allowedToolsResolver ?? (() => undefined);
     const publicHttpHostnames =
         config.allowedHosts.length > 0
@@ -141,6 +146,7 @@ export function createHttpServer(
                     agents,
                     workspace,
                     goals,
+                    uiSettings,
                     allowedToolsResolver(authClientId),
                 );
                 const previousOnClose = server.server.onclose;
@@ -295,6 +301,7 @@ export function createHttpServer(
         skills,
         agents,
         goals,
+        uiSettings,
         getMcpUrl: () => `http://${config.host}:${boundPort}/mcp`,
         getTunnelProbe: () => ({ ...tunnelProbe }),
         listen: async () => {

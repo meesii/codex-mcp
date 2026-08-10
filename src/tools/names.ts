@@ -25,6 +25,8 @@ export const CORE_TOOL_NAMES = [
     "goal_verify",
     "goal_finish",
     "goal_cancel",
+    "settings_get",
+    "settings_update",
     "skills_list",
     "skill_read",
     "agents_for_path",

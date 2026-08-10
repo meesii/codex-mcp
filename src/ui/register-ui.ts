@@ -2,19 +2,40 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config.js";
 import { TOOL_NAMES, type ToolName } from "../tools/names.js";
 import {
-    TOOL_CARD_ENABLED,
     TOOL_CARD_LEGACY_TEMPLATE,
     TOOL_CARD_MIME,
     TOOL_CARD_URI,
     SUMMARY_CARD_URI,
+    SETTINGS_CARD_URI,
 } from "./constants.js";
 import { toolCardHtml } from "./tool-card-html.js";
 import { summaryCardHtml } from "./summary-card-html.js";
+import { settingsCardHtml } from "./settings-card-html.js";
 import { toolStatus } from "./tool-labels.js";
+import {
+    DEFAULT_UI_PREFERENCES,
+    isSettingsUiTool,
+    isUiEnabledForTool,
+    type UiPreferences,
+} from "./settings.js";
 
 const SHARED_TOOL_CARD_HTML = toolCardHtml();
 const SUMMARY_CARD_HTML = summaryCardHtml();
+const SETTINGS_CARD_HTML = settingsCardHtml();
 const legacyToolCardHtmlCache = new Map<ToolName | undefined, string>();
+const serverUiPreferences = new WeakMap<object, UiPreferences>();
+
+/** Snapshot ChatGPT-facing UI preferences for one concrete MCP server instance. */
+export function configureServerUiPreferences(
+    server: object,
+    preferences: UiPreferences,
+): void {
+    serverUiPreferences.set(server, { ...preferences });
+}
+
+function uiPreferencesForServer(server: object): UiPreferences {
+    return serverUiPreferences.get(server) ?? { ...DEFAULT_UI_PREFERENCES };
+}
 
 /**
  * Build ChatGPT / MCP Apps resource `_meta` including CSP + unique domain.
@@ -69,6 +90,21 @@ export function summaryCardResourceMeta(config: ServerConfig): Record<string, un
     };
 }
 
+/** Resource metadata for the interactive settings control plane. */
+export function settingsCardResourceMeta(config: ServerConfig): Record<string, unknown> {
+    const base = toolCardResourceMeta(config);
+    return {
+        ...base,
+        "openai/widgetDescription":
+            "Interactive local settings panel for codex-mcp custom UI visibility.",
+        ui: {
+            ...((base.ui as Record<string, unknown> | undefined) ?? {}),
+            prefersBorder: false,
+            domain: config.widgetDomain,
+        },
+    };
+}
+
 /**
  * Parse a tool name from a legacy per-tool card path segment.
  *
@@ -100,10 +136,9 @@ function cachedLegacyToolCardHtml(toolName: ToolName | undefined): string {
  * @param config - Server config for widget domain / CSP
  */
 export function registerToolCardResource(server: McpServer, config: ServerConfig): void {
-    if (!TOOL_CARD_ENABLED) return;
-
     const resourceMeta = toolCardResourceMeta(config);
     const summaryMeta = summaryCardResourceMeta(config);
+    const settingsMeta = settingsCardResourceMeta(config);
 
     const readFixed = async (uri: { href: string }) => ({
         contents: [
@@ -149,6 +184,27 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
         }),
     );
 
+    server.registerResource(
+        "settings-card",
+        SETTINGS_CARD_URI,
+        {
+            description:
+                "Interactive codex-mcp settings panel for custom UI visibility.",
+            mimeType: TOOL_CARD_MIME,
+            _meta: settingsMeta,
+        },
+        async (uri) => ({
+            contents: [
+                {
+                    uri: uri.href,
+                    mimeType: TOOL_CARD_MIME,
+                    text: SETTINGS_CARD_HTML,
+                    _meta: settingsMeta,
+                },
+            ],
+        }),
+    );
+
     // Compatibility for connectors that still request the old per-tool URIs.
     server.registerResource(
         "tool-card-legacy",
@@ -183,11 +239,17 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
  * @returns Meta object for registerTool config
  * @see https://developers.openai.com/plugins/reference
  */
-export function toolUiMeta(toolName: string): Record<string, unknown> {
+export function toolUiMeta(server: object, toolName: string): Record<string, unknown> {
     const status = toolStatus(toolName);
-    const templateUri = toolName === "summary" ? SUMMARY_CARD_URI : TOOL_CARD_URI;
+    const preferences = uiPreferencesForServer(server);
+    const templateUri = isSettingsUiTool(toolName)
+        ? SETTINGS_CARD_URI
+        : toolName === "summary"
+          ? SUMMARY_CARD_URI
+          : TOOL_CARD_URI;
+    const uiEnabled = isUiEnabledForTool(toolName, preferences);
     return {
-        ...(TOOL_CARD_ENABLED
+        ...(uiEnabled
             ? {
                   ui: {
                       resourceUri: templateUri,
@@ -195,7 +257,7 @@ export function toolUiMeta(toolName: string): Record<string, unknown> {
                   "openai/outputTemplate": templateUri,
               }
             : {}),
-        // Host status row (≤64 chars). In ChatGPT this chrome appears with outputTemplate.
+        // Host status row (≤64 chars). ChatGPT normally shows this chrome with outputTemplate.
         "openai/toolInvocation/invoking": status.invoking,
         "openai/toolInvocation/invoked": status.invoked,
     };

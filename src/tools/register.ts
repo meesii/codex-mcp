@@ -7,8 +7,12 @@ import type { ProjectContext } from "../project.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import type { GoalStore } from "../goals/store.js";
+import type { UiSettingsStore } from "../ui/settings.js";
 import { configureServerToolAuth } from "../lib/tool-meta.js";
-import { registerToolCardResource } from "../ui/register-ui.js";
+import {
+    configureServerUiPreferences,
+    registerToolCardResource,
+} from "../ui/register-ui.js";
 import { registerReadManyTool, registerReadTool } from "./read.js";
 import { registerWriteTool } from "./write.js";
 import { registerEditTool } from "./edit.js";
@@ -26,6 +30,7 @@ import { registerLsTool } from "./ls.js";
 import { registerWebfetchTool } from "./webfetch.js";
 import { registerSummaryTool } from "./summary.js";
 import { registerGoalTools } from "./goals.js";
+import { registerSettingsTools } from "./settings.js";
 import { registerMcpGatewayTools } from "./mcp-gateway.js";
 import { registerSkillTools } from "./skills.js";
 import { registerAgentTools } from "./agents.js";
@@ -48,6 +53,7 @@ export { TOOL_NAMES } from "./names.js";
  * @param agents - Scoped Codex AGENTS.md registry
  * @param workspace - Shared workspace registry
  * @param goals - Durable project goal store
+ * @param uiSettings - Durable ChatGPT-facing UI preference store
  */
 export function registerAllTools(
     server: McpServer,
@@ -59,8 +65,10 @@ export function registerAllTools(
     agents: AgentInstructionRegistry,
     workspace: WorkspaceRegistry,
     goals: GoalStore,
+    uiSettings: UiSettingsStore,
 ): void {
     configureServerToolAuth(server, config.oauthRequired);
+    configureServerUiPreferences(server, uiSettings.get());
     registerToolCardResource(server, config);
     registerReadTool(server, project);
     registerReadManyTool(server, project);
@@ -80,6 +88,7 @@ export function registerAllTools(
     registerWebfetchTool(server);
     registerSummaryTool(server);
     registerGoalTools(server, goals);
+    registerSettingsTools(server, uiSettings);
     registerSkillTools(server, skills);
     registerAgentTools(server, agents);
     registerCapabilityTools(server, hub, skills);

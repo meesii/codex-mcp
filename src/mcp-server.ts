@@ -8,6 +8,7 @@ import type { ProjectContext } from "./project.js";
 import type { SkillRegistry } from "./skills/registry.js";
 import type { WorkspaceRegistry } from "./workspace/registry.js";
 import type { GoalStore } from "./goals/store.js";
+import type { UiSettingsStore } from "./ui/settings.js";
 import { registerAllTools } from "./tools/register.js";
 import { PACKAGE_VERSION } from "./version.js";
 
@@ -79,6 +80,8 @@ export function buildServerInstructions(
     addTool("goal_verify", "record concrete pass/fail evidence for an acceptance criterion.");
     addTool("goal_finish", "complete a goal only after every task is done and every acceptance criterion is passed.");
     addTool("goal_cancel", "cancel an abandoned/replaced goal while preserving its history.");
+    addTool("settings_get", "open/read codex-mcp ChatGPT UI visibility settings.");
+    addTool("settings_update", "persist ordinary-tool/status UI visibility and notify the client to refresh tool metadata.");
     addTool("skills_list", "list skills imported from local Codex skill roots.");
     addTool("skill_read", "read a matching skill's SKILL.md or referenced text file before following it.");
     addTool("agents_for_path", "load global + nested AGENTS.md rules for a project path.");
@@ -115,6 +118,11 @@ export function buildServerInstructions(
         limits.push(
             "- Long-running project work that may span chat turns: goal_start → goal_update checkpoints/tasks → goal_verify acceptance criteria → goal_finish. Restore with goal_status before continuing in a later turn/chat.",
             "- Do not use goal_finish as a narrative claim: it intentionally fails unless all goal tasks are done and all acceptance criteria have passed evidence.",
+        );
+    }
+    if (["settings_get", "settings_update"].every(allows)) {
+        limits.push(
+            "- ChatGPT custom UI: ordinary tool cards default off; Summary/Goal status cards default on. Use settings_get to open the interactive settings panel or settings_update for direct changes.",
         );
     }
     if (["edit", "apply_patch", "write", "bash"].some(allows)) {
@@ -169,6 +177,7 @@ export function buildServerInstructions(
  * @param agents - Scoped Codex AGENTS.md registry
  * @param workspace - Shared workspace registry for cached repo topology and search
  * @param goals - Durable project goal store shared across stateless MCP requests
+ * @param uiSettings - Durable ChatGPT-facing UI preferences
  * @param allowedTools - Concrete tool set allowed for this client/session
  * @returns Connected-ready McpServer
  */
@@ -181,6 +190,7 @@ export function createMcpServer(
     agents: AgentInstructionRegistry,
     workspace: WorkspaceRegistry,
     goals: GoalStore,
+    uiSettings: UiSettingsStore,
     allowedTools?: ReadonlySet<string>,
 ): McpServer {
     const server = new McpServer(
@@ -200,6 +210,17 @@ export function createMcpServer(
     );
 
     configureToolRegistrationPolicy(server, allowedTools);
-    registerAllTools(server, config, project, processes, hub, skills, agents, workspace, goals);
+    registerAllTools(
+        server,
+        config,
+        project,
+        processes,
+        hub,
+        skills,
+        agents,
+        workspace,
+        goals,
+        uiSettings,
+    );
     return server;
 }
