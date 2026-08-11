@@ -1,8 +1,8 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
-import { runGitReadOnly } from "../lib/git-readonly.js";
-import { structuredSearch } from "../lib/structured-search.js";
-import type { ProjectContext } from "../project.js";
+import { runGitReadOnly } from "../lib/fs/git-readonly.js";
+import { structuredSearch } from "../lib/search/structured.js";
+import type { ProjectContext } from "../config/project.js";
 
 const DEFAULT_MAX_REPOS = 100;
 const DEFAULT_MAX_DEPTH = 3;
@@ -51,7 +51,6 @@ interface TopologyCacheEntry {
     value: Promise<WorkspaceProjectTopology[]>;
 }
 
-/** Bounded multi-repo discovery and search under the bound project root. */
 export class WorkspaceRegistry {
     private readonly topologyCache = new Map<number, TopologyCacheEntry>();
 
@@ -125,7 +124,6 @@ export class WorkspaceRegistry {
         return { matches: result.matches, truncated: result.truncated };
     }
 
-    /** Return only Git projects relevant to a project-relative scope. */
     async projectsForPath(path: string, maxDepth = DEFAULT_MAX_DEPTH): Promise<WorkspaceProjectInfo[]> {
         const scope = path.trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "") || ".";
         const projects = await this.listProjects(maxDepth);

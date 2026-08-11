@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process-sessions.js";
-import { runtimeTelemetry } from "../lib/runtime-telemetry.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { okResult } from "../lib/tool-result.js";
+import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import { runtimeTelemetry } from "../lib/util/telemetry.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { okResult } from "../lib/tool/result.js";
 
 const latencyMetricSchema = z.object({
     calls: z.number().int().nonnegative(),
@@ -28,7 +28,6 @@ const downstreamServerMetricSchema = latencyMetricSchema.extend({
     server: z.string(),
 });
 
-/** Register aggregate, read-only runtime observability. */
 export function registerRuntimeStatusTool(
     server: McpServer,
     processes: ProcessSessionManager,

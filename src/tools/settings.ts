@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import { registerTool } from "../lib/tool-log.js";
+import { registerTool } from "../lib/tool/log.js";
 import {
     readOnlyAnnotations,
     stateWriteAnnotations,
     withToolAuth,
-} from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+} from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 import {
     DEFAULT_UI_PREFERENCES,
     type UiSettingsStore,
@@ -25,7 +25,6 @@ const appCallableMeta = {
     "openai/widgetAccessible": true,
 };
 
-/** Register ChatGPT-facing local UI preference tools. */
 export function registerSettingsTools(
     server: McpServer,
     settings: UiSettingsStore,

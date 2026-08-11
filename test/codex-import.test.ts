@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mergeMcpConfigs, normalizeCodexMcpList } from "../src/codex-import.js";
-import { isStdioMcpServer, isUrlMcpServer } from "../src/user-mcp-config.js";
+import { mergeMcpConfigs, normalizeCodexMcpList } from "../src/config/codex-import.js";
+import { isStdioMcpServer, isUrlMcpServer } from "../src/config/user-mcp.js";
 
 function main(): void {
     const imported = normalizeCodexMcpList(

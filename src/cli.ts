@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { loadConfig } from "./config.js";
-import { runDoctorChecks, type DoctorLevel } from "./doctor.js";
+import { loadConfig } from "./config/loader.js";
+import { runDoctorChecks, type DoctorLevel } from "./doctor/index.js";
 import {
     generateAdminPassword,
     hasAdminPassword,
@@ -11,8 +11,8 @@ import {
 import { DownstreamMcpHub } from "./downstream/hub.js";
 import { CodexCapabilityWatcher } from "./capabilities/runtime.js";
 import { resolveAllowedTools } from "./capabilities/policy.js";
-import { createHttpServer } from "./http-server.js";
-import { isToolLogEnabled } from "./lib/tool-log.js";
+import { createHttpServer } from "./server/http-server.js";
+import { isToolLogEnabled } from "./lib/tool/log.js";
 import {
     paintTerminal,
     printError,
@@ -20,7 +20,7 @@ import {
     printSuccess,
     printWarning,
     terminalMessage,
-} from "./lib/terminal.js";
+} from "./lib/util/terminal.js";
 import { SkillRegistry } from "./skills/registry.js";
 import { askLine, askSecret, canPromptInteractively } from "./tunnel/prompt.js";
 import { CloudflaredSidecar } from "./tunnel/sidecar.js";
@@ -30,8 +30,8 @@ import {
     runTunnelWizard,
     type TunnelSetupResult,
 } from "./tunnel/setup.js";
-import { loadUserConfig } from "./user-config.js";
-import { runSelfUpdate } from "./update.js";
+import { loadUserConfig } from "./config/user-config.js";
+import { runSelfUpdate } from "./doctor/update.js";
 
 interface CliFlags {
     command: "serve" | "setup" | "doctor" | "tunnel" | "auth" | "update" | "version" | "help";
@@ -41,9 +41,6 @@ interface CliFlags {
     root?: string;
 }
 
-/**
- * Print CLI usage to stderr.
- */
 function printUsage(): void {
     console.error(`codex-mcp 使用方法
 
@@ -68,29 +65,15 @@ function printUsage(): void {
 const paint = paintTerminal;
 const BANNER_LABEL_WIDTH = 8;
 
-/**
- * Clear the terminal when stdout is an interactive TTY.
- */
 function clearTerminal(): void {
     if (process.stdout.isTTY !== true) return;
     console.clear();
 }
 
-/**
- * Print one aligned `label  value` row for the startup banner.
- *
- * @param label - Left column (dim)
- * @param value - Right column (already styled if needed)
- */
 function printBannerRow(label: string, value: string): void {
     console.log(`  ${paint("dim", label.padEnd(BANNER_LABEL_WIDTH))}  ${value}`);
 }
 
-/**
- * Print the post-listen startup summary.
- *
- * @param input - URLs, root, and tunnel/log status
- */
 function printStartupBanner(input: {
     mcpUrl: string;
     localUrl: string;
@@ -136,12 +119,6 @@ function printStartupBanner(input: {
     console.log("");
 }
 
-/**
- * Parse argv into a command + flags.
- *
- * @param argv - Process arguments excluding node/executable
- * @returns Parsed flags
- */
 function parseArgv(argv: string[]): CliFlags {
     let command: CliFlags["command"] = "serve";
     let local = false;
@@ -224,11 +201,6 @@ function parseArgv(argv: string[]): CliFlags {
     return { command, local, noTunnel, tunnelLogs, root };
 }
 
-/**
- * CLI entrypoint.
- *
- * @param argv - Process arguments excluding node/executable
- */
 async function main(argv: string[]): Promise<void> {
     const flags = parseArgv(argv);
     if (flags.command === "help") {
@@ -287,11 +259,6 @@ async function main(argv: string[]): Promise<void> {
     await runServe(flags);
 }
 
-/**
- * Start HTTP MCP and optionally the cloudflared sidecar.
- *
- * @param flags - Parsed CLI flags
- */
 async function runServe(flags: CliFlags): Promise<void> {
     let userConfig = loadUserConfig();
     const allowSidecar = !flags.local && !flags.noTunnel;
@@ -415,7 +382,6 @@ async function runServe(flags: CliFlags): Promise<void> {
     });
 }
 
-/** Run the guided first-time setup for public ChatGPT access. */
 async function runFirstTimeSetup(): Promise<void> {
     if (!canPromptInteractively()) {
         throw new Error("首次设置需要在可以输入内容的终端里运行");
@@ -436,7 +402,6 @@ async function runFirstTimeSetup(): Promise<void> {
     console.log("");
 }
 
-/** Print a readable, read-only installation/configuration report. */
 async function printDoctorReport(): Promise<void> {
     console.log("");
     console.log(paint(["bold", "cyan"], "codex-mcp 检查"));
@@ -478,7 +443,6 @@ function getPackageVersion(): string {
     }
 }
 
-/** Configure or replace the public access password manually. */
 async function configureAdminPassword(): Promise<void> {
     if (!canPromptInteractively()) {
         throw new Error("修改连接密码需要在可以输入内容的终端里运行");
@@ -495,7 +459,6 @@ async function configureAdminPassword(): Promise<void> {
     printSuccess("连接密码已修改。");
 }
 
-/** Ensure first-time public access has a generated password without overwriting an existing one. */
 async function ensureGeneratedAdminPassword(): Promise<void> {
     if (await hasAdminPassword()) {
         printSuccess("连接密码已经存在，保持不变。");

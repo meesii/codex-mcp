@@ -6,7 +6,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type { ProjectContext } from "../project.js";
+import type { ProjectContext } from "../config/project.js";
 
 const MAX_AGENT_FILE_CHARS = 50_000;
 const MAX_COMBINED_AGENT_CHARS = 100_000;

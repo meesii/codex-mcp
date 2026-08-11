@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentInstructionRegistry } from "../src/agents/registry.js";
-import { ProjectContext } from "../src/project.js";
-import { resolveWidgetDomain, type ServerConfig } from "../src/config.js";
-import { createHttpServer } from "../src/http-server.js";
+import { ProjectContext } from "../src/config/project.js";
+import { resolveWidgetDomain, type ServerConfig } from "../src/config/loader.js";
+import { createHttpServer } from "../src/server/http-server.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 
 async function main(): Promise<void> {

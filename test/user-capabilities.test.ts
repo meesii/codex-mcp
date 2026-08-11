@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadUserConfig } from "../src/user-config.js";
+import { loadUserConfig } from "../src/config/user-config.js";
 
 async function main(): Promise<void> {
     const home = await mkdtemp(join(tmpdir(), "codex-mcp-cap-config-"));

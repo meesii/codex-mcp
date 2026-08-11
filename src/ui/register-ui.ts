@@ -1,5 +1,5 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
-import type { ServerConfig } from "../config.js";
+import type { ServerConfig } from "../config/loader.js";
 import { TOOL_NAMES, type ToolName } from "../tools/names.js";
 import {
     TOOL_CARD_LEGACY_TEMPLATE,
@@ -25,7 +25,6 @@ const SETTINGS_CARD_HTML = settingsCardHtml();
 const legacyToolCardHtmlCache = new Map<ToolName | undefined, string>();
 const serverUiPreferences = new WeakMap<object, UiPreferences>();
 
-/** Snapshot ChatGPT-facing UI preferences for one concrete MCP server instance. */
 export function configureServerUiPreferences(
     server: object,
     preferences: UiPreferences,
@@ -37,13 +36,6 @@ function uiPreferencesForServer(server: object): UiPreferences {
     return serverUiPreferences.get(server) ?? { ...DEFAULT_UI_PREFERENCES };
 }
 
-/**
- * Build ChatGPT / MCP Apps resource `_meta` including CSP + unique domain.
- *
- * @param config - Server config (widgetDomain)
- * @returns Resource contents `_meta`
- * @see https://developers.openai.com/apps-sdk/reference
- */
 export function toolCardResourceMeta(config: ServerConfig): Record<string, unknown> {
     // Self-contained HTML: no external fetch/assets. Empty allow-lists are valid.
     const csp = {
@@ -70,12 +62,6 @@ export function toolCardResourceMeta(config: ServerConfig): Record<string, unkno
     };
 }
 
-/**
- * Resource `_meta` for the always-open summary progress panel.
- *
- * @param config - Server config (widgetDomain)
- * @returns Resource contents `_meta`
- */
 export function summaryCardResourceMeta(config: ServerConfig): Record<string, unknown> {
     const base = toolCardResourceMeta(config);
     return {
@@ -90,7 +76,6 @@ export function summaryCardResourceMeta(config: ServerConfig): Record<string, un
     };
 }
 
-/** Resource metadata for the interactive settings control plane. */
 export function settingsCardResourceMeta(config: ServerConfig): Record<string, unknown> {
     const base = toolCardResourceMeta(config);
     return {
@@ -105,12 +90,6 @@ export function settingsCardResourceMeta(config: ServerConfig): Record<string, u
     };
 }
 
-/**
- * Parse a tool name from a legacy per-tool card path segment.
- *
- * @param pathName - e.g. `write_stdin@v7.html` / `read-v8.html`
- * @returns Tool name when recognized
- */
 export function toolNameFromCardPath(pathName: string): ToolName | undefined {
     const base = pathName.replace(/\.html$/i, "");
     const withoutVersion = base.replace(/[@-]v\d+$/i, "");
@@ -128,13 +107,6 @@ function cachedLegacyToolCardHtml(toolName: ToolName | undefined): string {
     return html;
 }
 
-/**
- * Register the shared tool-card UI resource, plus a legacy template so old
- * ChatGPT-cached `ui://codex-mcp/tool-card/*@vN.html` pointers still fetch.
- *
- * @param server - MCP server instance
- * @param config - Server config for widget domain / CSP
- */
 export function registerToolCardResource(server: McpServer, config: ServerConfig): void {
     const resourceMeta = toolCardResourceMeta(config);
     const summaryMeta = summaryCardResourceMeta(config);
@@ -232,13 +204,6 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
     );
 }
 
-/**
- * Tool descriptor `_meta` that links a tool to its UI card template.
- *
- * @param toolName - Machine tool name (for per-tool host status text)
- * @returns Meta object for registerTool config
- * @see https://developers.openai.com/plugins/reference
- */
 export function toolUiMeta(server: object, toolName: string): Record<string, unknown> {
     const status = toolStatus(toolName);
     const preferences = uiPreferencesForServer(server);

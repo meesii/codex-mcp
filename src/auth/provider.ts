@@ -20,7 +20,7 @@ import {
     InvalidTargetError,
     InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import { safeHttpGet } from "../lib/safe-http.js";
+import { safeHttpGet } from "../lib/http/safe-http.js";
 import {
     JWT_BEARER_ASSERTION_TYPE,
     PrivateKeyJwtVerifier,

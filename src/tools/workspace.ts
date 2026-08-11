@@ -4,14 +4,14 @@ import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 import {
     queryToSearchPattern,
     rankMatchesByFile,
     significantQueryTokens,
-} from "../lib/query-relevance.js";
+} from "../lib/search/query-relevance.js";
 
 const CONTEXT_PACK_SEARCH_CANDIDATES = 80;
 const CONTEXT_PACK_MAX_MATCHES = 20;
@@ -37,7 +37,6 @@ const searchMatchSchema = z.object({
     kind: z.enum(["match", "context"]),
 });
 
-/** Register bounded multi-repo discovery/search/context tools. */
 export function registerWorkspaceTools(
     server: McpServer,
     workspace: WorkspaceRegistry,
@@ -219,7 +218,6 @@ export function registerWorkspaceTools(
     );
 }
 
-/** @internal Rank context-pack matches by file-level token coverage and preserve diversity. */
 export function rankContextMatches<
     T extends { path: string; line: number; column: number; text: string },
 >(

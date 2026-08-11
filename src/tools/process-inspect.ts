@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessInfo, ProcessSessionManager } from "../lib/process-sessions.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
+import type { ProcessInfo, ProcessSessionManager } from "../lib/process/sessions.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
 
 const DEFAULT_OUTPUT_CHARS = 12_000;
 const PROCESS_CAPTURE_CHARS = 200_000;
@@ -23,7 +23,6 @@ const processInfoSchema = z.object({
     outputTruncated: z.boolean(),
 });
 
-/** Register non-consuming process discovery/inspection for the current owner. */
 export function registerProcessInspectTools(
     server: McpServer,
     processes: ProcessSessionManager,

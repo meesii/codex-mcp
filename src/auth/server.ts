@@ -7,7 +7,7 @@ import {
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { OAuthMetadataSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { requestClientKey } from "../lib/request-ip.js";
+import { requestClientKey } from "../lib/http/request-ip.js";
 import { createRevocationEndpoint, createTokenEndpoint } from "./endpoints.js";
 import { OAuthStateStore } from "./oauth-state.js";
 import { PRIVATE_KEY_JWT_ALGORITHMS } from "./private-key-jwt.js";
@@ -26,7 +26,6 @@ export interface OAuthRuntime {
     resourceMetadataUrl: string;
 }
 
-/** Build the embedded OAuth Authorization Server + MCP bearer guard. */
 export async function createOAuthRuntime(resourceUrl: URL): Promise<OAuthRuntime> {
     const issuerUrl = new URL("/", resourceUrl);
     const state = await OAuthStateStore.open();

@@ -1,19 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
-import { registerTool } from "../lib/tool-log.js";
-import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { buildMutationDiff } from "../lib/mutation-diff.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
+import { registerTool } from "../lib/tool/log.js";
+import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { buildMutationDiff } from "../lib/util/mutation-diff.js";
 
-/**
- * Register the `edit` tool (exact string replacement).
- *
- * @param server - MCP server instance
- * @param project - Bound project context
- */
 export function registerEditTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

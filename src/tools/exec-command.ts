@@ -1,22 +1,15 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process-sessions.js";
-import { registerTool } from "../lib/tool-log.js";
-import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
+import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import { registerTool } from "../lib/tool/log.js";
+import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
 
 const DEFAULT_OUTPUT_CHARS = 12_000;
 
-/**
- * Register Codex-style `exec_command` (supports long-running processId).
- *
- * @param server - MCP server
- * @param project - Bound project context
- * @param processes - Process session manager
- */
 export function registerExecCommandTool(
     server: McpServer,
     project: ProjectContext,

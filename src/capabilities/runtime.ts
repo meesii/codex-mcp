@@ -27,7 +27,6 @@ interface ActiveWatcher {
     watcher: FSWatcher;
 }
 
-/** Re-import Codex MCP configuration and re-scan skills in shared objects. */
 export async function reloadCodexCapabilities(
     hub: DownstreamMcpHub,
     skills: SkillRegistry,

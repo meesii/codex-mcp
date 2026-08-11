@@ -1,4 +1,3 @@
-/** Interactive MCP Apps widget for codex-mcp UI preferences. */
 export function settingsCardHtml(): string {
     return `<!doctype html>
 <html lang="zh-CN">

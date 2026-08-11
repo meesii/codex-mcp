@@ -4,14 +4,14 @@ import { join } from "node:path";
 import {
     resolveWidgetDomain,
     type ServerConfig,
-} from "../../src/config.js";
+} from "../../src/config/loader.js";
 import {
     createHttpServer,
     type CreateHttpServerOptions,
     type RunningHttpServer,
-} from "../../src/http-server.js";
+} from "../../src/server/http-server.js";
 import { AgentInstructionRegistry } from "../../src/agents/registry.js";
-import { ProjectContext } from "../../src/project.js";
+import { ProjectContext } from "../../src/config/project.js";
 import { TOOL_NAMES } from "../../src/tools/names.js";
 import { createMemoryUiSettingsStore } from "../../src/ui/settings.js";
 

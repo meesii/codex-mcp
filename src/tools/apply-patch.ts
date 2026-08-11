@@ -2,12 +2,12 @@ import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
-import { registerTool } from "../lib/tool-log.js";
-import { withToolAuth, writeAnnotations } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { truncateText } from "../lib/truncate.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
+import { registerTool } from "../lib/tool/log.js";
+import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { truncateText } from "../lib/search/truncate.js";
 
 interface PatchHunk {
     oldStart: number;
@@ -37,7 +37,6 @@ const MAX_PATCH_CHARS = 500_000;
 const MAX_PATCH_FILES = 100;
 const MAX_RESULT_DIFF_CHARS = 40_000;
 
-/** Register a standard unified-diff patch tool with project-root path guards. */
 export function registerApplyPatchTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

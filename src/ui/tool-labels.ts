@@ -1,6 +1,5 @@
 import type { ToolName } from "../tools/names.js";
 
-/** Chinese display labels for coding tools (UI card only). */
 export const TOOL_LABELS: Record<ToolName, string> = {
     read: "读取文件",
     read_many: "批量读取文件",
@@ -52,7 +51,6 @@ export const TOOL_LABELS: Record<ToolName, string> = {
     mcp_prompt_get: "读取下游提示词",
 };
 
-/** Host invoking / invoked status text (≤64 chars each). */
 export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }> = {
     read: { invoking: "正在读取文件…", invoked: "文件读取完成" },
     read_many: { invoking: "正在批量读取文件…", invoked: "批量读取完成" },
@@ -104,12 +102,6 @@ export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }
     mcp_prompt_get: { invoking: "正在读取下游提示词…", invoked: "下游提示词读取完成" },
 };
 
-/**
- * Resolve a short Chinese label for a tool name.
- *
- * @param toolName - Machine tool name
- * @returns Display label
- */
 export function toolLabel(toolName: string): string {
     if (Object.prototype.hasOwnProperty.call(TOOL_LABELS, toolName)) {
         return TOOL_LABELS[toolName as ToolName];
@@ -117,12 +109,6 @@ export function toolLabel(toolName: string): string {
     return toolName;
 }
 
-/**
- * Resolve host status text for a tool invocation.
- *
- * @param toolName - Machine tool name
- * @returns Invoking / invoked strings
- */
 export function toolStatus(toolName: string): { invoking: string; invoked: string } {
     if (Object.prototype.hasOwnProperty.call(TOOL_STATUS, toolName)) {
         return TOOL_STATUS[toolName as ToolName];

@@ -34,7 +34,6 @@ export interface ManagedToolInstallResult {
     installed: boolean;
 }
 
-/** Ensure a pinned runtime tool exists in codex-mcp's private bin directory. */
 export async function ensureManagedTool(
     tool: ManagedToolName,
 ): Promise<ManagedToolInstallResult> {
@@ -98,7 +97,6 @@ export async function ensureManagedTool(
     }
 }
 
-/** Install several managed tools in deterministic order. */
 export async function ensureManagedTools(
     tools: ManagedToolName[],
 ): Promise<ManagedToolInstallResult[]> {

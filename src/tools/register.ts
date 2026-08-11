@@ -1,14 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ServerConfig } from "../config.js";
+import type { ServerConfig } from "../config/loader.js";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
-import type { ProcessSessionManager } from "../lib/process-sessions.js";
-import type { ProjectContext } from "../project.js";
+import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProjectContext } from "../config/project.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import type { GoalStore } from "../goals/store.js";
 import type { UiSettingsStore } from "../ui/settings.js";
-import { configureServerToolAuth } from "../lib/tool-meta.js";
+import { configureServerToolAuth } from "../lib/tool/meta.js";
 import {
     configureServerUiPreferences,
     registerToolCardResource,
@@ -41,20 +41,6 @@ import { registerCodeExploreTool } from "./code-explore.js";
 
 export { TOOL_NAMES } from "./names.js";
 
-/**
- * Register all coding tools on the MCP server.
- *
- * @param server - MCP server instance
- * @param config - Server configuration (widget domain / CSP)
- * @param project - Bound project context
- * @param processes - Shared process session manager
- * @param hub - Downstream MCP hub imported from Codex plus local overrides
- * @param skills - User-level Codex skill registry
- * @param agents - Scoped Codex AGENTS.md registry
- * @param workspace - Shared workspace registry
- * @param goals - Durable project goal store
- * @param uiSettings - Durable ChatGPT-facing UI preference store
- */
 export function registerAllTools(
     server: McpServer,
     config: ServerConfig,

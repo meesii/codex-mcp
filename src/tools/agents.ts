@@ -1,11 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
-/** Register scoped Codex AGENTS.md discovery. */
 export function registerAgentTools(
     server: McpServer,
     agents: AgentInstructionRegistry,

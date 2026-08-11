@@ -1,25 +1,13 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { paintTerminal } from "../lib/terminal.js";
+import { paintTerminal } from "../lib/util/terminal.js";
 
-/**
- * Whether stdin/stdout can drive an interactive wizard.
- *
- * @returns True when both are TTYs
- */
 export function canPromptInteractively(): boolean {
     return input.isTTY === true && output.isTTY === true;
 }
 
 const paint = paintTerminal;
 
-/**
- * Ask a yes/no question.
- *
- * @param question - Prompt text
- * @param defaultYes - Default when the user presses Enter
- * @returns True for yes
- */
 export async function askYesNo(
     question: string,
     defaultYes = true,
@@ -32,13 +20,6 @@ export async function askYesNo(
     return answer === "y" || answer === "yes" || answer === "是";
 }
 
-/**
- * Ask for a single line of input.
- *
- * @param question - Prompt text
- * @param defaultValue - Value when the user presses Enter
- * @returns Trimmed answer (or default)
- */
 export async function askLine(
     question: string,
     defaultValue?: string,
@@ -60,12 +41,6 @@ export async function askLine(
     }
 }
 
-/**
- * Read a secret from an interactive TTY without echoing it.
- *
- * @param question - Prompt text
- * @returns Secret text without the trailing newline
- */
 export async function askSecret(question: string): Promise<string> {
     if (!canPromptInteractively() || typeof input.setRawMode !== "function") {
         throw new Error("这里需要在可以输入内容的终端里运行，才能安全输入密码");

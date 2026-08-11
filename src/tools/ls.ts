@@ -1,20 +1,14 @@
 import { readdir, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
 const MAX_DIRECTORY_ENTRIES = 2_000;
 
-/**
- * Register the `ls` tool.
- *
- * @param server - MCP server instance
- * @param project - Bound project context
- */
 export function registerLsTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

@@ -2,14 +2,14 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
-import { registerTool } from "../lib/tool-log.js";
+import { registerTool } from "../lib/tool/log.js";
 import {
     openWorldAnnotations,
     operationalAnnotations,
     proxyAnnotations,
     withToolAuth,
-} from "../lib/tool-meta.js";
-import { errorResult, okResult, resultText } from "../lib/tool-result.js";
+} from "../lib/tool/meta.js";
+import { errorResult, okResult, resultText } from "../lib/tool/result.js";
 
 const toolDescriptorSchema = z.object({
     name: z.string(),
@@ -53,12 +53,6 @@ const promptSchema = z.object({
     ),
 });
 
-/**
- * Register `mcp_tools` and `mcp_call` for downstream MCP proxying.
- *
- * @param server - MCP server instance
- * @param hub - Connected downstream hub
- */
 export function registerMcpGatewayTools(
     server: McpServer,
     hub: DownstreamMcpHub,
@@ -147,10 +141,6 @@ function registerMcpReconnectTool(server: McpServer, hub: DownstreamMcpHub): voi
     );
 }
 
-/**
- * @param server - MCP server instance
- * @param hub - Connected downstream hub
- */
 function registerMcpToolsTool(server: McpServer, hub: DownstreamMcpHub): void {
     registerTool(
         server,
@@ -219,10 +209,6 @@ function registerMcpToolsTool(server: McpServer, hub: DownstreamMcpHub): void {
     );
 }
 
-/**
- * @param server - MCP server instance
- * @param hub - Connected downstream hub
- */
 function registerMcpCallTool(server: McpServer, hub: DownstreamMcpHub): void {
     registerTool(
         server,
@@ -435,14 +421,6 @@ function registerMcpPromptGetTool(server: McpServer, hub: DownstreamMcpHub): voi
     );
 }
 
-/**
- * Wrap a downstream tool result into our structured output shape.
- *
- * @param serverName - mcp.json key
- * @param toolName - Downstream tool name
- * @param result - Downstream call result
- * @returns Gateway tool result
- */
 function wrapDownstreamResult(
     serverName: string,
     toolName: string,
@@ -476,10 +454,6 @@ function wrapDownstreamResult(
     };
 }
 
-/**
- * @param text - Full result text
- * @returns Short preview for content summary
- */
 function clipPreview(text: string): string {
     const oneLine = text.replace(/\s+/g, " ").trim();
     if (oneLine.length <= 160) return oneLine;

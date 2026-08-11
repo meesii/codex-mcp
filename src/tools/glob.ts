@@ -3,11 +3,11 @@ import { join, relative } from "node:path";
 import { Minimatch } from "minimatch";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
 const MAX_DISCOVERED_FILES = 50_000;
 const MAX_RETURNED_FILES = 500;
@@ -74,7 +74,6 @@ async function walkGlobFiles(
     return false;
 }
 
-/** @internal Exported for focused regression tests. */
 export async function listGlobFiles(
     project: ProjectContext,
     pattern: string,
@@ -99,7 +98,6 @@ export async function listGlobFiles(
     return { files: state.files, scanTruncated };
 }
 
-/** Register the `glob` tool. */
 export function registerGlobTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

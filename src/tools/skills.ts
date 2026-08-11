@@ -1,9 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { SkillRegistry } from "../skills/registry.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
 const skillInfoSchema = z.object({
     name: z.string(),
@@ -11,7 +11,6 @@ const skillInfoSchema = z.object({
     source: z.enum(["agents", "codex"]),
 });
 
-/** Register Codex skill discovery/read tools. */
 export function registerSkillTools(server: McpServer, skills: SkillRegistry): void {
     registerTool(
         server,

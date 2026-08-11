@@ -57,7 +57,7 @@ npm install --global --prefix "$INSTALL_ROOT" "$PACKAGE"
 
 [ -x "$BIN_DIR/codex-mcp" ] || fail "安装完成，但没有找到 codex-mcp 命令。"
 
-TOOLS_CLI="$INSTALL_ROOT/lib/node_modules/codex-mcp/dist/managed-tools-cli.js"
+TOOLS_CLI="$INSTALL_ROOT/lib/node_modules/codex-mcp/dist/managed-tools/cli.js"
 [ -f "$TOOLS_CLI" ] || fail "安装完成，但缺少运行组件管理程序。"
 info "正在准备必要组件…"
 node "$TOOLS_CLI" bootstrap || fail "必要组件准备失败。请检查网络后重新运行安装。"

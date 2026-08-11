@@ -1,11 +1,11 @@
 import { createReadStream } from "node:fs";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
 const MAX_READ_CHARS = 80_000;
 const MAX_LINE_LIMIT = 10_000;
@@ -18,10 +18,6 @@ interface ReadSlice {
     truncated: boolean;
 }
 
-/**
- * Stream only the requested line range and preserve original line endings so
- * copied multi-line text can be passed back to exact-match `edit` on CRLF files.
- */
 export async function readTextSlice(
     path: string,
     offset = 1,
@@ -75,7 +71,6 @@ export async function readTextSlice(
     return { content: output, lineCount, truncated };
 }
 
-/** Register the `read` tool. */
 export function registerReadTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,
@@ -131,7 +126,6 @@ export function registerReadTool(server: McpServer, project: ProjectContext): vo
     );
 }
 
-/** Register a bounded batch read tool for related project files. */
 export function registerReadManyTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

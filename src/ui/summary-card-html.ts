@@ -1,9 +1,3 @@
-/**
- * Always-open MCP Apps HTML widget for the `summary` tool.
- * Matches the shared tool-card visual language, without collapse chrome.
- *
- * @returns HTML document string
- */
 export function summaryCardHtml(): string {
     return `<!doctype html>
 <html lang="zh-CN">

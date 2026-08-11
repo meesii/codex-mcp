@@ -3,14 +3,13 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
-import type { ProjectContext } from "../project.js";
+import type { ProjectContext } from "../config/project.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
-import { registerTool } from "../lib/tool-log.js";
-import { openWorldAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult, resultText } from "../lib/tool-result.js";
-import { queryToSearchPattern, rankMatchesByFile } from "../lib/query-relevance.js";
+import { registerTool } from "../lib/tool/log.js";
+import { openWorldAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult, resultText } from "../lib/tool/result.js";
+import { queryToSearchPattern, rankMatchesByFile } from "../lib/search/query-relevance.js";
 
-/** Prefer CodeGraph when an index/server is available, otherwise use bounded workspace search. */
 export function registerCodeExploreTool(
     server: McpServer,
     project: ProjectContext,

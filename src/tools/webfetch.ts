@@ -1,17 +1,16 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import { htmlToMarkdown } from "../lib/html-to-markdown.js";
-import { safeHttpGet } from "../lib/safe-http.js";
-import { registerTool } from "../lib/tool-log.js";
-import { openWorldAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { truncateText } from "../lib/truncate.js";
+import { htmlToMarkdown } from "../lib/http/html-to-md.js";
+import { safeHttpGet } from "../lib/http/safe-http.js";
+import { registerTool } from "../lib/tool/log.js";
+import { openWorldAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { truncateText } from "../lib/search/truncate.js";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 
-/** Fetch a public HTTP(S) URL with streaming byte and SSRF protection. */
 export async function fetchUrlContent(
     url: string,
     format: "text" | "markdown" | "html",
@@ -50,7 +49,6 @@ export async function fetchUrlContent(
     return body;
 }
 
-/** Register the `webfetch` tool. */
 export function registerWebfetchTool(server: McpServer): void {
     registerTool(
         server,

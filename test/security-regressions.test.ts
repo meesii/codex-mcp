@@ -4,24 +4,24 @@ import { createServer } from "node:http";
 import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, type ServerConfig } from "../src/config.js";
+import { loadConfig, type ServerConfig } from "../src/config/loader.js";
 import { OAuthStateStore } from "../src/auth/oauth-state.js";
 import { CodexClientsStore } from "../src/auth/provider.js";
-import { createHttpServer } from "../src/http-server.js";
+import { createHttpServer } from "../src/server/http-server.js";
 import {
     assertPublicAddress,
     isRetryableProxyConnectionError,
     safeHttpGet,
-} from "../src/lib/safe-http.js";
-import { ProcessOwnerPool } from "../src/lib/process-owner-pool.js";
-import { ProcessSessionManager } from "../src/lib/process-sessions.js";
-import { RollingTextBuffer } from "../src/lib/rolling-text-buffer.js";
-import { RuntimeTelemetry } from "../src/lib/runtime-telemetry.js";
-import { commandShell } from "../src/lib/shell-command.js";
-import { terminateChildProcess } from "../src/lib/process-tree.js";
-import { runRipgrep } from "../src/lib/ripgrep.js";
-import { runSubprocess } from "../src/lib/subprocess.js";
-import { McpSessionRegistry } from "../src/mcp-sessions.js";
+} from "../src/lib/http/safe-http.js";
+import { ProcessOwnerPool } from "../src/lib/process/owner-pool.js";
+import { ProcessSessionManager } from "../src/lib/process/sessions.js";
+import { RollingTextBuffer } from "../src/lib/process/rolling-buffer.js";
+import { RuntimeTelemetry } from "../src/lib/util/telemetry.js";
+import { commandShell } from "../src/lib/process/shell-command.js";
+import { terminateChildProcess } from "../src/lib/process/tree.js";
+import { runRipgrep } from "../src/lib/search/ripgrep.js";
+import { runSubprocess } from "../src/lib/util/subprocess.js";
+import { McpSessionRegistry } from "../src/server/sessions.js";
 import { runFallbackRegexGrep } from "../src/tools/grep.js";
 import { buildUiCard } from "../src/ui/ui-card.js";
 import { summarizeToolCall } from "../src/ui/tool-summary.js";

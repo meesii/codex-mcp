@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { expandHomePath } from "../config.js";
-import { getUserConfigDir } from "../user-config.js";
+import { expandHomePath } from "../config/loader.js";
+import { getUserConfigDir } from "../config/user-config.js";
 
 export interface CloudflaredYml {
     tunnelId: string;
@@ -11,31 +11,14 @@ export interface CloudflaredYml {
     raw: string;
 }
 
-/**
- * Default path to the cloudflared config file.
- *
- * @returns Absolute codex-mcp-owned path (`~/.codex-mcp/cloudflared.yml`)
- */
 export function getCloudflaredConfigPath(): string {
     return join(getUserConfigDir(), "cloudflared.yml");
 }
 
-/**
- * Default credentials JSON path for a tunnel UUID.
- *
- * @param tunnelId - Tunnel UUID
- * @returns Absolute credentials path
- */
 export function getCredentialsPath(tunnelId: string): string {
     return expandHomePath(`~/.cloudflared/${tunnelId}.json`);
 }
 
-/**
- * Parse the subset of cloudflared config.yml fields we manage.
- *
- * @param filePath - Config path
- * @returns Parsed fields
- */
 export function readCloudflaredYml(
     filePath: string = getCloudflaredConfigPath(),
 ): CloudflaredYml {
@@ -73,12 +56,6 @@ export function readCloudflaredYml(
     };
 }
 
-/**
- * Write a minimal named-tunnel config.yml for this MCP server.
- *
- * @param input - Tunnel binding fields
- * @param filePath - Output path
- */
 export function writeCloudflaredYml(
     input: {
         tunnelId: string;
@@ -108,20 +85,11 @@ export function writeCloudflaredYml(
     writeFileSync(filePath, body, "utf8");
 }
 
-/**
- * @param text - File contents
- * @param pattern - Regex with one capture group
- * @returns Captured group or undefined
- */
 function matchLine(text: string, pattern: RegExp): string | undefined {
     const match = text.match(pattern);
     return match?.[1]?.trim();
 }
 
-/**
- * @param value - Possibly quoted YAML scalar
- * @returns Unquoted value
- */
 function stripQuotes(value: string): string {
     if (value.startsWith("'") && value.endsWith("'")) {
         return value.slice(1, -1).replace(/''/g, "'");
@@ -132,12 +100,6 @@ function stripQuotes(value: string): string {
     return value;
 }
 
-/**
- * Quote a path so Windows backslashes stay literal in YAML.
- *
- * @param value - Path string
- * @returns Single-quoted YAML scalar
- */
 function quoteYamlScalar(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
 }

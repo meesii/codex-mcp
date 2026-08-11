@@ -1,7 +1,7 @@
 import { Algorithm, hash, verify } from "@node-rs/argon2";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { getUserConfigDir } from "../user-config.js";
+import { getUserConfigDir } from "../config/user-config.js";
 import { readJsonFile, writePrivateJson } from "./storage.js";
 
 const AUTH_FILE_VERSION = 1;
@@ -18,7 +18,6 @@ export function getAuthCredentialPath(): string {
     return join(getUserConfigDir(), "auth.json");
 }
 
-/** Generate a strong URL-safe password for first-time setup. */
 export function generateAdminPassword(): string {
     return randomBytes(GENERATED_PASSWORD_BYTES).toString("base64url");
 }
@@ -48,11 +47,6 @@ export async function verifyAdminPassword(password: string): Promise<boolean> {
     return (await verifyAdminPasswordWithGeneration(password)) !== undefined;
 }
 
-/**
- * Verify a password and return the generation derived from the exact PHC hash
- * that was verified. This avoids a password-reset race where an old password
- * verification could otherwise be paired with the new credential generation.
- */
 export async function verifyAdminPasswordWithGeneration(
     password: string,
 ): Promise<string | undefined> {
@@ -66,11 +60,6 @@ export async function verifyAdminPasswordWithGeneration(
     }
 }
 
-/**
- * Return a stable, non-secret generation identifier for the current admin
- * credential. Argon2 salts make the PHC hash change on every password reset,
- * even when the same password is chosen again.
- */
 export async function getAdminCredentialGeneration(): Promise<string | undefined> {
     const state = await readCredentialFile();
     if (!state?.passwordHash) return undefined;

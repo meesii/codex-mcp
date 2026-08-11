@@ -3,10 +3,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServerConfig } from "../src/config.js";
+import type { ServerConfig } from "../src/config/loader.js";
 import { setAdminPassword } from "../src/auth/password-store.js";
 import { parseCimdClientDocument } from "../src/auth/provider.js";
-import { createHttpServer } from "../src/http-server.js";
+import { createHttpServer } from "../src/server/http-server.js";
 import { connectMcpClient } from "./helpers/mcp-client.js";
 
 async function main(): Promise<void> {

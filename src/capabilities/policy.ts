@@ -1,9 +1,8 @@
 import { TOOL_NAMES } from "../tools/names.js";
-import { loadUserConfig, type ClientCapabilitiesConfig } from "../user-config.js";
+import { loadUserConfig, type ClientCapabilitiesConfig } from "../config/user-config.js";
 
 export const LOCAL_CAPABILITY_CLIENT_ID = "local:noauth";
 
-/** Resolve the concrete tool set allowed for one MCP session/client. */
 export function resolveAllowedTools(clientId?: string): ReadonlySet<string> {
     const config = loadUserConfig().clientCapabilities;
     return resolveAllowedToolsFromConfig(
@@ -12,7 +11,6 @@ export function resolveAllowedTools(clientId?: string): ReadonlySet<string> {
     );
 }
 
-/** @internal Pure policy evaluator for tests. */
 export function resolveAllowedToolsFromConfig(
     config: ClientCapabilitiesConfig | undefined,
     clientId: string,

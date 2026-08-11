@@ -1,20 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process-sessions.js";
-import { registerTool } from "../lib/tool-log.js";
-import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
+import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import { registerTool } from "../lib/tool/log.js";
+import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
 
 const DEFAULT_OUTPUT_CHARS = 12_000;
 const PROCESS_CAPTURE_CHARS = 200_000;
 
-/**
- * Register Codex-style `write_stdin` (poll / write to a processId).
- *
- * @param server - MCP server
- * @param processes - Process session manager
- */
 export function registerWriteStdinTool(
     server: McpServer,
     processes: ProcessSessionManager,

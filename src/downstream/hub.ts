@@ -10,9 +10,9 @@ import {
     type CallToolResult,
     type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadMergedMcpConfig } from "../codex-import.js";
-import { AsyncMutex } from "../lib/async-mutex.js";
-import { runtimeTelemetry } from "../lib/runtime-telemetry.js";
+import { loadMergedMcpConfig } from "../config/codex-import.js";
+import { AsyncMutex } from "../lib/util/mutex.js";
+import { runtimeTelemetry } from "../lib/util/telemetry.js";
 import {
     isStdioMcpServer,
     isUrlMcpServer,
@@ -20,9 +20,8 @@ import {
     type McpServerConfig,
     type NamedMcpServer,
     type UserMcpConfig,
-} from "../user-mcp-config.js";
+} from "../config/user-mcp.js";
 
-/** One connected (or failed) downstream MCP. */
 export interface DownstreamServerInfo {
     name: string;
     description: string;
@@ -35,7 +34,6 @@ export interface DownstreamServerInfo {
     };
 }
 
-/** Tool listing for `mcp_tools`. */
 export interface DownstreamToolInfo {
     name: string;
     description: string;
@@ -163,7 +161,6 @@ export class DownstreamMcpHub {
         return this.reloadFromConfig(await loadMergedMcpConfig());
     }
 
-    /** @internal Apply a normalized config in place; used by reload tests. */
     async reloadFromConfig(config: UserMcpConfig): Promise<DownstreamReloadResult> {
         return await this.configLifecycle.runExclusive(async () => {
             this.assertOpen();
@@ -707,7 +704,6 @@ async function listSessionPrompts(
     );
 }
 
-/** @internal Exported for focused pagination-budget regression tests. */
 export async function collectPaginated<T>(
     label: string,
     fetchPage: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string }>,

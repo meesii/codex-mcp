@@ -28,12 +28,6 @@ export interface UiCard {
     nextText?: string | null;
 }
 
-/**
- * Keep only JSON-safe scalar args the widget may need to rebuild the panel.
- *
- * @param args - Original tool arguments
- * @returns Compact args, or undefined when empty
- */
 function toArgsMap(
     args?: Record<string, unknown> | null,
 ): Record<string, string | number | boolean> | undefined {
@@ -79,17 +73,6 @@ function toArgsMap(
     return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/**
- * Build a compact UI card from tool arguments + result.
- * Collapsed title is always argument-driven; expand shows curated params + outcome.
- *
- * @param toolName - Tool name
- * @param ok - Whether the tool succeeded
- * @param args - Original tool arguments
- * @param structured - structuredContent from the tool
- * @param contentText - Flattened text content (for errors / fallback)
- * @returns UI card for `_meta.uiCard`
- */
 export function buildUiCard(
     toolName: string,
     ok: boolean,

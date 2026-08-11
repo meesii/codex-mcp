@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { getUpdateInstallerInvocation } from "../src/update.js";
+import { getUpdateInstallerInvocation } from "../src/doctor/update.js";
 
 function main(): void {
     const windows = getUpdateInstallerInvocation("win32");

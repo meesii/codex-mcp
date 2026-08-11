@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectPaginated, DownstreamMcpHub } from "../src/downstream/hub.js";
-import { buildServerInstructions } from "../src/mcp-server.js";
-import { resolveWidgetDomain, type ServerConfig } from "../src/config.js";
-import { createHttpServer } from "../src/http-server.js";
-import { runtimeTelemetry } from "../src/lib/runtime-telemetry.js";
+import { buildServerInstructions } from "../src/server/mcp-server.js";
+import { resolveWidgetDomain, type ServerConfig } from "../src/config/loader.js";
+import { createHttpServer } from "../src/server/http-server.js";
+import { runtimeTelemetry } from "../src/lib/util/telemetry.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 
 const fixtureServerPath = join(

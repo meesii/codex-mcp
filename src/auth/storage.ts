@@ -2,7 +2,6 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-/** Read JSON from disk, returning the supplied fallback when the file is absent. */
 export async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
     try {
         return JSON.parse(await readFile(path, "utf8")) as T;
@@ -12,7 +11,6 @@ export async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
     }
 }
 
-/** Atomically persist JSON with owner-only permissions where the platform supports it. */
 export async function writePrivateJson(path: string, value: unknown): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -24,7 +22,6 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
     }
 }
 
-/** Small async mutex for state stores that persist full snapshots. */
 export class AsyncMutex {
     private tail: Promise<void> = Promise.resolve();
 

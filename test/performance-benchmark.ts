@@ -2,11 +2,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { ProjectContext } from "../src/project.js";
+import { ProjectContext } from "../src/config/project.js";
 import { readTextSlice } from "../src/tools/read.js";
 import { listGlobFiles } from "../src/tools/glob.js";
 import { WorkspaceRegistry } from "../src/workspace/registry.js";
-import { ProcessSessionManager } from "../src/lib/process-sessions.js";
+import { ProcessSessionManager } from "../src/lib/process/sessions.js";
 
 const DIRECTORY_COUNT = 100;
 const FILES_PER_DIRECTORY = 100;

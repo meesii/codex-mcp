@@ -6,7 +6,7 @@ import {
     type JSONWebKeySet,
     type JWTPayload,
 } from "jose";
-import { safeHttpGet } from "../lib/safe-http.js";
+import { safeHttpGet } from "../lib/http/safe-http.js";
 
 const ASSERTION_MAX_BYTES = 16 * 1024;
 const ASSERTION_MAX_LIFETIME_SECONDS = 5 * 60;

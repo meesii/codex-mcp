@@ -5,7 +5,6 @@ export type ConfirmAction = (
     defaultValue?: boolean,
 ) => Promise<boolean>;
 
-/** Require an explicit opt-in before deleting/recreating an existing remote tunnel. */
 export async function requireTunnelDeleteConfirmation(
     tunnelName: string,
     confirm: ConfirmAction = askYesNo,
@@ -19,7 +18,6 @@ export async function requireTunnelDeleteConfirmation(
     }
 }
 
-/** Require an explicit opt-in before replacing an existing DNS record. */
 export async function requireDnsOverwriteConfirmation(
     domain: string,
     confirm: ConfirmAction = askYesNo,

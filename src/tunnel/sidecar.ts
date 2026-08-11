@@ -1,15 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
-import { terminateChildProcess } from "../lib/process-tree.js";
-import { ensureUserConfigDirs, getUserLogDir } from "../user-config.js";
+import { terminateChildProcess } from "../lib/process/tree.js";
+import { ensureUserConfigDirs, getUserLogDir } from "../config/user-config.js";
 import { getCloudflaredConfigPath } from "./yml.js";
 
-/** Default wait for the first Cloudflare edge registration. */
 const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const MAX_DIAGNOSTIC_LOG_CHARS = 16_000;
 
-/** @internal Build a deterministic cloudflared invocation for tunnel sidecars. */
 export function cloudflaredRunArgs(configPath: string, tunnelId: string): string[] {
     return [
         "tunnel",
@@ -24,7 +22,6 @@ export function cloudflaredRunArgs(configPath: string, tunnelId: string): string
     ];
 }
 
-/** @internal Turn recent cloudflared output into an actionable readiness timeout. */
 export function tunnelReadinessTimeoutMessage(
     timeoutMs: number,
     logText: string,
@@ -87,9 +84,7 @@ export class CloudflaredSidecar {
     private readyResolve: ((info: TunnelReadyInfo) => void) | undefined;
     private readyReject: ((error: Error) => void) | undefined;
 
-    /**
-     * @param options - Binary, tunnel id, and log mirroring
-     */
+    
     constructor(private readonly options: TunnelSidecarOptions) {
         ensureUserConfigDirs();
         mkdirSync(getUserLogDir(), { recursive: true });
@@ -101,20 +96,12 @@ export class CloudflaredSidecar {
                 : DEFAULT_READY_TIMEOUT_MS;
     }
 
-    /**
-     * Path of the tunnel log file for this machine.
-     *
-     * @returns Absolute log path
-     */
+    
     getLogPath(): string {
         return this.logPath;
     }
 
-    /**
-     * Start cloudflared and wait until Cloudflare registers a connection.
-     *
-     * @returns Edge registration details from the first successful connector
-     */
+    
     async start(): Promise<TunnelReadyInfo> {
         if (this.child) {
             throw new Error("Cloudflare Tunnel 已经在运行");
@@ -220,11 +207,7 @@ export class CloudflaredSidecar {
         }
     }
 
-    /**
-     * Feed a stdout/stderr chunk into the log and ready detector.
-     *
-     * @param text - Log chunk
-     */
+    
     private onLogChunk(text: string): void {
         this.writeLog(text);
         this.diagnosticTail = (this.diagnosticTail + text).slice(-MAX_DIAGNOSTIC_LOG_CHARS);
@@ -241,11 +224,7 @@ export class CloudflaredSidecar {
         this.noteReadyLine(this.logLineCarry);
     }
 
-    /**
-     * Mark the tunnel ready when cloudflared reports an edge registration.
-     *
-     * @param line - One log line (or trailing partial)
-     */
+    
     private noteReadyLine(line: string): void {
         if (this.readySeen) return;
         if (!line.includes("Registered tunnel connection")) return;
@@ -260,11 +239,7 @@ export class CloudflaredSidecar {
         this.readyReject = undefined;
     }
 
-    /**
-     * Reject the in-flight ready wait once.
-     *
-     * @param error - Failure reason
-     */
+    
     private failReady(error: Error): void {
         if (this.readySeen) return;
         this.readySeen = true;
@@ -273,9 +248,7 @@ export class CloudflaredSidecar {
         this.readyReject = undefined;
     }
 
-    /**
-     * @param text - Log chunk
-     */
+    
     private writeLog(text: string): void {
         this.logStream?.write(text);
         if (this.mirrorLogs) {

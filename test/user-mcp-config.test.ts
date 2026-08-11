@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeHostname } from "../src/user-config.js";
+import { normalizeHostname } from "../src/config/user-config.js";
 import {
     isStdioMcpServer,
     isUrlMcpServer,
     listEnabledMcpServers,
-} from "../src/user-mcp-config.js";
+} from "../src/config/user-mcp.js";
 
 /**
  * Run a callback with HOME/USERPROFILE pointed at a temp directory.
@@ -45,7 +45,7 @@ async function main(): Promise<void> {
     }
 
     await withTempHome(async (home) => {
-        const { loadUserMcpConfig, loadUserMcpOverrides } = await import("../src/user-mcp-config.js");
+        const { loadUserMcpConfig, loadUserMcpOverrides } = await import("../src/config/user-mcp.js");
         const empty = loadUserMcpConfig();
         assert.deepEqual(empty, { mcpServers: {} });
 
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
     });
 
     await withTempHome(async (home) => {
-        const { loadUserMcpConfig } = await import("../src/user-mcp-config.js");
+        const { loadUserMcpConfig } = await import("../src/config/user-mcp.js");
         const path = join(home, ".codex-mcp", "mcp.json");
         await writeFile(
             path,

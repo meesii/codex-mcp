@@ -2,9 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { z } from "zod";
-import { AsyncMutex } from "../lib/async-mutex.js";
-import type { ProjectContext } from "../project.js";
-import { getUserConfigDir } from "../user-config.js";
+import { AsyncMutex } from "../lib/util/mutex.js";
+import type { ProjectContext } from "../config/project.js";
+import { getUserConfigDir } from "../config/user-config.js";
 
 export const GOAL_STATUSES = ["active", "paused", "completed", "cancelled"] as const;
 export const GOAL_TASK_STATUSES = ["pending", "in_progress", "blocked", "done"] as const;

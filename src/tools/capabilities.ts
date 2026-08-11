@@ -3,11 +3,10 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import { reloadCodexCapabilities } from "../capabilities/runtime.js";
-import { registerTool } from "../lib/tool-log.js";
-import { operationalAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import { registerTool } from "../lib/tool/log.js";
+import { operationalAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
-/** Register an explicit refresh control alongside automatic file watching. */
 export function registerCapabilityTools(
     server: McpServer,
     hub: DownstreamMcpHub,

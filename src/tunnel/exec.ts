@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { terminateChildProcess } from "../lib/process-tree.js";
+import { terminateChildProcess } from "../lib/process/tree.js";
 
 const MAX_CAPTURE_CHARS = 1_000_000;
 
@@ -9,10 +9,6 @@ export interface CloudflaredRunResult {
     stderr: string;
 }
 
-/**
- * Run a short cloudflared command and capture bounded stdout/stderr.
- * Timeout always escalates TERM→KILL before the call settles.
- */
 export async function runCloudflared(
     bin: string,
     args: string[],
@@ -79,13 +75,6 @@ export async function runCloudflared(
     return result;
 }
 
-/**
- * Run cloudflared with inherited stdio (for browser login flows).
- *
- * @param bin - cloudflared executable
- * @param args - CLI arguments
- * @returns Exit code
- */
 export async function runCloudflaredInherit(
     bin: string,
     args: string[],

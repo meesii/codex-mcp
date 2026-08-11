@@ -1,11 +1,3 @@
-/**
- * Compact MCP Apps HTML widget (one shared template for all tools).
- * Tool name/args come from the host (`toolInput` / notifications) or `_meta.uiCard`.
- * Optional `toolName` is only used for legacy per-tool URI aliases.
- *
- * @param toolName - Optional baked tool name (legacy URI compatibility)
- * @returns HTML document string
- */
 export function toolCardHtml(toolName?: string): string {
     const bakedTool = JSON.stringify(toolName ?? "");
     return `<!doctype html>
@@ -459,10 +451,6 @@ export function toolCardHtml(toolName?: string): string {
   // Shrink the host iframe ASAP (default host placeholder is often oversized).
   notifyHeight(STRIP_HEIGHT);
 
-  /**
-   * Detect ChatGPT mobile surface.
-   * Official signals: window.openai.userAgent / safeArea (see Apps SDK reference).
-   */
   function isMobileHost() {
     try {
       var openai = window.openai;

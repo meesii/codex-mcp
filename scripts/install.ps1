@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Utf8Output = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $Utf8Output
@@ -70,7 +70,7 @@ if (-not (Test-Path -LiteralPath $cmdPath)) {
     Fail "安装完成，但没有找到 codex-mcp 命令：$cmdPath"
 }
 
-$toolsCli = Join-Path $installRoot "node_modules\codex-mcp\dist\managed-tools-cli.js"
+$toolsCli = Join-Path $installRoot "node_modules\codex-mcp\dist\managed-tools\cli.js"
 if (-not (Test-Path -LiteralPath $toolsCli)) {
     Fail "安装完成，但缺少运行组件管理程序。"
 }

@@ -44,7 +44,6 @@ function cloudflaredSpec(fileName: string, sha256: string, archive: ManagedArchi
     };
 }
 
-/** Return the pinned, checksum-verified asset for the current platform. */
 export function getManagedToolSpec(
     tool: ManagedToolName,
     platform: NodeJS.Platform = process.platform,

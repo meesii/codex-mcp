@@ -10,7 +10,6 @@ export interface ToolCallSummary {
     params: UiParamRow[];
 }
 
-/** Chinese labels for curated argument keys. */
 const PARAM_LABELS: Record<string, string> = {
     path: "路径",
     command: "命令",
@@ -36,7 +35,6 @@ const PARAM_LABELS: Record<string, string> = {
     max_depth: "深度",
 };
 
-/** Per-tool argument keys worth showing (order matters). */
 const PARAM_KEYS: Record<string, string[]> = {
     read: ["path", "offset", "limit"],
     write: ["path"],
@@ -77,26 +75,12 @@ const PARAM_KEYS: Record<string, string[]> = {
     mcp_prompt_get: ["server", "prompt"],
 };
 
-/**
- * Clip text to a single short line for the UI strip / panel.
- *
- * @param text - Source text
- * @param max - Max characters
- * @returns Clipped one-line text
- */
 export function clipLine(text: string, max: number = UI_PREVIEW_MAX_CHARS): string {
     const oneLine = String(text).replace(/\s+/g, " ").trim();
     if (oneLine.length <= max) return oneLine;
     return `${oneLine.slice(0, max)}…`;
 }
 
-/**
- * Format a raw argument value for display.
- *
- * @param key - Argument key
- * @param value - Raw value
- * @returns Display string, or null to skip
- */
 function formatParamValue(key: string, value: unknown): string | null {
     if (value === undefined || value === null || value === "") return null;
     if (key === "processId") return `#${value}`;
@@ -117,13 +101,6 @@ function formatParamValue(key: string, value: unknown): string | null {
     return null;
 }
 
-/**
- * Build a collapsed title and expand-panel params from tool call arguments.
- *
- * @param toolName - Machine tool name
- * @param args - Tool arguments (from host toolInput or server handler)
- * @returns Title + curated params
- */
 export function summarizeToolCall(
     toolName: string,
     args?: Record<string, unknown> | null,
@@ -145,14 +122,6 @@ export function summarizeToolCall(
     return { title, params };
 }
 
-/**
- * Build one-line strip title from primary args.
- *
- * @param toolName - Tool name
- * @param input - Arguments
- * @param params - Already curated rows (fallback)
- * @returns Title line
- */
 function buildTitle(
     toolName: string,
     input: Record<string, unknown>,
@@ -215,15 +184,6 @@ function buildTitle(
     }
 }
 
-/**
- * Build a short outcome line from structuredContent / content text.
- *
- * @param toolName - Tool name
- * @param ok - Whether the call succeeded
- * @param structured - structuredContent object
- * @param contentText - Flattened text content (fallback / errors)
- * @returns Short outcome, or undefined when nothing useful
- */
 export function summarizeOutcome(
     toolName: string,
     ok: boolean,

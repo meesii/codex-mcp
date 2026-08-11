@@ -2,7 +2,7 @@ import {
     loadUserConfig,
     saveUserConfig,
     type UserConfig,
-} from "../user-config.js";
+} from "../config/user-config.js";
 
 export interface UiPreferences {
     /** Render custom cards for ordinary coding tools such as read/edit/bash. */
@@ -23,11 +23,6 @@ export interface UiSettingsPersistence {
     save: (preferences: UiPreferences) => void;
 }
 
-/**
- * Resolve effective UI preferences from persisted user config.
- * Missing fields deliberately fall back to conservative defaults: ordinary
- * tool cards are hidden while status/progress cards remain visible.
- */
 export function uiPreferencesFromUserConfig(config: UserConfig): UiPreferences {
     return {
         tools: config.ui?.tools ?? DEFAULT_UI_PREFERENCES.tools,
@@ -44,7 +39,6 @@ function userConfigPersistence(): UiSettingsPersistence {
     };
 }
 
-/** Durable UI preference store. Production uses ~/.codex-mcp/config.json. */
 export class UiSettingsStore {
     readonly persistence: UiSettingsPersistence;
     private current: UiPreferences | undefined;
@@ -71,14 +65,12 @@ export class UiSettingsStore {
         return { ...next };
     }
 
-    /** Re-read persistence when an embedding runtime knows config changed externally. */
     reload(): UiPreferences {
         this.current = { ...this.persistence.load() };
         return { ...this.current };
     }
 }
 
-/** Build an isolated in-memory store for tests/embedded runtimes. */
 export function createMemoryUiSettingsStore(
     initial: UiPreferences = { ...DEFAULT_UI_PREFERENCES },
 ): UiSettingsStore {
@@ -91,7 +83,6 @@ export function createMemoryUiSettingsStore(
     });
 }
 
-/** Settings UI is the control plane and remains reachable even if status UI is off. */
 export function isSettingsUiTool(toolName: string): boolean {
     return toolName === "settings_get" || toolName === "settings_update";
 }

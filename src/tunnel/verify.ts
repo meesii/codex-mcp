@@ -1,4 +1,4 @@
-import { safeHttpGet } from "../lib/safe-http.js";
+import { safeHttpGet } from "../lib/http/safe-http.js";
 
 const DEFAULT_ATTEMPTS = 10;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;

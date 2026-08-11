@@ -3,19 +3,11 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { expandHomePath } from "../config.js";
+import { expandHomePath } from "../config/loader.js";
 import { getManagedToolPath } from "../managed-tools/paths.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Resolve a usable cloudflared executable path.
- *
- * Order: explicit path → PATH → package `bin/cloudflared(.exe)` → cwd `bin/`.
- *
- * @param configured - Optional path from user config or prompt
- * @returns Absolute path that can be spawned
- */
 export async function resolveCloudflaredBin(
     configured?: string,
 ): Promise<string> {
@@ -33,12 +25,6 @@ export async function resolveCloudflaredBin(
     throw new Error("没有找到 cloudflared。请先安装 cloudflared，再运行 `codex-mcp setup`");
 }
 
-/**
- * Best-effort discovery for prompt defaults (does not throw).
- *
- * @param configured - Optional already-known path
- * @returns Absolute path or empty string
- */
 export async function suggestCloudflaredBin(
     configured?: string,
 ): Promise<string> {
@@ -77,12 +63,6 @@ export async function suggestCloudflaredBin(
     return "";
 }
 
-/**
- * Check that cloudflared runs (`cloudflared --version`).
- *
- * @param bin - Executable path
- * @returns Version line when available
- */
 export async function probeCloudflaredVersion(bin: string): Promise<string> {
     const { stdout, stderr } = await execFileAsync(bin, ["--version"], {
         windowsHide: true,
@@ -93,12 +73,6 @@ export async function probeCloudflaredVersion(bin: string): Promise<string> {
     return first?.trim() || "cloudflared";
 }
 
-/**
- * Expand `~`, resolve relative paths against cwd, return absolute path.
- *
- * @param value - User-entered or config path
- * @returns Absolute filesystem path
- */
 export function normalizeBinPath(value: string): string {
     const expanded = expandHomePath(value.trim());
     if (isAbsolute(expanded)) {
@@ -107,9 +81,6 @@ export function normalizeBinPath(value: string): string {
     return resolve(process.cwd(), expanded);
 }
 
-/**
- * @returns Candidate paths next to this package and under cwd
- */
 function localBinCandidates(): string[] {
     const names =
         process.platform === "win32"
@@ -125,21 +96,12 @@ function localBinCandidates(): string[] {
     return out;
 }
 
-/**
- * Package root containing `package.json` / `bin/`.
- *
- * @returns Absolute directory
- */
 function getPackageRoot(): string {
     const here = fileURLToPath(new URL(".", import.meta.url));
     // src/tunnel or dist/tunnel → repo root
     return resolve(here, "../..");
 }
 
-/**
- * @param fileName - Binary name to search on PATH
- * @returns First match or undefined
- */
 async function findOnPath(fileName: string): Promise<string | undefined> {
     const pathEnv = process.env.PATH ?? process.env.Path ?? "";
     const parts = pathEnv.split(delimiter).filter(Boolean);
@@ -173,9 +135,6 @@ async function findOnPath(fileName: string): Promise<string | undefined> {
     return undefined;
 }
 
-/**
- * @param candidate - Path that must exist
- */
 function assertExecutable(candidate: string): void {
     try {
         accessSync(candidate, constants.F_OK);

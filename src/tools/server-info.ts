@@ -4,17 +4,16 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { PACKAGE_VERSION } from "../version.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { okResult } from "../lib/tool-result.js";
+import type { ProjectContext } from "../config/project.js";
+import { PACKAGE_VERSION } from "../server/version.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { okResult } from "../lib/tool/result.js";
 import { TOOL_NAMES } from "./names.js";
 
 const PROCESS_STARTED_AT = new Date(Date.now() - process.uptime() * 1_000).toISOString();
 const TOOLSET_HASH = buildToolsetHash();
 
-/** Register stable runtime/toolset self-inspection for connector/schema debugging. */
 function buildToolsetHash(): string {
     const hash = createHash("sha256").update(PACKAGE_VERSION).update("\0");
     try {

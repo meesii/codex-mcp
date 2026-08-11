@@ -34,7 +34,6 @@ export interface SkillRoot {
     source: SkillSource;
 }
 
-/** Discover and safely read the same user-level skills available to local Codex. */
 export class SkillRegistry {
     private readonly skills = new Map<string, SkillEntry>();
     private generation = 0;
@@ -52,14 +51,12 @@ export class SkillRegistry {
         ]);
     }
 
-    /** Earlier roots win name collisions, matching the current Codex skill precedence. */
     static discover(roots: SkillRoot[]): SkillRegistry {
         const registry = new SkillRegistry(roots.map((root) => ({ ...root })));
         registry.refresh();
         return registry;
     }
 
-    /** Re-scan configured skill roots in place so existing MCP sessions see changes. */
     refresh(): { generation: number; count: number } {
         this.skills.clear();
         for (const root of this.roots) {
@@ -87,7 +84,6 @@ export class SkillRegistry {
             .sort((left, right) => left.name.localeCompare(right.name));
     }
 
-    /** Compact metadata only; full SKILL.md content stays behind skill_read. */
     buildInstructionsBlock(): string {
         const skills = this.list();
         if (skills.length === 0) return "";

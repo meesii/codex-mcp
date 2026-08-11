@@ -2,11 +2,11 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { runGitReadOnly } from "../lib/git-readonly.js";
-import { registerTool } from "../lib/tool-log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+import type { ProjectContext } from "../config/project.js";
+import { runGitReadOnly } from "../lib/fs/git-readonly.js";
+import { registerTool } from "../lib/tool/log.js";
+import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
 const MAX_GIT_DIFF_BYTES = 120_000;
 const MAX_GIT_STATUS_BYTES = 2 * 1024 * 1024;
@@ -14,7 +14,6 @@ const MAX_GIT_BRANCH_BYTES = 1024 * 1024;
 const MAX_STATUS_FILES = 500;
 const MAX_BRANCHES = 500;
 
-/** Register structured Git inspection tools whose execution is side-effect suppressed. */
 export function registerGitTools(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

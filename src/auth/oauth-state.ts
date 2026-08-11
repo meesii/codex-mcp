@@ -10,7 +10,7 @@ import {
     InvalidScopeError,
     InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import { getUserConfigDir } from "../user-config.js";
+import { getUserConfigDir } from "../config/user-config.js";
 import { AsyncMutex, readJsonFile, writePrivateJson } from "./storage.js";
 
 export const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1000;

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GoalStore } from "../src/goals/store.js";
-import { ProjectContext } from "../src/project.js";
+import { ProjectContext } from "../src/config/project.js";
 
 async function main(): Promise<void> {
     const root = await mkdtemp(join(tmpdir(), "codex-mcp-goal-workspace-"));

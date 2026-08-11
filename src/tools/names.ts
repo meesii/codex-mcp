@@ -1,4 +1,3 @@
-/** Local coding tools (always registered). */
 export const CORE_TOOL_NAMES = [
     "read",
     "read_many",
@@ -42,7 +41,6 @@ export const CORE_TOOL_NAMES = [
     "code_explore",
 ] as const;
 
-/** Downstream gateway tools stay registered so hot reload works in existing sessions. */
 export const GATEWAY_TOOL_NAMES = [
     "mcp_servers",
     "mcp_reconnect",
@@ -54,7 +52,6 @@ export const GATEWAY_TOOL_NAMES = [
     "mcp_prompt_get",
 ] as const;
 
-/** All tool names this package may expose. */
 export const TOOL_NAMES = [...CORE_TOOL_NAMES, ...GATEWAY_TOOL_NAMES] as const;
 
 export type CoreToolName = (typeof CORE_TOOL_NAMES)[number];

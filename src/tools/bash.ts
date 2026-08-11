@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../project.js";
-import { AccessDeniedError } from "../project.js";
-import { terminateChildProcess } from "../lib/process-tree.js";
-import { registerTool } from "../lib/tool-log.js";
-import { destructiveAnnotations, withToolAuth } from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
-import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/output-mode.js";
-import { commandShell } from "../lib/shell-command.js";
+import type { ProjectContext } from "../config/project.js";
+import { AccessDeniedError } from "../config/project.js";
+import { terminateChildProcess } from "../lib/process/tree.js";
+import { registerTool } from "../lib/tool/log.js";
+import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
+import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
+import { commandShell } from "../lib/process/shell-command.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_OUTPUT_CHARS = 12_000;
@@ -89,7 +89,6 @@ async function runShellCommand(
     });
 }
 
-/** Register the `bash` tool. */
 export function registerBashTool(server: McpServer, project: ProjectContext): void {
     registerTool(
         server,

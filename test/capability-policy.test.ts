@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentInstructionRegistry } from "../src/agents/registry.js";
 import { resolveAllowedToolsFromConfig } from "../src/capabilities/policy.js";
-import { buildServerInstructions } from "../src/mcp-server.js";
-import { ProjectContext } from "../src/project.js";
+import { buildServerInstructions } from "../src/server/mcp-server.js";
+import { ProjectContext } from "../src/config/project.js";
 import { connectMcpClient } from "./helpers/mcp-client.js";
 import { startTestServer } from "./helpers/start-server.js";
 

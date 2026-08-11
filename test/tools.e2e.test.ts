@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildServerInstructions } from "../src/mcp-server.js";
-import { PACKAGE_VERSION } from "../src/version.js";
+import { buildServerInstructions } from "../src/server/mcp-server.js";
+import { PACKAGE_VERSION } from "../src/server/version.js";
 import {
     SETTINGS_CARD_URI,
     SUMMARY_CARD_URI,

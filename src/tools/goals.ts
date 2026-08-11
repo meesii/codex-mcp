@@ -8,13 +8,13 @@ import {
     type GoalRecord,
     type GoalTaskStatus,
 } from "../goals/store.js";
-import { registerTool } from "../lib/tool-log.js";
+import { registerTool } from "../lib/tool/log.js";
 import {
     readOnlyAnnotations,
     stateWriteAnnotations,
     withToolAuth,
-} from "../lib/tool-meta.js";
-import { errorResult, okResult } from "../lib/tool-result.js";
+} from "../lib/tool/meta.js";
+import { errorResult, okResult } from "../lib/tool/result.js";
 
 const MAX_TEXT = 8_000;
 const MAX_LIST_ITEMS = 100;
@@ -88,7 +88,6 @@ const goalPathInput = z
 
 const boundedText = (label: string) => z.string().min(1).max(MAX_TEXT).describe(label);
 
-/** Register durable project goal/task/checkpoint/verification tools. */
 export function registerGoalTools(server: McpServer, goals: GoalStore): void {
     registerTool(
         server,

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolveCname } from "node:dns/promises";
-import { expandHomePath } from "../config.js";
-import { printInfo, printSuccess, printWarning } from "../lib/terminal.js";
+import { expandHomePath } from "../config/loader.js";
+import { printInfo, printSuccess, printWarning } from "../lib/util/terminal.js";
 import { ensureManagedTool } from "../managed-tools/install.js";
 import {
     ensureStarterUserConfig,
@@ -11,7 +11,7 @@ import {
     normalizeHostname,
     saveUserConfig,
     type UserConfig,
-} from "../user-config.js";
+} from "../config/user-config.js";
 import {
     probeCloudflaredVersion,
     suggestCloudflaredBin,
@@ -48,18 +48,6 @@ export interface TunnelSetupOptions {
     port?: number;
 }
 
-/**
- * Ensure machine config exists; run the first-time wizard when needed.
- *
- * Flow:
- * 1. Create `~/.codex-mcp/config.json` if missing
- * 2. Ask for public domain
- * 3. Ask whether to use cloudflared
- * 4. If yes: prepare cloudflared automatically, then login / create / DNS / write yml
- *
- * @param options - Force / bind hints
- * @returns Resolved settings (sidecar fields only when useCloudflared)
- */
 export async function ensureTunnelSetup(
     options: TunnelSetupOptions = {},
 ): Promise<TunnelSetupResult> {
@@ -95,21 +83,10 @@ export async function ensureTunnelSetup(
     return await runConfigWizard(userConfig, host, port);
 }
 
-/**
- * Re-run the full interactive wizard (`codex-mcp tunnel`).
- *
- * @returns Setup result
- */
 export async function runTunnelWizard(): Promise<TunnelSetupResult> {
     return ensureTunnelSetup({ force: true });
 }
 
-/**
- * @param userConfig - Current config (starter file already on disk)
- * @param host - Bind host
- * @param port - Bind port
- * @returns Wizard result
- */
 async function runConfigWizard(
     userConfig: UserConfig,
     host: string,
@@ -215,14 +192,6 @@ async function runConfigWizard(
     };
 }
 
-/**
- * Refresh yml / resolve bin for an already-configured cloudflared setup.
- *
- * @param userConfig - Saved config with domain + tunnel
- * @param host - Bind host
- * @param port - Bind port
- * @returns Sidecar-ready result
- */
 async function finalizeCloudflared(
     userConfig: UserConfig,
     host: string,
@@ -277,19 +246,11 @@ async function finalizeCloudflared(
     };
 }
 
-/**
- * @param host - Bind host
- * @param port - Bind port
- * @returns Local upstream URL for ingress
- */
 function localServiceUrl(host: string, port: number): string {
     const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
     return `http://${localHost}:${port}`;
 }
 
-/**
- * @param bin - cloudflared path
- */
 async function ensureLogin(bin: string): Promise<void> {
     const certPath = expandHomePath("~/.cloudflared/cert.pem");
     if (existsSync(certPath)) {
@@ -306,18 +267,6 @@ async function ensureLogin(bin: string): Promise<void> {
     }
 }
 
-/**
- * Resolve a tunnel UUID that has local credentials under `~/.cloudflared`.
- *
- * Cloudflare may list a tunnel by name while the credentials JSON is gone
- * (other machine, deleted file, interrupted create). In that case we delete
- * and recreate so `tunnel create` downloads a fresh `*.json`.
- *
- * @param bin - cloudflared path
- * @param tunnelName - Tunnel name
- * @param knownId - Previously saved UUID
- * @returns Tunnel UUID with local credentials present
- */
 async function ensureTunnelCreated(
     bin: string,
     tunnelName: string,
@@ -368,13 +317,6 @@ async function ensureTunnelCreated(
     throw new Error(`创建 Tunnel 失败：${(result.stderr || result.stdout).trim()}`);
 }
 
-/**
- * Force-delete a tunnel by name, then by id if needed.
- *
- * @param bin - cloudflared path
- * @param tunnelName - Tunnel name
- * @param tunnelId - Tunnel UUID
- */
 async function deleteTunnel(
     bin: string,
     tunnelName: string,
@@ -401,11 +343,6 @@ async function deleteTunnel(
     }
 }
 
-/**
- * @param bin - cloudflared path
- * @param tunnelName - Name to resolve
- * @returns UUID or undefined
- */
 async function findTunnelIdByName(
     bin: string,
     tunnelName: string,
@@ -437,7 +374,6 @@ async function findTunnelIdByName(
     return findTunnelIdInListText(`${list.stdout}\n${list.stderr}`, tunnelName);
 }
 
-/** Resolve an exact tunnel name from cloudflared's text-table fallback. */
 export function findTunnelIdInListText(
     text: string,
     tunnelName: string,
@@ -455,12 +391,6 @@ function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Reuse an existing cloudflared binary or install codex-mcp's pinned copy.
- *
- * @param configured - Existing cloudflaredBin from user config
- * @returns Absolute validated binary path
- */
 async function resolveOrInstallCloudflaredBin(
     configured?: string,
 ): Promise<string> {
@@ -483,9 +413,6 @@ async function resolveOrInstallCloudflaredBin(
     }
 }
 
-/**
- * @returns Parsed yml when present and valid
- */
 function tryReadExistingYml():
     | { hostname: string; tunnelId: string }
     | undefined {
@@ -501,19 +428,6 @@ function tryReadExistingYml():
     }
 }
 
-/**
- * Ensure hostname DNS routes to this tunnel.
- *
- * cloudflared has no "list hostname routes" command, so we:
- * 1. Try `route dns` without overwrite
- * 2. On conflict, resolve public CNAME — skip if it already targets this tunnel
- * 3. Otherwise require explicit user confirmation before `--overwrite-dns`
- *
- * @param bin - cloudflared path
- * @param tunnelName - Tunnel name
- * @param domain - Public hostname
- * @param tunnelId - Tunnel UUID (for CNAME target check)
- */
 async function ensureDnsRoute(
     bin: string,
     tunnelName: string,
@@ -555,11 +469,6 @@ async function ensureDnsRoute(
     throw new Error(`更新域名 DNS 失败：${(overwrite.stderr || overwrite.stdout).trim()}`);
 }
 
-/**
- * @param stderr - Command stderr
- * @param stdout - Command stdout
- * @returns True when Cloudflare reports the hostname record already exists
- */
 function isDnsRecordConflict(stderr: string, stdout: string): boolean {
     const detail = `${stderr}\n${stdout}`.toLowerCase();
     return (
@@ -569,14 +478,6 @@ function isDnsRecordConflict(stderr: string, stdout: string): boolean {
     );
 }
 
-/**
- * Best-effort public DNS check. Proxied Cloudflare CNAMEs are often flattened
- * to A records, in which case this returns false and the caller overwrites.
- *
- * @param domain - Public hostname
- * @param tunnelId - Expected tunnel UUID
- * @returns True when a CNAME target is `<tunnelId>.cfargotunnel.com`
- */
 async function dnsPointsToTunnel(
     domain: string,
     tunnelId: string,
