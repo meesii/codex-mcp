@@ -13,7 +13,7 @@ export function getUpdateInstallerInvocation(
     platform: NodeJS.Platform = process.platform,
 ): UpdateInstallerInvocation {
     if (platform === "win32") {
-        const scriptPath = fileURLToPath(new URL("../scripts/install.ps1", import.meta.url));
+        const scriptPath = fileURLToPath(new URL("../../scripts/install.ps1", import.meta.url));
         return {
             file: "powershell.exe",
             args: [
@@ -28,7 +28,7 @@ export function getUpdateInstallerInvocation(
     }
 
     if (platform === "darwin" || platform === "linux") {
-        const scriptPath = fileURLToPath(new URL("../scripts/install.sh", import.meta.url));
+        const scriptPath = fileURLToPath(new URL("../../scripts/install.sh", import.meta.url));
         return {
             file: "sh",
             args: [scriptPath],
