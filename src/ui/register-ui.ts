@@ -156,7 +156,7 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
         TOOL_CARD_URI,
         {
             description:
-                "Compact tool result card (summary only; never full file/command bodies).",
+                "Compact tool result card with full commands and summarized results.",
             mimeType: TOOL_CARD_MIME,
             _meta: resourceMeta,
         },

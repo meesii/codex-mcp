@@ -395,7 +395,7 @@ Git 专用工具全部通过异步 bounded subprocess 调用 `git`，不经过 s
 - 长进程全局最多 8 个、单进程 owner 最多 4 个；公网 OAuth 模式按 `clientId` 隔离、本地 `--local` 模式按本机 owner 共享。同一 owner 可跨独立 HTTP/MCP 请求继续 list/status/peek/poll/kill；`process_output` 不消费 buffer。running process 使用最多约 1,000,000 字符 rolling buffer；结束后历史 buffer 收缩到最多 200,000 字符，并额外受 retained history 预算约束（单 owner 最多 16 条/2,000,000 字符，全局最多 64 条/8,000,000 字符），同时仍保留 5 分钟 TTL。每个请求仅持有短 lease；最后一个 request lease 释放后进入重连宽限期，owner 在宽限期内的新请求会复用同一 process scope，否则 TERM→KILL 清理；server shutdown 会立即清理全部进程
 - `webfetch` / CIMD / remote JWKS 只允许全球可路由网络目标，并限制 redirect/响应大小；代理环境下先独立验证公网 DNS，再通过标准/macOS HTTPS proxy 出站
 - destructive/open-world tool annotations 按真实能力声明，让 host 可以应用确认策略
-- MCP Apps tool card 不复制完整 shell command；URL 展示会移除 credentials/query/fragment，避免 token/signed-URL 泄漏到 UI metadata
+- MCP Apps tool card 直接展示完整 shell command 和 URL 参数，不隐藏或脱敏执行内容
 - `/healthz` 仅返回 `{ "ok": true }`，不泄露本机 project path
 
 ## 开发与验证

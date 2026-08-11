@@ -107,10 +107,10 @@ function formatParamValue(key: string, value: unknown): string | null {
         }
     }
     if (key === "command" && typeof value === "string") {
-        return hiddenCommandLabel(value);
+        return value;
     }
     if (key === "url" && typeof value === "string") {
-        return safeUrlForDisplay(value);
+        return value;
     }
     if (typeof value === "string") return clipLine(value, 96);
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -165,10 +165,8 @@ function buildTitle(
         case "ls":
             return clipLine(String(input.path ?? params[0]?.value ?? ""), 80) || "—";
         case "bash":
-        case "exec_command": {
-            const command = typeof input.command === "string" ? input.command : "";
-            return command ? hiddenCommandLabel(command) : "—";
-        }
+        case "exec_command":
+            return String(input.command ?? "") || "—";
         case "grep": {
             const pattern = String(input.pattern ?? "");
             const path = input.path != null ? String(input.path) : "";
@@ -178,7 +176,7 @@ function buildTitle(
         case "glob":
             return clipLine(String(input.pattern ?? ""), 80) || "—";
         case "webfetch":
-            return safeUrlForDisplay(String(input.url ?? "")) || "—";
+            return String(input.url ?? "") || "—";
         case "summary":
             return clipLine(String(input.summary ?? ""), 80) || "—";
         case "mcp_servers":
@@ -226,24 +224,6 @@ function buildTitle(
  * @param contentText - Flattened text content (fallback / errors)
  * @returns Short outcome, or undefined when nothing useful
  */
-export function hiddenCommandLabel(command: string): string {
-    return `命令内容已隐藏（${command.length} 个字符）`;
-}
-
-export function safeUrlForDisplay(value: string): string {
-    if (!value) return "";
-    try {
-        const url = new URL(value);
-        url.username = "";
-        url.password = "";
-        url.search = "";
-        url.hash = "";
-        return clipLine(url.href, 96);
-    } catch {
-        return "[网址格式不正确，已隐藏]";
-    }
-}
-
 export function summarizeOutcome(
     toolName: string,
     ok: boolean,

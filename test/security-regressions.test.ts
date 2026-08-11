@@ -101,16 +101,32 @@ async function main(): Promise<void> {
     const projectRoot = await mkdtemp(join(tmpdir(), "codex-mcp-security-project-"));
     const secretCommand = "curl -H 'Authorization: Bearer super-secret-token' https://example.com";
     const commandSummary = summarizeToolCall("bash", { command: secretCommand });
-    assert.ok(!JSON.stringify(commandSummary).includes("super-secret-token"));
+    assert.equal(commandSummary.title, secretCommand);
+    assert.equal(commandSummary.params[0]?.value, secretCommand);
+    const commandCard = buildUiCard("bash", true, { command: secretCommand }, { exitCode: 0 });
+    assert.equal(commandCard.title, secretCommand);
+    assert.equal(commandCard.params[0]?.value, secretCommand);
+    assert.equal(commandCard.args?.command, secretCommand);
+    const longCommand = `echo ${"x".repeat(500)}`;
+    const longCommandCard = buildUiCard("exec_command", true, { command: longCommand });
+    assert.equal(longCommandCard.title, longCommand);
+    assert.equal(longCommandCard.params[0]?.value, longCommand);
+    assert.equal(longCommandCard.args?.command, longCommand);
+    const fullUrl = "https://example.com/path?access_token=super-secret-token#fragment";
     const urlCard = buildUiCard(
         "webfetch",
         true,
-        { url: "https://example.com/path?access_token=super-secret-token#fragment" },
+        { url: fullUrl },
         { bytes: 1 },
         "ok",
     );
-    assert.ok(!JSON.stringify(urlCard).includes("super-secret-token"));
-    assert.match(urlCard.title, /^https:\/\/example\.com\/path$/);
+    assert.equal(urlCard.title, fullUrl);
+    assert.equal(urlCard.params[0]?.value, fullUrl);
+    assert.equal(urlCard.args?.url, fullUrl);
+    const malformedUrl = "not a valid URL ?token=visible";
+    const malformedUrlCard = buildUiCard("webfetch", true, { url: malformedUrl });
+    assert.equal(malformedUrlCard.title, malformedUrl);
+    assert.equal(malformedUrlCard.params[0]?.value, malformedUrl);
     const localConfig = loadConfig({
         projectRoot,
         local: true,

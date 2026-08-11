@@ -521,7 +521,8 @@ export function toolCardHtml(toolName?: string): string {
         return value.length > 0 ? value.length + " 字符" : "(空)";
       }
     }
-    if (key === "command" && typeof value === "string") return clip(value, 160);
+    if (key === "command" && typeof value === "string") return value;
+    if (key === "url" && typeof value === "string") return value;
     if (typeof value === "string") return clip(value, 96);
     if (typeof value === "number" || typeof value === "boolean") return String(value);
     return null;
@@ -541,7 +542,7 @@ export function toolCardHtml(toolName?: string): string {
     if (toolName === "read" || toolName === "write" || toolName === "edit" || toolName === "ls") {
       title = clip(String(input.path || (params[0] && params[0].value) || ""), 80) || "—";
     } else if (toolName === "bash" || toolName === "exec_command") {
-      title = clip(String(input.command || ""), 80) || "—";
+      title = String(input.command || "") || "—";
     } else if (toolName === "grep") {
       var pattern = String(input.pattern || "");
       var path = input.path != null ? String(input.path) : "";
@@ -551,7 +552,7 @@ export function toolCardHtml(toolName?: string): string {
     } else if (toolName === "glob") {
       title = clip(String(input.pattern || ""), 80) || "—";
     } else if (toolName === "webfetch") {
-      title = clip(String(input.url || ""), 80) || "—";
+      title = String(input.url || "") || "—";
     } else if (toolName === "summary") {
       title = clip(String(input.summary || ""), 80) || "—";
     } else if (toolName === "mcp_tools") {
