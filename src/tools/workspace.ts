@@ -2,7 +2,11 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
+import type { GoalStore } from "../goals/store.js";
+import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProjectContext } from "../config/project.js";
 import type { SkillRegistry } from "../skills/registry.js";
+import { buildWorkspaceContext } from "../workspace/context.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
@@ -37,11 +41,130 @@ const searchMatchSchema = z.object({
     kind: z.enum(["match", "context"]),
 });
 
+const workspaceContextGoalSchema = z.object({
+    id: z.string(),
+    scopePath: z.string(),
+    objective: z.string(),
+    status: z.string(),
+    updatedAt: z.string(),
+    tasks: z.object({
+        total: z.number().int(),
+        done: z.number().int(),
+        inProgress: z.number().int(),
+        blocked: z.number().int(),
+        pending: z.number().int(),
+    }),
+    openTasks: z.array(z.object({
+        id: z.string(),
+        title: z.string(),
+        status: z.string(),
+        note: z.string().optional(),
+    })),
+    checkpoint: z.object({
+        summary: z.string(),
+        next: z.string().optional(),
+        findings: z.array(z.string()),
+        blockers: z.array(z.string()),
+        createdAt: z.string(),
+    }).nullable(),
+});
+
+const workspaceContextOutputSchema = {
+    path: z.string(),
+    intent: z.string(),
+    projects: z.array(projectSchema),
+    project: projectSchema.nullable(),
+    git: z.object({
+        available: z.boolean(),
+        repository: z.string().nullable(),
+        branch: z.string().nullable(),
+        dirty: z.boolean().nullable(),
+        changedFiles: z.number().int().nullable(),
+        files: z.array(z.object({
+            path: z.string(),
+            indexStatus: z.string(),
+            worktreeStatus: z.string(),
+        })),
+        filesTruncated: z.boolean(),
+        recentCommits: z.array(z.object({
+            shortHash: z.string(),
+            date: z.string(),
+            subject: z.string(),
+        })),
+        error: z.string().nullable(),
+    }),
+    work: z.object({
+        goal: workspaceContextGoalSchema.nullable(),
+        activeGoals: z.array(z.object({
+            id: z.string(),
+            scopePath: z.string(),
+            objective: z.string(),
+            status: z.string(),
+            updatedAt: z.string(),
+        })),
+        processes: z.array(z.object({
+            processId: z.number().int(),
+            name: z.string().optional(),
+            command: z.string(),
+            cwd: z.string(),
+            running: z.boolean(),
+            startedAt: z.number().int(),
+            wallTimeMs: z.number(),
+            exitCode: z.number().int().optional(),
+            signal: z.string().optional(),
+        })),
+    }),
+    instructions: z.object({
+        agents: z.array(z.object({
+            path: z.string(),
+            source: z.enum(["global", "project"]),
+            excerpt: z.string(),
+            truncated: z.boolean(),
+        })),
+        skills: z.array(z.object({
+            name: z.string(),
+            description: z.string(),
+            source: z.enum(["agents", "codex"]),
+        })),
+    }),
+    focus: z.object({
+        files: z.array(z.object({
+            path: z.string(),
+            line: z.number().int(),
+            column: z.number().int(),
+            text: z.string(),
+        })),
+        searchTruncated: z.boolean(),
+        searchError: z.string().nullable(),
+        entryPoints: z.array(z.object({ path: z.string(), reason: z.string() })),
+        manifest: z.object({
+            path: z.string(),
+            name: z.string().optional(),
+            version: z.string().optional(),
+            scripts: z.array(z.object({ name: z.string(), command: z.string() })),
+        }).nullable(),
+        codegraph: z.object({
+            indexedProjects: z.array(z.string()),
+            mcpReady: z.boolean(),
+        }),
+    }),
+    warnings: z.array(z.string()),
+    budget: z.object({
+        maxStructuredChars: z.number().int(),
+        estimatedChars: z.number().int(),
+        truncated: z.boolean(),
+    }),
+};
+
+/** Register bounded multi-repo discovery/search/context tools. */
 export function registerWorkspaceTools(
     server: McpServer,
+    project: ProjectContext,
+    processes: ProcessSessionManager,
     workspace: WorkspaceRegistry,
     agents: AgentInstructionRegistry,
     skills: SkillRegistry,
+    goals: GoalStore,
     hub: DownstreamMcpHub,
 ): void {
 
@@ -105,6 +228,46 @@ export function registerWorkspaceTools(
                 return okResult(
                     `Found ${result.matches.length}${result.truncated ? "+" : ""} workspace match(es).`,
                     result,
+                );
+            } catch (error) {
+                return errorResult(error instanceof Error ? error.message : String(error));
+            }
+        },
+    );
+
+    registerTool(
+        server,
+        "workspace_context",
+        withToolAuth({
+            title: "Read Chat workspace context",
+            description:
+                "Return one bounded, Chat-oriented snapshot for a project/scope: Git state and recent commits, relevant durable Goal, managed processes, scoped AGENTS excerpts, matching Skills, intent-ranked code evidence, entry points, manifest hints, CodeGraph readiness, warnings, and an explicit output budget. Prefer this first for prompts like 'continue this project', 'what is going on here?', or 'look at my current work'; use lower-level tools only for detail that is still missing.",
+            inputSchema: {
+                path: z
+                    .string()
+                    .max(2_000)
+                    .optional()
+                    .describe("Project-relative project/file scope. Defaults to project_root."),
+                intent: z
+                    .string()
+                    .min(1)
+                    .max(2_000)
+                    .optional()
+                    .describe("What the user wants to understand or continue; used to rank code/Skill context."),
+            },
+            outputSchema: workspaceContextOutputSchema,
+            annotations: readOnlyAnnotations,
+        }),
+        async ({ path, intent }) => {
+            try {
+                const result = await buildWorkspaceContext(
+                    { project, processes, workspace, agents, skills, goals, hub },
+                    { ...(path ? { path } : {}), ...(intent ? { intent } : {}) },
+                );
+                const projectLabel = result.project?.path ?? result.path;
+                return okResult(
+                    `Workspace context for ${projectLabel}: ${result.git.changedFiles ?? 0} changed file(s), ${result.work.goal ? `goal ${result.work.goal.id} ${result.work.goal.status}` : "no relevant active goal"}, ${result.work.processes.filter((item) => item.running).length} running process(es), ${result.focus.files.length} intent-ranked code file(s)${result.budget.truncated ? " (bounded/truncated)" : ""}.`,
+                    { ...result },
                 );
             } catch (error) {
                 return errorResult(error instanceof Error ? error.message : String(error));
@@ -218,6 +381,7 @@ export function registerWorkspaceTools(
     );
 }
 
+/** @internal Rank context-pack matches by file-level token coverage and preserve diversity. */
 export function rankContextMatches<
     T extends { path: string; line: number; column: number; text: string },
 >(

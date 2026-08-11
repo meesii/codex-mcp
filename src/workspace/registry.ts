@@ -103,6 +103,7 @@ export class WorkspaceRegistry {
         exclude?: string[];
         beforeContext?: number;
         afterContext?: number;
+        maxMatchesPerFile?: number;
     }): Promise<{ matches: WorkspaceSearchMatch[]; truncated: boolean }> {
         const result = await structuredSearch(this.project, {
             pattern: input.pattern,
@@ -119,6 +120,9 @@ export class WorkspaceRegistry {
                 : {}),
             ...(input.afterContext !== undefined
                 ? { afterContext: input.afterContext }
+                : {}),
+            ...(input.maxMatchesPerFile !== undefined
+                ? { maxMatchesPerFile: input.maxMatchesPerFile }
                 : {}),
         });
         return { matches: result.matches, truncated: result.truncated };

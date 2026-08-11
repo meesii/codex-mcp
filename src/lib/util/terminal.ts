@@ -1,47 +1,76 @@
-import { styleText } from "node:util";
+import {
+    intro,
+    log,
+    note,
+    outro,
+} from "@clack/prompts";
+import { stderr, stdout } from "node:process";
+import type { Writable } from "node:stream";
 
-export type TerminalMessageKind = "info" | "warning" | "error" | "success";
+export interface TerminalRow {
+    label: string;
+    value: string;
+}
 
-const MESSAGE_STYLE: Record<
-    TerminalMessageKind,
-    { marker: string; color: Parameters<typeof styleText>[0] }
-> = {
-    info: { marker: "ℹ", color: "cyan" },
-    warning: { marker: "!", color: "yellow" },
-    error: { marker: "✗", color: "red" },
-    success: { marker: "✓", color: "green" },
-};
+export type CompactLogKind = "error" | "info" | "success" | "warning";
 
-export function paintTerminal(
-    format: Parameters<typeof styleText>[0],
+export function printIntro(text: string, output: Writable = stdout): void {
+    intro(text, { output });
+}
+
+export function printOutro(text: string, output: Writable = stdout): void {
+    outro(text, { output });
+}
+
+export function printNote(
+    title: string,
+    message: string,
+    output: Writable = stdout,
+): void {
+    note(message, title, { output });
+}
+
+export function printSummary(
+    title: string,
+    rows: TerminalRow[],
+    output: Writable = stdout,
+): void {
+    printNote(
+        title,
+        rows.map((row) => `${row.label}  ${row.value}`).join("\n"),
+        output,
+    );
+}
+
+export function printInfo(text: string, output: Writable = stdout): void {
+    log.info(text, { output });
+}
+
+export function printWarning(text: string, output: Writable = stdout): void {
+    log.warn(text, { output });
+}
+
+export function printSuccess(text: string, output: Writable = stdout): void {
+    log.success(text, { output });
+}
+
+export function printError(text: string, output: Writable = stderr): void {
+    log.error(text, { output });
+}
+
+export function printCompactLog(
+    kind: CompactLogKind,
     text: string,
-): string {
-    if (
-        process.env.NO_COLOR !== undefined ||
-        (process.stdout.isTTY !== true && process.stderr.isTTY !== true)
-    ) {
-        return text;
+    output: Writable = kind === "error" ? stderr : stdout,
+): void {
+    const options = { output, spacing: 0 };
+    if (kind === "error") {
+        log.error(text, options);
+    } else if (kind === "warning") {
+        log.warn(text, options);
+    } else if (kind === "success") {
+        log.success(text, options);
+    } else {
+        log.info(text, options);
     }
-    return styleText(format, text);
-}
-
-export function terminalMessage(kind: TerminalMessageKind, text: string): string {
-    const style = MESSAGE_STYLE[kind];
-    return paintTerminal(style.color, `${style.marker} ${text}`);
-}
-
-export function printInfo(text: string): void {
-    console.log(terminalMessage("info", text));
-}
-
-export function printWarning(text: string): void {
-    console.log(terminalMessage("warning", text));
-}
-
-export function printSuccess(text: string): void {
-    console.log(terminalMessage("success", text));
-}
-
-export function printError(text: string): void {
-    console.error(terminalMessage("error", text));
 }

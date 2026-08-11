@@ -75,6 +75,8 @@ async function main(): Promise<void> {
         assert.match(instructions, /summary\(done=false/i);
         assert.doesNotMatch(instructions, /~6 inspect|6 inspect/i);
         assert.match(instructions, /do not re-load agents_for_path unless moving deeper/i);
+        assert.match(instructions, /workspace_context/i);
+        assert.match(instructions, /Chat project resume\/overview/i);
         assert.match(instructions, /skills_list/);
         assert.match(instructions, /skill_read/);
         assert.match(instructions, /mcp_tools/i);
@@ -86,13 +88,17 @@ async function main(): Promise<void> {
             version?: string;
             projectRoot?: string;
             toolsetHash?: string;
+            diskToolsetHash?: string;
             restartRequiredForCoreToolChanges?: boolean;
+            restartRecommended?: boolean;
             capabilities?: { structuredSearch?: boolean; mutationDiff?: boolean };
         };
         assert.equal(serverInfoData.version, PACKAGE_VERSION);
         assert.equal(serverInfoData.projectRoot, ctx.server.project.root);
         assert.match(serverInfoData.toolsetHash ?? "", /^[a-f0-9]{16}$/);
+        assert.equal(serverInfoData.diskToolsetHash, serverInfoData.toolsetHash);
         assert.equal(serverInfoData.restartRequiredForCoreToolChanges, true);
+        assert.equal(serverInfoData.restartRecommended, false);
         assert.equal(serverInfoData.capabilities?.structuredSearch, true);
         assert.equal(serverInfoData.capabilities?.mutationDiff, true);
 

@@ -10,6 +10,7 @@ import { createHttpServer } from "../src/server/http-server.js";
 import { ProjectContext } from "../src/config/project.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 import { rankContextMatches } from "../src/tools/workspace.js";
+import { WORKSPACE_CONTEXT_MAX_STRUCTURED_CHARS } from "../src/workspace/context.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 
 function git(root: string, args: string[]): string {
@@ -71,10 +72,21 @@ async function main(): Promise<void> {
     await writeFile(join(workspaceRoot, "AGENTS.md"), "ROOT-WORKSPACE-RULE\n", "utf8");
 
     const repoA = await createRepo(workspaceRoot, "repo-a", {
-        "package.json": JSON.stringify({ name: "repo-a", devDependencies: { vite: "1.0.0" } }),
+        "package.json": JSON.stringify({
+            name: "repo-a",
+            version: "1.2.3",
+            scripts: { test: "node --test", build: "vite build" },
+            devDependencies: { vite: "1.0.0" },
+        }),
         ".gitattributes": "*.conv diff=reviewconv\n",
         "sample.conv": "textconv-original\n",
+        "src/main.ts": "export const boot = () => 'workspace main';\n",
         "src/app.ts": "export const sharedMarker = 'workspace-marker';\n",
+        "src/workspace/context.ts": "export const workspace_context = 'chat project snapshot';\n",
+        "src/aaa-noise.ts": Array.from(
+            { length: 200 },
+            (_, index) => `export const workspace_noise_${index} = 'workspace';`,
+        ).join("\n"),
         "src/capabilities/policy.ts": "export function resolveAllowedTools(clientId: string) { return filterToolsByClientCapability(clientId); }\nfunction filterToolsByClientCapability(clientId: string) { return clientId ? ['read'] : []; }\n",
         "src/tools/register.ts": "export function registerCodingTools() { return 'registered tool capability'; }\n",
         "src/managed-tools/noise.ts": "export const tools = ['ripgrep', 'cloudflared'];\n",
@@ -130,6 +142,7 @@ async function main(): Promise<void> {
         hub: DownstreamMcpHub.empty(),
         skills: SkillRegistry.empty(),
         agents,
+        goalStorageDir: join(home, "goals"),
     });
     await server.listen();
     const mcp = await connectMcpClient(server.getMcpUrl());
@@ -149,6 +162,140 @@ async function main(): Promise<void> {
             true,
             "workspace dirty state must include untracked files",
         );
+
+        const contextGoal = await mcp.callTool("goal_start", {
+            path: "repo-a",
+            objective: "Continue the workspace-marker feature and verify Chat-oriented context",
+            tasks: [
+                { title: "Inspect workspace marker implementation" },
+                { title: "Run focused verification" },
+            ],
+            acceptance_criteria: ["workspace_context exposes enough local state to resume the work"],
+        });
+        assert.notEqual(contextGoal.isError, true, toolText(contextGoal));
+        const goalProgress = await mcp.callTool("goal_update", {
+            path: "repo-a",
+            task_updates: [{ task_id: "task_1", status: "done" }],
+            checkpoint: {
+                summary: "Workspace marker implementation was inspected.",
+                next: "Run the focused verification.",
+                findings: ["repo-a/src/app.ts contains the marker implementation"],
+            },
+        });
+        assert.notEqual(goalProgress.isError, true, toolText(goalProgress));
+
+        const workspaceContext = await mcp.callTool("workspace_context", {
+            path: "repo-a",
+            intent: "continue the workspace-marker implementation",
+        });
+        assert.notEqual(workspaceContext.isError, true, toolText(workspaceContext));
+        const workspaceContextData = workspaceContext.structuredContent as {
+            path?: string;
+            project?: { path?: string; kind?: string; dirty?: boolean } | null;
+            git?: {
+                available?: boolean;
+                repository?: string | null;
+                changedFiles?: number | null;
+                files?: Array<{ path?: string }>;
+                recentCommits?: Array<{ subject?: string }>;
+            };
+            work?: {
+                goal?: {
+                    objective?: string;
+                    tasks?: { done?: number; pending?: number };
+                    checkpoint?: { next?: string } | null;
+                } | null;
+                processes?: unknown[];
+            };
+            instructions?: { agents?: Array<{ excerpt?: string }> };
+            focus?: {
+                files?: Array<{ path?: string; text?: string }>;
+                entryPoints?: Array<{ path?: string }>;
+                manifest?: { path?: string; name?: string; version?: string; scripts?: Array<{ name?: string }> } | null;
+            };
+            warnings?: string[];
+            budget?: { maxStructuredChars?: number; estimatedChars?: number; truncated?: boolean };
+        };
+        assert.equal(workspaceContextData.path, "repo-a");
+        assert.equal(workspaceContextData.project?.path, "repo-a");
+        assert.equal(workspaceContextData.project?.kind, "vite");
+        assert.equal(workspaceContextData.git?.available, true);
+        assert.equal(workspaceContextData.git?.repository, "repo-a");
+        assert.ok((workspaceContextData.git?.changedFiles ?? 0) >= 2);
+        assert.ok((workspaceContextData.git?.files?.length ?? 0) <= 12);
+        assert.ok((workspaceContextData.git?.recentCommits?.length ?? 0) <= 5);
+        assert.match(workspaceContextData.work?.goal?.objective ?? "", /workspace-marker/i);
+        assert.equal(workspaceContextData.work?.goal?.tasks?.done, 1);
+        assert.equal(workspaceContextData.work?.goal?.tasks?.pending, 1);
+        assert.equal(workspaceContextData.work?.goal?.checkpoint?.next, "Run the focused verification.");
+        assert.match(JSON.stringify(workspaceContextData.instructions?.agents ?? []), /GLOBAL-WORKSPACE-RULE/);
+        assert.match(JSON.stringify(workspaceContextData.instructions?.agents ?? []), /ROOT-WORKSPACE-RULE/);
+        assert.ok(
+            (workspaceContextData.focus?.files ?? []).some((item) => item.path === "repo-a/src/app.ts"),
+            JSON.stringify(workspaceContextData.focus?.files),
+        );
+
+        const separatorVariantContext = await mcp.callTool("workspace_context", {
+            path: "repo-a",
+            intent: "continue the workspace-context implementation",
+        });
+        assert.notEqual(separatorVariantContext.isError, true, toolText(separatorVariantContext));
+        const separatorVariantFocus = (separatorVariantContext.structuredContent as {
+            focus?: { files?: Array<{ path?: string }> };
+        }).focus?.files ?? [];
+        assert.ok(
+            separatorVariantFocus.some((item) => item.path === "repo-a/src/workspace/context.ts"),
+            `hyphenated intent should match snake_case code identifiers: ${JSON.stringify(separatorVariantFocus)}`,
+        );
+
+        const diverseContext = await mcp.callTool("workspace_context", {
+            path: "repo-a",
+            intent: "Chat workspace context",
+        });
+        assert.notEqual(diverseContext.isError, true, toolText(diverseContext));
+        const diverseFocus = (diverseContext.structuredContent as {
+            focus?: { files?: Array<{ path?: string }> };
+        }).focus?.files ?? [];
+        assert.ok(
+            diverseFocus.some((item) => item.path === "repo-a/src/workspace/context.ts"),
+            `one noisy file must not consume the entire focus candidate budget: ${JSON.stringify(diverseFocus)}`,
+        );
+
+        assert.ok(
+            (workspaceContextData.focus?.entryPoints ?? []).some((item) => item.path === "repo-a/src/main.ts"),
+            JSON.stringify(workspaceContextData.focus?.entryPoints),
+        );
+        assert.equal(workspaceContextData.focus?.manifest?.path, "repo-a/package.json");
+        assert.equal(workspaceContextData.focus?.manifest?.name, "repo-a");
+        assert.equal(workspaceContextData.focus?.manifest?.version, "1.2.3");
+        assert.ok(
+            (workspaceContextData.focus?.manifest?.scripts ?? []).some((item) => item.name === "test"),
+        );
+        assert.equal(workspaceContextData.budget?.maxStructuredChars, WORKSPACE_CONTEXT_MAX_STRUCTURED_CHARS);
+        assert.ok(
+            (workspaceContextData.budget?.estimatedChars ?? Number.POSITIVE_INFINITY) <= WORKSPACE_CONTEXT_MAX_STRUCTURED_CHARS,
+            JSON.stringify(workspaceContextData.budget),
+        );
+        assert.ok(
+            JSON.stringify(workspaceContext.structuredContent).length <= WORKSPACE_CONTEXT_MAX_STRUCTURED_CHARS,
+            "workspace_context structured payload must remain within the declared hard budget",
+        );
+
+        const workspaceRootContext = await mcp.callTool("workspace_context", {
+            path: ".",
+            intent: "understand all workspace projects",
+        });
+        assert.notEqual(workspaceRootContext.isError, true, toolText(workspaceRootContext));
+        const workspaceRootData = workspaceRootContext.structuredContent as {
+            project?: unknown;
+            projects?: Array<{ path?: string }>;
+            git?: { available?: boolean };
+            warnings?: string[];
+        };
+        assert.equal(workspaceRootData.project, null, "multi-repo workspace root should not guess one primary repository");
+        assert.deepEqual((workspaceRootData.projects ?? []).map((item) => item.path), ["repo-a", "repo-b"]);
+        assert.equal(workspaceRootData.git?.available, false);
+        assert.match((workspaceRootData.warnings ?? []).join("\n"), /multiple Git projects/i);
 
         const search = await mcp.callTool("workspace_search", {
             pattern: "workspace-marker",

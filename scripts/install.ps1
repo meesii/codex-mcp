@@ -104,6 +104,7 @@ Success "命令目录已加入 PATH：$installRoot"
 Write-Host ""
 if ($env:CODEX_MCP_UPDATE -eq "1") {
     Success "更新完成。配置、连接密码和 Tunnel 信息保持不变。"
+    Warn "如果 codex-mcp 服务正在运行，请重启它；现有进程不会自动加载更新后的 core tool schema。"
 } else {
     Info "第一次使用请运行：codex-mcp setup"
     Warn "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"

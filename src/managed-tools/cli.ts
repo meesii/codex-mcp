@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { ensureManagedTools } from "./install.js";
 import type { ManagedToolName } from "./paths.js";
+import { printError } from "../lib/util/terminal.js";
 import { loadUserConfig } from "../config/user-config.js";
 
 async function main(argv: string[]): Promise<void> {
@@ -31,6 +32,6 @@ async function main(argv: string[]): Promise<void> {
 }
 
 void main(process.argv.slice(2)).catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    printError(error instanceof Error ? error.message : String(error));
     process.exit(1);
 });

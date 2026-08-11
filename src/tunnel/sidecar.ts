@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { terminateChildProcess } from "../lib/process/tree.js";
+import { printCompactLog } from "../lib/util/terminal.js";
 import { ensureUserConfigDirs, getUserLogDir } from "../config/user-config.js";
 import { getCloudflaredConfigPath } from "./yml.js";
 
@@ -255,7 +256,7 @@ export class CloudflaredSidecar {
             const lines = text.split(/\r?\n/);
             for (const line of lines) {
                 if (line.trim()) {
-                    console.error(`[tunnel] ${line}`);
+                    printCompactLog("warning", `[tunnel] ${line}`);
                 }
             }
         }

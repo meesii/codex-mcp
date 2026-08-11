@@ -27,7 +27,7 @@ export interface ServerConfig {
 }
 
 export interface LoadConfigOptions {
-    /** Override project root (CLI `--root` or interactive choice). */
+    /** Override project root (CLI `--root`); defaults to `process.cwd()`. */
     projectRoot?: string;
     /** Values from `~/.codex-mcp/config.json`. */
     userConfig?: UserConfig;

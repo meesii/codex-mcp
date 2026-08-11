@@ -9,6 +9,8 @@ import {
     ServerError,
     UnsupportedGrantTypeError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { writeRuntimeLog } from "../lib/runtime-log.js";
+import { printCompactLog } from "../lib/util/terminal.js";
 import type { CodexOAuthProvider } from "./provider.js";
 
 const TokenBaseSchema = z.object({ grant_type: z.string().min(1) });
@@ -147,9 +149,11 @@ function sendOAuthError(res: express.Response, error: unknown): void {
         res.status(status).json(error.toResponseObject());
         return;
     }
-    console.error(
-        `[oauth] endpoint failure: ${error instanceof Error ? error.message : "unknown error"}`,
-    );
+    const detail = error instanceof Error ? error.message : "unknown error";
+    printCompactLog("error", `OAuth 端点发生内部错误：${detail}`);
+    writeRuntimeLog("error", "oauth_endpoint_failed", {
+        reason: error instanceof Error ? error.name : "unknown",
+    });
     const serverError = new ServerError("Internal Server Error");
     res.status(500).json(serverError.toResponseObject());
 }

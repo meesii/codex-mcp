@@ -70,6 +70,7 @@ export function buildServerInstructions(
     addTool("capabilities_reload", "force-refresh imported Codex MCPs and skills; automatic watching is also enabled in the CLI.");
     addTool("workspace_projects", "discover Git projects under project_root.");
     addTool("workspace_search", "bounded structured search across the workspace.");
+    addTool("workspace_context", "one-call Chat-oriented project snapshot: Git/current Goal/processes/instructions/Skills/focus/entry points/warnings; prefer first for continue/look-at-this-project prompts.");
     addTool("context_pack", "assemble scope-focused project/files/AGENTS/skills context; after using it for a scope, do not re-load agents_for_path unless moving deeper.");
     addTool("git_status", "structured read-only Git status.");
     addTool("git_diff", "bounded read-only Git diff.");
@@ -94,6 +95,11 @@ export function buildServerInstructions(
         limits.push(
             "- Mid-task status: summary(done=false); do not use plain chat for partial progress.",
             "- summary(done=true) only when the full user task is finished.",
+        );
+    }
+    if (allows("workspace_context")) {
+        limits.push(
+            "- Chat project resume/overview: use workspace_context first for requests like 'continue this project', 'what changed?', or 'look at the current work'; only drill into lower-level Git/search/read tools for missing detail.",
         );
     }
     if (["goal_start", "goal_status", "goal_update", "goal_verify", "goal_finish"].every(allows)) {

@@ -2,6 +2,8 @@ import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { DownstreamMcpHub, DownstreamReloadResult } from "../downstream/hub.js";
+import { writeRuntimeLog } from "../lib/runtime-log.js";
+import { printCompactLog } from "../lib/util/terminal.js";
 import type { SkillRegistry } from "../skills/registry.js";
 
 const RELOAD_DEBOUNCE_MS = 400;
@@ -52,7 +54,11 @@ export class CodexCapabilityWatcher {
         private readonly hub: DownstreamMcpHub,
         private readonly skills: SkillRegistry,
         private readonly onError: (error: unknown) => void = (error) => {
-            console.error("capability_reload_error", error);
+            const detail = error instanceof Error ? error.message : String(error);
+            printCompactLog("error", `能力配置自动刷新失败：${detail}`);
+            writeRuntimeLog("error", "capability_reload_failed", {
+                reason: error instanceof Error ? error.name : "unknown",
+            });
         },
         private readonly homeDirectory = homedir(),
     ) {}

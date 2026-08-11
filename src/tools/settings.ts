@@ -66,7 +66,7 @@ export function registerSettingsTools(
         withToolAuth({
             title: "Update codex-mcp settings",
             description:
-                "Persist ChatGPT-facing UI settings. `tools` controls ordinary coding tool cards; `status` controls Summary and Goal cards. The settings panel always remains available. After saving, codex-mcp sends the standard tools/list_changed notification so capable clients refresh tool UI metadata.",
+                "Persist ChatGPT-facing UI settings. `tools` controls ordinary coding tool cards; `status` controls Summary and Goal cards. The settings panel always remains available. Call with no arguments to request a tool-list refresh without changing settings. Every successful call sends the standard tools/list_changed notification so capable clients refresh tool metadata.",
             inputSchema: {
                 tools: z
                     .boolean()
