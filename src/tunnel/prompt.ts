@@ -1,6 +1,10 @@
-import { createInterface } from "node:readline/promises";
+import {
+    confirm,
+    isCancel,
+    password,
+    text,
+} from "@clack/prompts";
 import { stdin as input, stdout as output } from "node:process";
-import { paintTerminal } from "../lib/terminal.js";
 
 /**
  * Whether stdin/stdout can drive an interactive wizard.
@@ -11,53 +15,48 @@ export function canPromptInteractively(): boolean {
     return input.isTTY === true && output.isTTY === true;
 }
 
-const paint = paintTerminal;
-
 /**
  * Ask a yes/no question.
  *
  * @param question - Prompt text
- * @param defaultYes - Default when the user presses Enter
+ * @param defaultYes - Initially selected answer
  * @returns True for yes
  */
 export async function askYesNo(
     question: string,
     defaultYes = true,
 ): Promise<boolean> {
-    const hint = defaultYes ? "回车=是 / n=否" : "y=是 / 回车=否";
-    const answer = (await askLine(`${question} [${hint}]`)).trim().toLowerCase();
-    if (!answer) {
-        return defaultYes;
-    }
-    return answer === "y" || answer === "yes" || answer === "是";
+    requireInteractiveTerminal();
+    return promptValue(
+        await confirm({
+            message: question,
+            initialValue: defaultYes,
+            active: "是",
+            inactive: "否",
+        }),
+    );
 }
 
 /**
  * Ask for a single line of input.
  *
  * @param question - Prompt text
- * @param defaultValue - Value when the user presses Enter
+ * @param defaultValue - Value when the user submits an empty input
  * @returns Trimmed answer (or default)
  */
 export async function askLine(
     question: string,
     defaultValue?: string,
 ): Promise<string> {
-    const rl = createInterface({ input, output });
-    try {
-        const suffix =
-            defaultValue !== undefined && defaultValue !== ""
-                ? ` (${paint(["dim", "underline"], defaultValue)})`
-                : "";
-        const answer = await rl.question(`${question}${suffix}: `);
-        const trimmed = answer.trim();
-        if (!trimmed && defaultValue !== undefined) {
-            return defaultValue;
-        }
-        return trimmed;
-    } finally {
-        rl.close();
-    }
+    requireInteractiveTerminal();
+    return promptValue(
+        await text({
+            message: question,
+            ...(defaultValue !== undefined
+                ? { placeholder: defaultValue, defaultValue }
+                : {}),
+        }),
+    ).trim();
 }
 
 /**
@@ -67,49 +66,19 @@ export async function askLine(
  * @returns Secret text without the trailing newline
  */
 export async function askSecret(question: string): Promise<string> {
-    if (!canPromptInteractively() || typeof input.setRawMode !== "function") {
-        throw new Error("这里需要在可以输入内容的终端里运行，才能安全输入密码");
-    }
+    requireInteractiveTerminal();
+    return promptValue(await password({ message: question }));
+}
 
-    output.write(`${question}: `);
-    const wasRaw = input.isRaw === true;
-    input.setRawMode(true);
-    input.resume();
-
-    try {
-        return await new Promise<string>((resolve, reject) => {
-            let value = "";
-            const onData = (chunk: Buffer | string): void => {
-                const text = chunk.toString();
-                for (const char of text) {
-                    if (char === "\r" || char === "\n") {
-                        cleanup();
-                        output.write("\n");
-                        resolve(value);
-                        return;
-                    }
-                    if (char === "\u0003") {
-                        cleanup();
-                        output.write("\n");
-                        reject(new Error("已取消输入"));
-                        return;
-                    }
-                    if (char === "\u007f" || char === "\b") {
-                        value = value.slice(0, -1);
-                        continue;
-                    }
-                    if (char >= " " && char !== "\u007f") {
-                        value += char;
-                    }
-                }
-            };
-            const cleanup = (): void => {
-                input.off("data", onData);
-            };
-            input.on("data", onData);
-        });
-    } finally {
-        input.setRawMode(wasRaw);
-        if (!wasRaw) input.pause();
+function requireInteractiveTerminal(): void {
+    if (!canPromptInteractively()) {
+        throw new Error("这里需要在可以输入内容的终端里运行");
     }
+}
+
+function promptValue<T>(value: T | symbol): T {
+    if (isCancel(value)) {
+        throw new Error("已取消输入");
+    }
+    return value;
 }

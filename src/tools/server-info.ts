@@ -12,7 +12,7 @@ import { okResult } from "../lib/tool-result.js";
 import { TOOL_NAMES } from "./names.js";
 
 const PROCESS_STARTED_AT = new Date(Date.now() - process.uptime() * 1_000).toISOString();
-const TOOLSET_HASH = buildToolsetHash();
+const STARTUP_TOOLSET_HASH = buildToolsetHash();
 
 /** Register stable runtime/toolset self-inspection for connector/schema debugging. */
 function buildToolsetHash(): string {
@@ -39,7 +39,7 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
         withToolAuth({
             title: "Read server info",
             description:
-                "Return the running codex-mcp version, process start time, bound project root, and core toolset fingerprint. Use when a connector may still be attached to an older process/schema.",
+                "Return the running codex-mcp version, process start time, bound project root, startup/disk core toolset fingerprints, and whether a restart is recommended because core tool source changed on disk after this process started. Use when a connector may still be attached to an older process/schema.",
             inputSchema: {},
             outputSchema: {
                 version: z.string(),
@@ -47,8 +47,10 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
                 pid: z.number().int(),
                 projectRoot: z.string(),
                 toolsetHash: z.string(),
+                diskToolsetHash: z.string(),
                 toolCount: z.number().int(),
                 restartRequiredForCoreToolChanges: z.boolean(),
+                restartRecommended: z.boolean(),
                 capabilities: z.object({
                     applyPatch: z.boolean(),
                     structuredSearch: z.boolean(),
@@ -58,21 +60,31 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
             },
             annotations: readOnlyAnnotations,
         }),
-        async () =>
-            okResult(`codex-mcp ${PACKAGE_VERSION} · ${TOOL_NAMES.length} registered tool name(s).`, {
-                version: PACKAGE_VERSION,
-                startedAt: PROCESS_STARTED_AT,
-                pid: process.pid,
-                projectRoot: project.root,
-                toolsetHash: TOOLSET_HASH,
-                toolCount: TOOL_NAMES.length,
-                restartRequiredForCoreToolChanges: true,
-                capabilities: {
-                    applyPatch: TOOL_NAMES.includes("apply_patch"),
-                    structuredSearch: true,
-                    commandCwd: true,
-                    mutationDiff: true,
+        async () => {
+            const diskToolsetHash = buildToolsetHash();
+            const restartRecommended = diskToolsetHash !== STARTUP_TOOLSET_HASH;
+            return okResult(
+                restartRecommended
+                    ? `codex-mcp ${PACKAGE_VERSION} · core tool source changed on disk; restart recommended.`
+                    : `codex-mcp ${PACKAGE_VERSION} · ${TOOL_NAMES.length} registered tool name(s).`,
+                {
+                    version: PACKAGE_VERSION,
+                    startedAt: PROCESS_STARTED_AT,
+                    pid: process.pid,
+                    projectRoot: project.root,
+                    toolsetHash: STARTUP_TOOLSET_HASH,
+                    diskToolsetHash,
+                    toolCount: TOOL_NAMES.length,
+                    restartRequiredForCoreToolChanges: true,
+                    restartRecommended,
+                    capabilities: {
+                        applyPatch: TOOL_NAMES.includes("apply_patch"),
+                        structuredSearch: true,
+                        commandCwd: true,
+                        mutationDiff: true,
+                    },
                 },
-            }),
+            );
+        },
     );
 }

@@ -27,7 +27,7 @@ export interface ServerConfig {
 }
 
 export interface LoadConfigOptions {
-    /** Override project root (CLI `--root` or interactive choice). */
+    /** Override project root (CLI `--root`); defaults to `process.cwd()`. */
     projectRoot?: string;
     /** Values from `~/.codex-mcp/config.json`. */
     userConfig?: UserConfig;
@@ -59,7 +59,7 @@ export function expandHomePath(pathValue: string): string {
  *
  * Order: explicit root → `process.cwd()`.
  *
- * @param explicitRoot - Optional CLI / interactive override
+ * @param explicitRoot - Optional CLI override
  * @returns Absolute project root
  */
 export function resolveProjectRoot(explicitRoot?: string): string {

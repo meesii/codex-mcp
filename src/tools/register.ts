@@ -92,7 +92,7 @@ export function registerAllTools(
     registerSkillTools(server, skills);
     registerAgentTools(server, agents);
     registerCapabilityTools(server, hub, skills);
-    registerWorkspaceTools(server, workspace, agents, skills, hub);
+    registerWorkspaceTools(server, project, processes, workspace, agents, skills, goals, hub);
     registerGitTools(server, project);
     registerCodeExploreTool(server, project, workspace, hub);
     // Gateway tools stay registered even when zero downstream servers are

@@ -118,10 +118,8 @@ async function runConfigWizard(
     const configPath = getUserConfigPath();
     const existingYml = tryReadExistingYml();
 
-    console.log("");
     printInfo("设置公网连接");
     printInfo(`配置保存在：${configPath}`);
-    console.log("");
 
     // 1) Domain first — always.
     const domainDefault =
@@ -146,7 +144,6 @@ async function runConfigWizard(
         domain,
     });
     printSuccess(`域名已保存：${domain}`);
-    console.log("");
 
     // 2) Optional cloudflared.
     const useCloudflared = await askYesNo(
@@ -156,7 +153,6 @@ async function runConfigWizard(
     if (!useCloudflared) {
         userConfig = saveUserConfig({ useCloudflared: false });
         printSuccess("域名已保存。请你自己准备 HTTPS 公网入口；需要自动配置时可重新运行 `codex-mcp tunnel`。");
-        console.log("");
         return { userConfig, domain, useCloudflared: false };
     }
 
@@ -203,7 +199,6 @@ async function runConfigWizard(
         tunnelId,
     });
     printSuccess(`codex-mcp 配置已保存：${configPath}`);
-    console.log("");
 
     return {
         userConfig,

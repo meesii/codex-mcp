@@ -20,7 +20,9 @@ import {
     InvalidTargetError,
     InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { writeRuntimeLog } from "../lib/runtime-log.js";
 import { safeHttpGet } from "../lib/safe-http.js";
+import { printCompactLog } from "../lib/terminal.js";
 import {
     JWT_BEARER_ASSERTION_TYPE,
     PrivateKeyJwtVerifier,
@@ -39,6 +41,15 @@ const CIMD_MAX_CACHE_ENTRIES = 512;
 const DCR_PROTECT_RECENT_MS = 10 * 60 * 1000;
 const MAX_REGISTERED_CLIENTS = 256;
 export const OAUTH_SCOPES = ["mcp:tools", "offline_access"] as const;
+
+function logOAuthWarning(
+    event: string,
+    message: string,
+    fields: Record<string, string | number> = {},
+): void {
+    printCompactLog("warning", message);
+    writeRuntimeLog("warn", event, fields);
+}
 
 interface CachedClient {
     client: OAuthClientInformationFull;
@@ -146,7 +157,11 @@ export class CodexClientsStore implements OAuthRegisteredClientsStore {
                 headers: { Accept: "application/json" },
             });
             if (response.status !== 200) {
-                console.warn(`[oauth] CIMD ${url.origin}${url.pathname} returned HTTP ${response.status}`);
+                logOAuthWarning(
+                    "oauth_cimd_http_error",
+                    `OAuth 客户端元数据请求返回 HTTP ${response.status}：${url.origin}${url.pathname}`,
+                    { status: response.status },
+                );
                 return undefined;
             }
             const client = parseCimdClientDocument(
@@ -154,7 +169,10 @@ export class CodexClientsStore implements OAuthRegisteredClientsStore {
                 JSON.parse(response.body.toString("utf8")) as unknown,
             );
             if (!client) {
-                console.warn(`[oauth] CIMD ${url.origin}${url.pathname} failed metadata validation`);
+                logOAuthWarning(
+                    "oauth_cimd_invalid_metadata",
+                    `OAuth 客户端元数据校验失败：${url.origin}${url.pathname}`,
+                );
                 return undefined;
             }
             return {
@@ -162,10 +180,12 @@ export class CodexClientsStore implements OAuthRegisteredClientsStore {
                 expiresAt: Date.now() + resolveCimdCacheTtl(response.headers),
             };
         } catch (error) {
-            console.warn(
-                `[oauth] CIMD ${url.origin}${url.pathname} fetch failed: ${
+            logOAuthWarning(
+                "oauth_cimd_fetch_failed",
+                `OAuth 客户端元数据请求失败：${url.origin}${url.pathname} · ${
                     error instanceof Error ? error.message : "unknown error"
                 }`,
+                { reason: error instanceof Error ? error.name : "unknown" },
             );
             return undefined;
         }
@@ -225,10 +245,12 @@ export class CodexOAuthProvider implements OAuthServerProvider {
         try {
             await this.privateKeyJwt.verify(client, assertion);
         } catch (error) {
-            console.warn(
-                `[oauth] private_key_jwt rejected for ${client.client_id}: ${
+            logOAuthWarning(
+                "oauth_private_key_jwt_rejected",
+                `OAuth private_key_jwt 已拒绝：${client.client_id} · ${
                     error instanceof Error ? error.message : "unknown error"
                 }`,
+                { reason: error instanceof Error ? error.name : "unknown" },
             );
             throw new InvalidClientError("Invalid client authentication");
         }

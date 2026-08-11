@@ -32,6 +32,8 @@ export interface StructuredSearchInput {
     beforeContext?: number;
     afterContext?: number;
     maxResults?: number;
+    /** Optional diversity cap for stored match rows from any single file. */
+    maxMatchesPerFile?: number;
     filesOnly?: boolean;
     hidden?: boolean;
 }
@@ -60,6 +62,9 @@ export async function structuredSearch(
     const searchRoot = info.isFile() ? dirname(scopedAbsolute) : scopedAbsolute;
     const searchTarget = info.isFile() ? basename(scopedAbsolute) : ".";
     const maxResults = Math.max(1, Math.min(Math.floor(input.maxResults ?? 200), 1_000));
+    const maxMatchesPerFile = input.maxMatchesPerFile === undefined
+        ? maxResults
+        : Math.max(1, Math.min(Math.floor(input.maxMatchesPerFile), maxResults));
     const args = input.filesOnly
         ? ["--files-with-matches", "--color", "never"]
         : ["--json", "--color", "never"];
@@ -99,6 +104,7 @@ export async function structuredSearch(
     const matchCandidates: Array<StructuredSearchMatch & { order: number }> = [];
     const contextCandidates: Array<StructuredSearchMatch & { order: number }> = [];
     const fileSet = new Set<string>();
+    const retainedMatchesPerFile = new Map<string, number>();
     let totalMatches = 0;
     let totalContexts = 0;
     let eventOrder = 0;
@@ -131,8 +137,15 @@ export async function structuredSearch(
         if (event.type === "match") {
             totalMatches += 1;
             fileSet.add(relativePath);
-            if (matchCandidates.length < maxResults) matchCandidates.push(candidate);
-            else truncated = true;
+            const retainedForFile = retainedMatchesPerFile.get(relativePath) ?? 0;
+            if (retainedForFile >= maxMatchesPerFile) {
+                truncated = true;
+            } else if (matchCandidates.length < maxResults) {
+                matchCandidates.push(candidate);
+                retainedMatchesPerFile.set(relativePath, retainedForFile + 1);
+            } else {
+                truncated = true;
+            }
         } else {
             totalContexts += 1;
             if (contextCandidates.length < maxResults) contextCandidates.push(candidate);

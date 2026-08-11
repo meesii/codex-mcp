@@ -1,4 +1,3 @@
-import { styleText } from "node:util";
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { toolUiMeta } from "../ui/register-ui.js";
 import { securitySchemesForServer } from "./tool-meta.js";
@@ -6,28 +5,11 @@ import { summarizeOutcome, summarizeToolCall } from "../ui/tool-summary.js";
 import { buildUiCard } from "../ui/ui-card.js";
 import { resultText } from "./tool-result.js";
 import { runtimeTelemetry } from "./runtime-telemetry.js";
+import { writeRuntimeLog } from "./runtime-log.js";
+import { printCompactLog } from "./terminal.js";
 
 const TOOL_NAME_WIDTH = 18;
 const toolRegistrationPolicies = new WeakMap<McpServer, ReadonlySet<string>>();
-
-const colorEnabled =
-    process.env.NO_COLOR === undefined &&
-    process.stdout.isTTY === true;
-
-/**
- * Apply ANSI color when stdout is a TTY.
- *
- * @param format - util.styleText format name(s)
- * @param text - Text to colorize
- * @returns Possibly colored text
- */
-function paint(
-    format: Parameters<typeof styleText>[0],
-    text: string,
-): string {
-    if (!colorEnabled) return text;
-    return styleText(format, text);
-}
 
 /**
  * Whether tool-call logging is enabled (default on).
@@ -82,7 +64,7 @@ function padToolName(toolName: string): string {
  */
 function formatDetail(title?: string, outcome?: string): string {
     const parts = [title, outcome].filter((part): part is string => Boolean(part));
-    return parts.join(paint("dim", "  ·  "));
+    return parts.join("  ·  ");
 }
 
 /**
@@ -97,11 +79,12 @@ export function logMcpEvent(kind: string, details: Record<string, unknown> = {})
     const pairs = Object.entries(details)
         .filter(([, value]) => value !== undefined && value !== null && value !== "")
         .map(([key, value]) => `${key}=${String(value)}`);
-    const detail = pairs.length > 0 ? paint("dim", pairs.join(" ")) : "";
-
-    console.log(
-        `${paint("dim", timeLabel())}  ${paint(["bold", "yellow"], "warn")}  ${paint("yellow", kind.padEnd(TOOL_NAME_WIDTH))}  ${detail}`.trimEnd(),
+    const detail = pairs.join(" ");
+    printCompactLog(
+        "warning",
+        `${timeLabel()}  ${kind.padEnd(TOOL_NAME_WIDTH)}  ${detail}`.trimEnd(),
     );
+    writeRuntimeLog("warn", kind, primitiveLogFields(details));
 }
 
 /**
@@ -120,39 +103,66 @@ function logToolCall(
 ): void {
     if (!isToolLogEnabled()) return;
 
-    const time = paint("dim", timeLabel());
-    const tool = paint(["bold", "magenta"], padToolName(toolName));
-    const ms = paint("dim", formatDuration(durationMs).padStart(5));
+    const time = timeLabel();
+    const tool = padToolName(toolName);
+    const ms = formatDuration(durationMs).padStart(5);
     const call = summarizeToolCall(toolName, args);
     const title =
         call.title && call.title !== "—"
-            ? paint("white", call.title)
+            ? call.title
             : undefined;
 
     if ("thrown" in result) {
-        const detail = formatDetail(title, paint("red", String(result.thrown)));
-        console.log(
-            `${time}  ${paint(["bold", "red"], "err ")}  ${tool}  ${ms}  ${detail}`.trimEnd(),
+        const detail = formatDetail(title, String(result.thrown));
+        printCompactLog(
+            "error",
+            `${time}  ${tool}  ${ms}  ${detail}`.trimEnd(),
         );
+        writeRuntimeLog("error", "tool_call", {
+            tool: toolName,
+            durationMs,
+            ok: false,
+            failure: "handler_threw",
+        });
         return;
     }
 
     const contentText = resultText(result);
     const ok = !result.isError;
-    const status = ok
-        ? paint(["bold", "green"], "ok  ")
-        : paint(["bold", "yellow"], "fail");
     const structured =
         result.structuredContent && typeof result.structuredContent === "object"
             ? (result.structuredContent as Record<string, unknown>)
             : null;
     const outcome = summarizeOutcome(toolName, ok, structured, contentText);
-    const outcomeText = outcome
-        ? paint(ok ? "dim" : "yellow", outcome)
-        : undefined;
-    const detail = formatDetail(title, outcomeText);
+    const detail = formatDetail(title, outcome);
 
-    console.log(`${time}  ${status}  ${tool}  ${ms}  ${detail}`.trimEnd());
+    printCompactLog(
+        ok ? "success" : "warning",
+        `${time}  ${tool}  ${ms}  ${detail}`.trimEnd(),
+    );
+    writeRuntimeLog(ok ? "info" : "warn", "tool_call", {
+        tool: toolName,
+        durationMs,
+        ok,
+        ...(ok ? {} : { failure: "tool_error" }),
+    });
+}
+
+function primitiveLogFields(
+    details: Record<string, unknown>,
+): Record<string, string | number | boolean | null> {
+    const fields: Record<string, string | number | boolean | null> = {};
+    for (const [key, value] of Object.entries(details)) {
+        if (
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "boolean" ||
+            value === null
+        ) {
+            fields[key] = value;
+        }
+    }
+    return fields;
 }
 
 /** Configure the concrete tool set exposed by one MCP server/session. */

@@ -33,6 +33,7 @@ export const CORE_TOOL_NAMES = [
     "capabilities_reload",
     "workspace_projects",
     "workspace_search",
+    "workspace_context",
     "context_pack",
     "git_status",
     "git_diff",
