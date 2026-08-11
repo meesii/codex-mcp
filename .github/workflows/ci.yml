@@ -34,7 +34,7 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
 
       - name: Install managed ripgrep
-        run: npx tsx src/managed-tools-cli.ts ripgrep
+        run: npx tsx src/managed-tools/cli.ts ripgrep
 
       - name: Typecheck
         run: npm run typecheck

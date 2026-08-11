@@ -34,7 +34,7 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
 
       - name: Install managed ripgrep
-        run: npx tsx src/managed-tools-cli.ts ripgrep
+        run: npx tsx src/managed-tools/cli.ts ripgrep
 
       - name: Typecheck
         run: npm run typecheck
@@ -66,7 +66,7 @@ jobs:
           test -x "$TEST_HOME/.codex-mcp/bin/rg"
           "$TEST_HOME/.codex-mcp/bin/rg" --version
 
-          TOOLS_CLI="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/managed-tools-cli.js"
+          TOOLS_CLI="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/managed-tools/cli.js"
           HOME="$TEST_HOME" node "$TOOLS_CLI" cloudflared
           test -x "$TEST_HOME/.codex-mcp/bin/cloudflared"
           "$TEST_HOME/.codex-mcp/bin/cloudflared" --version
@@ -155,7 +155,7 @@ jobs:
           & $rgPath --version
           if ($LASTEXITCODE -ne 0) { throw "managed ripgrep smoke test failed" }
 
-          $toolsCli = Join-Path $installRoot "node_modules/codex-mcp/dist/managed-tools-cli.js"
+          $toolsCli = Join-Path $installRoot "node_modules/codex-mcp/dist/managed-tools/cli.js"
           & node $toolsCli cloudflared
           if ($LASTEXITCODE -ne 0) { throw "managed cloudflared install smoke test failed" }
           $cloudflaredPath = Join-Path $managedBin "cloudflared.exe"
