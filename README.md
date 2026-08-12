@@ -45,9 +45,10 @@ codex-mcp setup
 2. **自动检测域名** — 从 Cloudflare 账号读取可用域名；有多个时用交互菜单选择根域名，再填写子域名前缀（默认 `codex-mcp`）
 3. **创建 Tunnel 和 DNS** — Tunnel 名称按当前机器自动生成，不再要求普通用户填写
 4. **真实公网验证** — 临时启动本机探针和 Tunnel，确认 HTTPS 地址确实回到当前电脑
-5. **保存连接密码** — 只有公网验证成功后才生成并显示，用于 ChatGPT 连接验证
+5. **检测外部能力** — 自动检测 Codex、Claude Code 和 Agent Skills，可直接使用检测到的全部能力，也可以分别选择 MCP / Skills，并选择自动同步或仅启动时读取
+6. **保存连接密码** — 只有公网验证成功后才生成并显示，用于 ChatGPT 连接验证
 
-再次运行 `codex-mcp setup` 时，如果配置已经完整，会先显示当前配置，并提供“检查当前配置 / 修改公网连接 / 修改连接密码”等操作，不会直接重走首次向导。
+再次运行 `codex-mcp setup` 时，如果配置已经完整，会先显示当前配置，并提供“检查当前配置 / 修改公网连接 / 修改连接密码 / 管理外部能力”等操作，不会直接重走首次向导。
 
 Cloudflare 的 Named Tunnel 会生成 `<UUID>.cfargotunnel.com` 作为 DNS 的 CNAME 目标，但它不是可直接给 ChatGPT 使用的公网地址；自动 Tunnel 模式仍需要账号中至少有一个已接入 Cloudflare 的域名。
 
@@ -78,6 +79,38 @@ codex-mcp 不会再询问项目目录，默认直接使用当前目录。需要�
 4. 授权完成，ChatGPT 现在可以操作你的项目了
 
 连接后可以直接说“继续这个项目”“看看现在改了什么”或“先了解这个工程”。codex-mcp 会通过 `workspace_context` 一次整理 Git 状态、近期提交、Goal、进程、项目规则、Skills 和相关代码，再按需读取细节。
+
+### 外部能力来源
+
+codex-mcp 可以直接读取本机已有的 AI 开发环境能力，不会把第三方 MCP 配置、Token 或 Skill 文件复制到 `~/.codex-mcp`：
+
+- **Codex** — MCP + `~/.codex/skills`
+- **Claude Code** — user / local / project MCP，以及 `~/.claude/skills` 和已注册工作区根目录下的 `.claude/skills`
+- **Agent Skills** — `~/.agents/skills`
+
+首次 `setup` 会自动检测这些来源。旧版本升级且尚未保存 `capabilities` 配置时保持兼容默认：继续使用 Codex MCP、Codex Skills 和 Agent Skills；Claude Code 只有在 setup 中选择或手动配置后才启用。
+
+同步模式只有两个：`watch`（默认，源配置变化后热刷新）和 `startup`（每次启动读取一次，运行期间不监听）。`capabilities_reload` 始终可以显式刷新，不受同步模式限制。
+
+Claude Code 的项目能力不会无条件变成全局能力：主工作区的 local/project MCP 按 Claude 的作用域优先级覆盖 user MCP；额外工作区的 local/project MCP 会带工作区限定名称。Claude Skill 中明确禁止模型调用的 `disable-model-invocation: true` 不会暴露给 ChatGPT；依赖 Claude 专有执行语义（例如 fork/agent、`allowed-tools` 约束、hooks 或 `!`command`` 动态上下文）的 Skill 也不会伪装成普通可自动调用 Skill。
+
+示例配置：
+
+```json
+{
+  "capabilities": {
+    "sync": "watch",
+    "priority": ["agents", "codex", "claude"],
+    "sources": {
+      "agents": { "enabled": true, "mcp": false, "skills": true },
+      "codex": { "enabled": true, "mcp": true, "skills": true },
+      "claude": { "enabled": true, "mcp": true, "skills": true }
+    }
+  }
+}
+```
+
+同名能力按 `priority` 从前到后决定优先级；`~/.codex-mcp/mcp.json` 仍然是最终的本地覆盖层。
 
 ### 多工作区与外部文件授权
 

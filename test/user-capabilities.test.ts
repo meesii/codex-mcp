@@ -33,6 +33,15 @@ async function main(): Promise<void> {
                         "https://chatgpt.example/client.json": ["read", "grep", "mcp_*"],
                     },
                 },
+                capabilities: {
+                    sync: "startup",
+                    priority: ["claude", "agents", "codex"],
+                    sources: {
+                        claude: { enabled: true, mcp: true, skills: true },
+                        agents: { enabled: true, mcp: false, skills: true },
+                        codex: { enabled: false, mcp: false, skills: false },
+                    },
+                },
             }),
             "utf8",
         );
@@ -47,6 +56,13 @@ async function main(): Promise<void> {
             config.clientCapabilities?.clients?.["https://chatgpt.example/client.json"],
             ["read", "grep", "mcp_*"],
         );
+        assert.equal(config.capabilities?.sync, "startup");
+        assert.deepEqual(config.capabilities?.priority, ["claude", "agents", "codex"]);
+        assert.deepEqual(config.capabilities?.sources?.claude, {
+            enabled: true,
+            mcp: true,
+            skills: true,
+        });
 
         const saved = saveUserConfig({
             permissions: {
@@ -61,6 +77,7 @@ async function main(): Promise<void> {
             { capability: "write", path: permissionRoot },
             { capability: "exec", path: extraWorkspace },
         ]);
+        assert.equal(saved.capabilities?.sync, "startup");
 
         await writeFile(
             path,
@@ -72,6 +89,27 @@ async function main(): Promise<void> {
             "utf8",
         );
         assert.throws(() => loadUserConfig(), /valid tool pattern/i);
+
+        await writeFile(
+            path,
+            JSON.stringify({ capabilities: { sync: "continuous" } }),
+            "utf8",
+        );
+        assert.throws(() => loadUserConfig(), /capabilities\.sync.*watch or startup/i);
+
+        await writeFile(
+            path,
+            JSON.stringify({ capabilities: { priority: ["codex", "codex"] } }),
+            "utf8",
+        );
+        assert.throws(() => loadUserConfig(), /priority.*duplicates/i);
+
+        await writeFile(
+            path,
+            JSON.stringify({ capabilities: { sources: { unknown: { enabled: true } } } }),
+            "utf8",
+        );
+        assert.throws(() => loadUserConfig(), /sources\.unknown.*not supported/i);
     } finally {
         if (previousHome === undefined) delete process.env.HOME;
         else process.env.HOME = previousHome;

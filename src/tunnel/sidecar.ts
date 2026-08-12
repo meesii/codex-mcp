@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { terminateChildProcess } from "../lib/process/tree.js";
 import { printCompactLog } from "../lib/util/terminal.js";
 import { ensureUserConfigDirs, getUserLogDir } from "../config/user-config.js";
+import { cloudflaredChildEnv } from "./exec.js";
 import { getCloudflaredConfigPath } from "./yml.js";
 
 const DEFAULT_READY_TIMEOUT_MS = 45_000;
@@ -125,7 +126,7 @@ export class CloudflaredSidecar {
             {
                 stdio: ["ignore", "pipe", "pipe"],
                 windowsHide: true,
-                env: process.env,
+                env: cloudflaredChildEnv(),
             },
         );
         this.child = child;

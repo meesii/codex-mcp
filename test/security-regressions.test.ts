@@ -11,6 +11,9 @@ import { createHttpServer } from "../src/server/http-server.js";
 import {
     assertPublicAddress,
     isRetryableProxyConnectionError,
+    parseMacSystemProxies,
+    parseWindowsSystemProxies,
+    proxyEnvironmentCandidates,
     safeHttpGet,
 } from "../src/lib/http/safe-http.js";
 import { ProcessOwnerPool } from "../src/lib/process/owner-pool.js";
@@ -29,14 +32,23 @@ import {
     requireDnsOverwriteConfirmation,
     requireTunnelDeleteConfirmation,
 } from "../src/tunnel/confirm.js";
-import { parseCloudflareOriginToken } from "../src/tunnel/cloudflare-account.js";
-import { runCloudflared } from "../src/tunnel/exec.js";
+import {
+    clearManagedCloudflareLogin,
+    getCloudflareOriginCertPath,
+    getLegacyCloudflareOriginCertPath,
+    getLegacyTunnelCredentialsPath,
+    hasManagedCloudflareLogin,
+    migrateLegacyCloudflareState,
+    parseCloudflareOriginToken,
+} from "../src/tunnel/cloudflare-account.js";
+import { cloudflaredChildEnv, runCloudflared } from "../src/tunnel/exec.js";
 import {
     cloudflaredRunArgs,
     tunnelReadinessTimeoutMessage,
 } from "../src/tunnel/sidecar.js";
 import {
     cloudflareManagedHostname,
+    cloudflaredManagementArgs,
     defaultTunnelName,
     findMatchingZone,
     findTunnelIdInListText,
@@ -52,6 +64,10 @@ import {
 } from "../src/tunnel/verify.js";
 import {
     getCloudflaredConfigPath,
+    getCloudflaredManagementConfigPath,
+    getCredentialsPath,
+    getManagedCloudflareDir,
+    getManagedCloudflaredStateDir,
     readCloudflaredYml,
     writeCloudflaredYml,
 } from "../src/tunnel/yml.js";
@@ -197,6 +213,80 @@ async function main(): Promise<void> {
         isRetryableProxyConnectionError(new Error("certificate verification failed")),
         false,
         "TLS/authentication failures must remain fail-closed rather than retrying destinations",
+    );
+
+    assert.deepEqual(
+        proxyEnvironmentCandidates({
+            HTTPS_PROXY: "http://127.0.0.1:9001",
+            HTTP_PROXY: "http://127.0.0.1:9002",
+            ALL_PROXY: "socks5://127.0.0.1:9003",
+        }).map((url) => url.href),
+        ["http://127.0.0.1:9001/", "http://127.0.0.1:9002/", "socks5://127.0.0.1:9003"],
+        "proxy environment discovery should prefer HTTPS, then HTTP, then ALL_PROXY",
+    );
+    assert.deepEqual(
+        proxyEnvironmentCandidates(
+            {
+                HTTPS_PROXY: "http://127.0.0.1:9001",
+                HTTP_PROXY: "http://127.0.0.1:9002",
+                ALL_PROXY: "socks5://127.0.0.1:9003",
+            },
+            "http:",
+        ).map((url) => url.href),
+        ["http://127.0.0.1:9002/", "socks5://127.0.0.1:9003"],
+        "HTTP proxy discovery should prefer HTTP_PROXY, then ALL_PROXY",
+    );
+
+    assert.deepEqual(
+        parseMacSystemProxies(`
+            HTTPEnable : 1
+            HTTPPort : 7890
+            HTTPProxy : 127.0.0.1
+            HTTPSEnable : 1
+            HTTPSPort : 7891
+            HTTPSProxy : 127.0.0.1
+            SOCKSEnable : 1
+            SOCKSPort : 7892
+            SOCKSProxy : 127.0.0.1
+        `).map((url) => url.href),
+        ["http://127.0.0.1:7891/", "http://127.0.0.1:7890/", "socks5://127.0.0.1:7892"],
+        "macOS proxy discovery should prefer the HTTPS proxy and keep HTTP as fallback",
+    );
+    assert.deepEqual(
+        parseMacSystemProxies(
+            `HTTPEnable : 1\nHTTPPort : 7890\nHTTPProxy : 127.0.0.1\nHTTPSEnable : 1\nHTTPSPort : 7891\nHTTPSProxy : 127.0.0.1\nSOCKSEnable : 1\nSOCKSPort : 7892\nSOCKSProxy : 127.0.0.1`,
+            "http:",
+        ).map((url) => url.href),
+        ["http://127.0.0.1:7890/", "socks5://127.0.0.1:7892"],
+        "macOS HTTP discovery should use the HTTP proxy before SOCKS",
+    );
+    assert.deepEqual(
+        parseWindowsSystemProxies(
+            JSON.stringify({
+                ProxyEnable: 1,
+                ProxyServer: "http=127.0.0.1:8080;https=127.0.0.1:8443;socks=127.0.0.1:1080",
+            }),
+        ).map((url) => url.href),
+        ["http://127.0.0.1:8443/", "http://127.0.0.1:8080/", "socks5://127.0.0.1:1080"],
+        "Windows proxy discovery should prefer the HTTPS mapping and keep HTTP as fallback",
+    );
+    assert.deepEqual(
+        parseWindowsSystemProxies(
+            JSON.stringify({
+                ProxyEnable: 1,
+                ProxyServer: "http=127.0.0.1:8080;https=127.0.0.1:8443;socks=127.0.0.1:1080",
+            }),
+            "http:",
+        ).map((url) => url.href),
+        ["http://127.0.0.1:8080/", "socks5://127.0.0.1:1080"],
+        "Windows HTTP discovery should use the HTTP mapping before SOCKS",
+    );
+    assert.deepEqual(
+        parseWindowsSystemProxies(JSON.stringify({ ProxyEnable: 1, ProxyServer: "127.0.0.1:7890" })).map(
+            (url) => url.href,
+        ),
+        ["http://127.0.0.1:7890/"],
+        "Windows single-proxy form should be accepted",
     );
     for (const address of [
         "64:ff9b::7f00:1",
@@ -488,6 +578,25 @@ async function main(): Promise<void> {
         "shared subprocess timeout must use bounded TERM→KILL shutdown",
     );
 
+    assert.deepEqual(
+        cloudflaredChildEnv(
+            {
+                PATH: "/usr/bin",
+                HTTPS_PROXY: "http://127.0.0.1:7890",
+                TUNNEL_TOKEN: "stale-token",
+                tunnel_origin_cert: "/tmp/old-cert.pem",
+            },
+            "/tmp/codex-mcp-cloudflare-home",
+        ),
+        {
+            PATH: "/usr/bin",
+            HTTPS_PROXY: "http://127.0.0.1:7890",
+            HOME: "/tmp/codex-mcp-cloudflare-home",
+            USERPROFILE: "/tmp/codex-mcp-cloudflare-home",
+        },
+        "codex-mcp cloudflared children must ignore stale TUNNEL_* overrides and use an isolated home",
+    );
+
     const cloudflaredStartedAt = Date.now();
     await assert.rejects(
         runCloudflared(process.execPath, ["-e", ignoreTermScript], { timeoutMs: 100 }),
@@ -638,12 +747,87 @@ async function main(): Promise<void> {
             getCloudflaredConfigPath(),
             join(emptyHome, ".codex-mcp", "cloudflared.yml"),
         );
+        const managementConfigPath = getCloudflaredManagementConfigPath();
+        assert.equal(
+            managementConfigPath,
+            join(emptyHome, ".codex-mcp", "cloudflared-management.yml"),
+        );
+        assert.deepEqual(
+            cloudflaredManagementArgs(
+                "route",
+                "dns",
+                "33333333-3333-4333-8333-333333333333",
+                "mcp.example.com",
+            ),
+            [
+                "tunnel",
+                "--config",
+                managementConfigPath,
+                "route",
+                "dns",
+                "33333333-3333-4333-8333-333333333333",
+                "mcp.example.com",
+            ],
+        );
+        assert.equal(await readFile(managementConfigPath, "utf8"), "no-autoupdate: true\n");
+
+        const managedCloudflareHome = getManagedCloudflareDir();
+        const managedCloudflaredState = getManagedCloudflaredStateDir();
+        assert.equal(managedCloudflareHome, join(emptyHome, ".codex-mcp", "cloudflare"));
+        assert.equal(managedCloudflaredState, join(managedCloudflareHome, ".cloudflared"));
+
+        const migrationTunnelId = "44444444-4444-4444-8444-444444444444";
+        const legacyCertPath = getLegacyCloudflareOriginCertPath();
+        const legacyCredentialsPath = getLegacyTunnelCredentialsPath(migrationTunnelId);
+        const managedCertPath = getCloudflareOriginCertPath();
+        const managedCredentialsPath = getCredentialsPath(migrationTunnelId);
+        const legacyCert = `-----BEGIN ARGO TUNNEL TOKEN-----\n${cloudflareTokenPayload}\n-----END ARGO TUNNEL TOKEN-----\n`;
+        await mkdir(join(emptyHome, ".cloudflared"), { recursive: true });
+        await writeFile(legacyCertPath, legacyCert, "utf8");
+        await writeFile(
+            legacyCredentialsPath,
+            `${JSON.stringify({ AccountTag: "a".repeat(32), TunnelID: migrationTunnelId, TunnelSecret: "secret" })}\n`,
+            "utf8",
+        );
+        assert.equal(hasManagedCloudflareLogin(), false);
+        assert.deepEqual(migrateLegacyCloudflareState(migrationTunnelId), {
+            certMigrated: true,
+            credentialsMigrated: true,
+        });
+        assert.equal(await readFile(managedCertPath, "utf8"), legacyCert);
+        assert.equal(await readFile(managedCredentialsPath, "utf8"), await readFile(legacyCredentialsPath, "utf8"));
+        assert.equal(hasManagedCloudflareLogin(), true);
+        assert.deepEqual(cloudflaredManagementArgs("list"), [
+            "tunnel",
+            "--config",
+            managementConfigPath,
+            "--origincert",
+            managedCertPath,
+            "list",
+        ]);
+        assert.equal(clearManagedCloudflareLogin(), true);
+        assert.equal(hasManagedCloudflareLogin(), false);
+
+        const mismatchedTunnelId = "55555555-5555-4555-8555-555555555555";
+        await writeFile(
+            getLegacyTunnelCredentialsPath(mismatchedTunnelId),
+            `${JSON.stringify({ AccountTag: "c".repeat(32), TunnelID: mismatchedTunnelId, TunnelSecret: "secret" })}\n`,
+            "utf8",
+        );
+        assert.deepEqual(migrateLegacyCloudflareState(mismatchedTunnelId), {
+            certMigrated: false,
+            credentialsMigrated: false,
+        });
+        await assert.rejects(access(getCredentialsPath(mismatchedTunnelId)));
+
         const setupConfigPath = join(emptyHome, ".codex-mcp", "config.json");
         const setupYmlPath = getCloudflaredConfigPath();
         const previousSetupConfig = '{"domain":"old.example.com","tunnelId":"old-tunnel"}\n';
         const previousSetupYml = "tunnel: old-tunnel\n  - hostname: old.example.com\n";
+        const previousManagedCert = legacyCert;
         await writeFile(setupConfigPath, previousSetupConfig, "utf8");
         await writeFile(setupYmlPath, previousSetupYml, "utf8");
+        await writeFile(managedCertPath, previousManagedCert, "utf8");
         await assert.rejects(
             withPublicSetupTransaction(async () => {
                 await writeFile(
@@ -656,12 +840,14 @@ async function main(): Promise<void> {
                     "tunnel: new-tunnel\n  - hostname: new.example.com\n",
                     "utf8",
                 );
+                await writeFile(managedCertPath, "new cloudflare login\n", "utf8");
                 throw new Error("setup verification failed");
             }),
             /setup verification failed/,
         );
         assert.equal(await readFile(setupConfigPath, "utf8"), previousSetupConfig);
         assert.equal(await readFile(setupYmlPath, "utf8"), previousSetupYml);
+        assert.equal(await readFile(managedCertPath, "utf8"), previousManagedCert);
 
         const apostropheConfig = join(emptyHome, ".codex-mcp", "apostrophe-cloudflared.yml");
         const apostropheCredentials = join(emptyHome, "user's tunnel", "credentials.json");

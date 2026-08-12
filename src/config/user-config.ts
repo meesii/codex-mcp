@@ -28,6 +28,23 @@ export interface UserPermissionsConfig {
     grants?: PermissionGrantConfig[];
 }
 
+export type CapabilitySourceId = "agents" | "codex" | "claude";
+export type CapabilitySyncMode = "watch" | "startup";
+
+export interface CapabilitySourceConfig {
+    enabled?: boolean;
+    mcp?: boolean;
+    skills?: boolean;
+}
+
+export interface UserCapabilitiesConfig {
+    /** Reload external capability sources when their files change, or only at process start. */
+    sync?: CapabilitySyncMode;
+    /** Highest-priority source first when two sources export the same name. */
+    priority?: CapabilitySourceId[];
+    sources?: Partial<Record<CapabilitySourceId, CapabilitySourceConfig>>;
+}
+
 export interface UserConfig {
     host?: string;
     port?: number;
@@ -47,6 +64,8 @@ export interface UserConfig {
     workspaces?: string[];
     /** Persistent grants for operations outside registered workspaces. */
     permissions?: UserPermissionsConfig;
+    /** External MCP / Skill sources consumed at runtime without copying them. */
+    capabilities?: UserCapabilitiesConfig;
     /** ChatGPT-facing custom UI preferences. */
     ui?: UserUiConfig;
 }
@@ -106,6 +125,9 @@ export function saveUserConfig(patch: UserConfig): UserConfig {
     }
     if (patch.permissions !== undefined) {
         merged.permissions = normalizePermissionsConfig(patch.permissions);
+    }
+    if (patch.capabilities !== undefined) {
+        merged.capabilities = normalizeCapabilitiesConfig(patch.capabilities);
     }
     if (patch.ui !== undefined) {
         merged.ui = normalizeUserUiConfig({ ...(merged.ui ?? {}), ...patch.ui });
@@ -201,6 +223,9 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
     if (raw.permissions !== undefined) {
         config.permissions = normalizePermissionsConfig(raw.permissions);
     }
+    if (raw.capabilities !== undefined) {
+        config.capabilities = normalizeCapabilitiesConfig(raw.capabilities);
+    }
     if (raw.ui !== undefined) {
         config.ui = normalizeUserUiConfig(raw.ui);
     }
@@ -242,6 +267,61 @@ function normalizePermissionsConfig(value: unknown): UserPermissionsConfig {
                 path: resolve(expandHomePath(grant.path.trim())),
             };
         });
+    }
+    return result;
+}
+
+function normalizeCapabilitiesConfig(value: unknown): UserCapabilitiesConfig {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("capabilities must be an object");
+    }
+    const raw = value as Record<string, unknown>;
+    const result: UserCapabilitiesConfig = {};
+    if (raw.sync !== undefined) {
+        if (raw.sync !== "watch" && raw.sync !== "startup") {
+            throw new Error("capabilities.sync must be watch or startup");
+        }
+        result.sync = raw.sync;
+    }
+    if (raw.priority !== undefined) {
+        if (!Array.isArray(raw.priority)) {
+            throw new Error("capabilities.priority must be an array");
+        }
+        const priority = raw.priority.map((item, index) => {
+            if (item !== "agents" && item !== "codex" && item !== "claude") {
+                throw new Error(`capabilities.priority[${index}] is invalid`);
+            }
+            return item;
+        });
+        if (new Set(priority).size !== priority.length) {
+            throw new Error("capabilities.priority must not contain duplicates");
+        }
+        result.priority = priority;
+    }
+    if (raw.sources !== undefined) {
+        if (!raw.sources || typeof raw.sources !== "object" || Array.isArray(raw.sources)) {
+            throw new Error("capabilities.sources must be an object");
+        }
+        const sources: Partial<Record<CapabilitySourceId, CapabilitySourceConfig>> = {};
+        for (const [sourceId, sourceValue] of Object.entries(raw.sources as Record<string, unknown>)) {
+            if (sourceId !== "agents" && sourceId !== "codex" && sourceId !== "claude") {
+                throw new Error(`capabilities.sources.${sourceId} is not supported`);
+            }
+            if (!sourceValue || typeof sourceValue !== "object" || Array.isArray(sourceValue)) {
+                throw new Error(`capabilities.sources.${sourceId} must be an object`);
+            }
+            const sourceRaw = sourceValue as Record<string, unknown>;
+            const source: CapabilitySourceConfig = {};
+            for (const key of ["enabled", "mcp", "skills"] as const) {
+                if (sourceRaw[key] === undefined) continue;
+                if (typeof sourceRaw[key] !== "boolean") {
+                    throw new Error(`capabilities.sources.${sourceId}.${key} must be a boolean`);
+                }
+                source[key] = sourceRaw[key] as boolean;
+            }
+            sources[sourceId] = source;
+        }
+        result.sources = sources;
     }
     return result;
 }

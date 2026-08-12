@@ -2,17 +2,38 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexCapabilityWatcher } from "../src/capabilities/runtime.js";
+import { CapabilityManager } from "../src/capabilities/manager.js";
+import { CapabilityWatcher, reloadCapabilities } from "../src/capabilities/runtime.js";
 import { DownstreamMcpHub } from "../src/downstream/hub.js";
-import { SkillRegistry } from "../src/skills/registry.js";
+import type { UserConfig } from "../src/config/user-config.js";
+
+function capabilityConfig(sync: "watch" | "startup"): UserConfig {
+    return {
+        capabilities: {
+            sync,
+            priority: ["agents", "codex", "claude"],
+            sources: {
+                agents: { enabled: true, mcp: false, skills: true },
+                codex: { enabled: false, mcp: false, skills: false },
+                claude: { enabled: false, mcp: false, skills: false },
+            },
+        },
+    };
+}
+
+async function writeSkill(skillRoot: string, name: string): Promise<void> {
+    const skillDir = join(skillRoot, name);
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+        join(skillDir, "SKILL.md"),
+        `---\nname: ${name}\ndescription: watcher smoke\n---\n\n# ${name}\n`,
+        "utf8",
+    );
+}
 
 async function main(): Promise<void> {
     const home = await mkdtemp(join(tmpdir(), "codex-mcp-watch-home-"));
     const skillRoot = join(home, ".agents", "skills");
-    // Intentionally leave the skill root absent when the watcher starts. It
-    // must observe creation through the nearest existing ancestor, refresh the
-    // registry, then promote itself to a recursive watcher on the new root.
-    await mkdir(join(home, ".codex"), { recursive: true });
     await mkdir(join(home, ".codex-mcp"), { recursive: true });
 
     const previousHome = process.env.HOME;
@@ -21,20 +42,18 @@ async function main(): Promise<void> {
     process.env.USERPROFILE = home;
 
     const hub = DownstreamMcpHub.empty();
-    const skills = SkillRegistry.discover([{ path: skillRoot, source: "agents" }]);
     const errors: unknown[] = [];
-    const watcher = new CodexCapabilityWatcher(hub, skills, (error) => errors.push(error), home);
+    const manager = new CapabilityManager(home, {
+        homeDirectory: home,
+        loadConfig: () => capabilityConfig("watch"),
+    });
+    const skills = manager.createSkillRegistry();
+    const watcher = new CapabilityWatcher(manager, hub, skills, (error: unknown) => errors.push(error));
     watcher.start();
 
     try {
         assert.equal(skills.list().length, 0);
-        const skillDir = join(skillRoot, "hot-watch");
-        await mkdir(skillDir, { recursive: true });
-        await writeFile(
-            join(skillDir, "SKILL.md"),
-            "---\nname: hot-watch\ndescription: watcher smoke\n---\n\n# Hot Watch\n",
-            "utf8",
-        );
+        await writeSkill(skillRoot, "hot-watch");
 
         const deadline = Date.now() + 6_000;
         while (!skills.list().some((skill) => skill.name === "hot-watch") && Date.now() < deadline) {
@@ -42,9 +61,34 @@ async function main(): Promise<void> {
         }
         assert.ok(
             skills.list().some((skill) => skill.name === "hot-watch"),
-            "watcher should discover a skill root created after startup and refresh in place",
+            "watch mode should discover a skill root created after startup and refresh in place",
         );
-        assert.deepEqual(errors, []);
+        assert.equal(errors.length, 0);
+
+        const startupManager = new CapabilityManager(home, {
+            homeDirectory: home,
+            loadConfig: () => capabilityConfig("startup"),
+        });
+        const startupSkills = startupManager.createSkillRegistry();
+        const startupWatcher = new CapabilityWatcher(startupManager, hub, startupSkills, (error: unknown) => errors.push(error));
+        startupWatcher.start();
+        try {
+            await writeSkill(skillRoot, "startup-only");
+            await new Promise((resolve) => setTimeout(resolve, 900));
+            assert.equal(
+                startupSkills.list().some((skill) => skill.name === "startup-only"),
+                false,
+                "startup sync mode must not install file watchers",
+            );
+            await reloadCapabilities(startupManager, hub, startupSkills);
+            assert.equal(
+                startupSkills.list().some((skill) => skill.name === "startup-only"),
+                true,
+                "explicit reload should still work in startup mode",
+            );
+        } finally {
+            startupWatcher.close();
+        }
     } finally {
         watcher.close();
         await hub.close().catch(() => undefined);

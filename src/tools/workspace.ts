@@ -7,6 +7,8 @@ import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import type { ProjectContext } from "../config/project.js";
 import { loadUserConfig, saveUserConfig } from "../config/user-config.js";
 import type { SkillRegistry } from "../skills/registry.js";
+import type { CapabilityManager } from "../capabilities/manager.js";
+import { reloadCapabilities } from "../capabilities/runtime.js";
 import { buildWorkspaceContext } from "../workspace/context.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool/log.js";
@@ -125,7 +127,9 @@ const workspaceContextOutputSchema = {
         skills: z.array(z.object({
             name: z.string(),
             description: z.string(),
-            source: z.enum(["agents", "codex"]),
+            source: z.enum(["agents", "codex", "claude"]),
+            scope: z.enum(["user", "project"]).optional(),
+            workspaceRoot: z.string().optional(),
         })),
     }),
     focus: z.object({
@@ -167,6 +171,7 @@ export function registerWorkspaceTools(
     skills: SkillRegistry,
     goals: GoalStore,
     hub: DownstreamMcpHub,
+    capabilities?: CapabilityManager,
 ): void {
     registerTool(
         server,
@@ -209,6 +214,9 @@ export function registerWorkspaceTools(
                 persistWorkspaceAdded(canonical, project);
                 project.addWorkspaceRoot(canonical);
                 workspace.invalidate();
+                if (capabilities?.getConfig().sync === "watch") {
+                    await reloadCapabilities(capabilities, hub, skills).catch(() => undefined);
+                }
                 return okResult(`Trusted workspace ${canonical}.`, {
                     path: canonical,
                     roots: [...project.roots],
@@ -241,6 +249,9 @@ export function registerWorkspaceTools(
                 persistWorkspaceRemoved(removed, project);
                 project.removeWorkspaceRoot(removed);
                 workspace.invalidate();
+                if (capabilities?.getConfig().sync === "watch") {
+                    await reloadCapabilities(capabilities, hub, skills).catch(() => undefined);
+                }
                 return okResult(`Removed workspace trust for ${removed}.`, {
                     path: removed,
                     roots: [...project.roots],
@@ -364,7 +375,7 @@ export function registerWorkspaceTools(
         withToolAuth({
             title: "Build task context pack",
             description:
-                "Build a scope-focused context pack for a coding task: the relevant project, ranked file matches, applicable AGENTS.md rules, high-confidence Codex skills, and CodeGraph availability. When path is supplied, unrelated workspace projects are omitted.",
+                "Build a scope-focused context pack for a coding task: the relevant project, ranked file matches, applicable AGENTS.md rules, high-confidence imported skills, and CodeGraph availability. When path is supplied, unrelated workspace projects are omitted.",
             inputSchema: {
                 query: z.string().min(1).max(2_000),
                 path: z.string().optional(),
@@ -388,7 +399,9 @@ export function registerWorkspaceTools(
                     z.object({
                         name: z.string(),
                         description: z.string(),
-                        source: z.enum(["agents", "codex"]),
+                        source: z.enum(["agents", "codex", "claude"]),
+                        scope: z.enum(["user", "project"]).optional(),
+                        workspaceRoot: z.string().optional(),
                     }),
                 ),
                 codegraphProjects: z.array(z.string()),

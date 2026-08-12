@@ -5,6 +5,7 @@ import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import type { ProjectContext } from "../config/project.js";
 import type { SkillRegistry } from "../skills/registry.js";
+import type { CapabilityManager } from "../capabilities/manager.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import type { GoalStore } from "../goals/store.js";
 import type { UiSettingsStore } from "../ui/settings.js";
@@ -50,6 +51,7 @@ export function registerAllTools(
     processes: ProcessSessionAccess,
     hub: DownstreamMcpHub,
     skills: SkillRegistry,
+    capabilities: CapabilityManager | undefined,
     agents: AgentInstructionRegistry,
     workspace: WorkspaceRegistry,
     goals: GoalStore,
@@ -81,11 +83,11 @@ export function registerAllTools(
     registerPermissionTools(server, permissions);
     registerSkillTools(server, skills);
     registerAgentTools(server, agents);
-    registerCapabilityTools(server, hub, skills);
-    registerWorkspaceTools(server, project, processes, workspace, agents, skills, goals, hub);
+    registerCapabilityTools(server, hub, skills, capabilities);
+    registerWorkspaceTools(server, project, processes, workspace, agents, skills, goals, hub, capabilities);
     registerGitTools(server, project);
     registerCodeExploreTool(server, project, workspace, hub);
     // Gateway tools stay registered even when zero downstream servers are
-    // configured so hot-reloaded Codex MCPs become visible to existing sessions.
-    registerMcpGatewayTools(server, hub);
+    // configured so hot-reloaded external MCPs become visible to existing sessions.
+    registerMcpGatewayTools(server, hub, capabilities);
 }

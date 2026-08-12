@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     const reference = registry.read("shared", "references/notes.md");
     assert.equal(reference.content, "reference-ok\n");
     assert.throws(() => registry.read("shared", "../secret.txt"), /stay inside/i);
-    assert.throws(() => registry.read("missing"), /unknown Codex skill/i);
+    assert.throws(() => registry.read("missing"), /unknown skill/i);
 
     const instructions = registry.buildInstructionsBlock();
     assert.match(instructions, /shared — agents version wins/);

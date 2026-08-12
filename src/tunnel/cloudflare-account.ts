@@ -1,7 +1,20 @@
-import { readFileSync } from "node:fs";
+import {
+    chmodSync,
+    copyFileSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { expandHomePath } from "../config/loader.js";
 import { normalizeHostname } from "../config/user-config.js";
 import { safeHttpGet } from "../lib/http/safe-http.js";
+import {
+    getCredentialsPath,
+    getManagedCloudflareDir,
+    getManagedCloudflaredStateDir,
+} from "./yml.js";
 
 const ARGO_TUNNEL_TOKEN_RE =
     /-----BEGIN ARGO TUNNEL TOKEN-----\s*([A-Za-z0-9+/=_\-\s]+?)\s*-----END ARGO TUNNEL TOKEN-----/;
@@ -35,7 +48,99 @@ interface CloudflareZone {
 }
 
 export function getCloudflareOriginCertPath(): string {
+    return join(getManagedCloudflaredStateDir(), "cert.pem");
+}
+
+export function hasManagedCloudflareLogin(): boolean {
+    const certPath = getCloudflareOriginCertPath();
+    if (!existsSync(certPath)) return false;
+    try {
+        parseCloudflareOriginToken(readFileSync(certPath, "utf8"));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export function clearManagedCloudflareLogin(): boolean {
+    const certPath = getCloudflareOriginCertPath();
+    const existed = existsSync(certPath);
+    rmSync(certPath, { force: true });
+    return existed;
+}
+
+export function getLegacyCloudflareOriginCertPath(): string {
     return expandHomePath("~/.cloudflared/cert.pem");
+}
+
+export function getLegacyTunnelCredentialsPath(tunnelId: string): string {
+    return expandHomePath(`~/.cloudflared/${tunnelId}.json`);
+}
+
+export interface CloudflareStateMigrationResult {
+    certMigrated: boolean;
+    credentialsMigrated: boolean;
+}
+
+export function migrateLegacyCloudflareState(
+    tunnelId?: string,
+): CloudflareStateMigrationResult {
+    const result: CloudflareStateMigrationResult = {
+        certMigrated: false,
+        credentialsMigrated: false,
+    };
+    if (!tunnelId) return result;
+
+    const managedCertPath = getCloudflareOriginCertPath();
+    const legacyCertPath = getLegacyCloudflareOriginCertPath();
+    const legacyCredentialsPath = getLegacyTunnelCredentialsPath(tunnelId);
+    const managedCredentialsPath = getCredentialsPath(tunnelId);
+
+    const certSource = existsSync(managedCertPath)
+        ? managedCertPath
+        : existsSync(legacyCertPath)
+          ? legacyCertPath
+          : undefined;
+    if (!certSource || !existsSync(legacyCredentialsPath)) return result;
+
+    let accountID: string;
+    let credentials: { AccountTag?: unknown; TunnelID?: unknown };
+    try {
+        accountID = parseCloudflareOriginToken(readFileSync(certSource, "utf8")).accountID;
+        credentials = JSON.parse(readFileSync(legacyCredentialsPath, "utf8")) as {
+            AccountTag?: unknown;
+            TunnelID?: unknown;
+        };
+    } catch {
+        return result;
+    }
+
+    if (credentials.AccountTag !== accountID) return result;
+    if (
+        typeof credentials.TunnelID === "string" &&
+        credentials.TunnelID.toLowerCase() !== tunnelId.toLowerCase()
+    ) {
+        return result;
+    }
+
+    mkdirSync(getManagedCloudflareDir(), { recursive: true });
+    if (!existsSync(managedCertPath) && certSource === legacyCertPath) {
+        copyPrivateFile(legacyCertPath, managedCertPath);
+        result.certMigrated = true;
+    }
+    if (!existsSync(managedCredentialsPath)) {
+        copyPrivateFile(legacyCredentialsPath, managedCredentialsPath);
+        result.credentialsMigrated = true;
+    }
+    return result;
+}
+
+function copyPrivateFile(source: string, destination: string): void {
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
+    if (process.platform !== "win32") {
+        chmodSync(destination, 0o600);
+    }
 }
 
 export function parseCloudflareOriginToken(pem: string): CloudflareOriginToken {

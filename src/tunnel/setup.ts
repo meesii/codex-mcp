@@ -18,8 +18,11 @@ import {
     suggestCloudflaredBin,
 } from "./bin.js";
 import {
+    clearManagedCloudflareLogin,
     discoverCloudflareZones,
     getCloudflareOriginCertPath,
+    hasManagedCloudflareLogin,
+    migrateLegacyCloudflareState,
 } from "./cloudflare-account.js";
 import { runCloudflared, runCloudflaredInherit } from "./exec.js";
 import {
@@ -28,6 +31,7 @@ import {
 } from "./confirm.js";
 import { askLine, askSelect, askYesNo, canPromptInteractively, withSpinner } from "./prompt.js";
 import {
+    ensureCloudflaredManagementConfig,
     getCloudflaredConfigPath,
     getCredentialsPath,
     readCloudflaredYml,
@@ -49,6 +53,8 @@ export interface TunnelSetupResult {
 export interface TunnelSetupOptions {
     /** Force the interactive question flow even when domain exists. */
     force?: boolean;
+    /** Discard codex-mcp's managed Cloudflare login before the wizard. */
+    forceCloudflareLogin?: boolean;
     host?: string;
     port?: number;
 }
@@ -81,11 +87,13 @@ export async function ensureTunnelSetup(
         throw new Error("还没有设置公网地址，请先在终端运行 `codex-mcp setup`");
     }
 
-    return await runConfigWizard(userConfig, host, port);
+    return await runConfigWizard(userConfig, host, port, options.forceCloudflareLogin === true);
 }
 
-export async function runTunnelWizard(): Promise<TunnelSetupResult> {
-    return ensureTunnelSetup({ force: true });
+export async function runTunnelWizard(
+    options: { forceCloudflareLogin?: boolean } = {},
+): Promise<TunnelSetupResult> {
+    return ensureTunnelSetup({ force: true, forceCloudflareLogin: options.forceCloudflareLogin });
 }
 
 export function isPublicSetupConfigured(userConfig: UserConfig): boolean {
@@ -98,6 +106,7 @@ async function runConfigWizard(
     userConfig: UserConfig,
     host: string,
     port: number,
+    forceCloudflareLogin: boolean,
 ): Promise<TunnelSetupResult> {
     const configPath = getUserConfigPath();
     const existingYml = tryReadExistingYml();
@@ -126,7 +135,19 @@ async function runConfigWizard(
         "Cloudflare 连接组件已就绪",
         () => resolveOrInstallCloudflaredBin(userConfig.cloudflaredBin),
     );
+    const knownTunnelId = userConfig.tunnelId ?? existingYml?.tunnelId;
+    if (forceCloudflareLogin) {
+        clearManagedCloudflareLogin();
+        printInfo("将重新登录 Cloudflare；旧的系统级 ~/.cloudflared 登录不会被复用。");
+    } else {
+        reportLegacyCloudflareMigration(migrateLegacyCloudflareState(knownTunnelId));
+    }
     await ensureLogin(bin);
+    if (forceCloudflareLogin) {
+        // If the user re-authenticated into the same account, an older tunnel
+        // credential can still be migrated safely after the new account is known.
+        reportLegacyCloudflareMigration(migrateLegacyCloudflareState(knownTunnelId));
+    }
 
     const discovery = await withSpinner(
         "正在读取 Cloudflare 账号中的域名…",
@@ -177,7 +198,7 @@ async function runConfigWizard(
         tunnelName,
         userConfig.tunnelId ?? existingYml?.tunnelId,
     );
-    await ensureDnsRoute(bin, tunnelName, domain, tunnelId);
+    await ensureDnsRoute(bin, domain, tunnelId);
 
     const credentialsFile = getCredentialsPath(tunnelId);
     if (!existsSync(credentialsFile)) {
@@ -244,6 +265,7 @@ async function finalizeCloudflared(
         saveUserConfig({ tunnelId });
     }
 
+    reportLegacyCloudflareMigration(migrateLegacyCloudflareState(tunnelId));
     const credentialsFile = getCredentialsPath(tunnelId);
     if (!existsSync(credentialsFile)) {
         throw new Error(`缺少 Tunnel 凭据：${credentialsFile}。请运行 \`codex-mcp tunnel\` 重新设置`);
@@ -274,14 +296,29 @@ function localServiceUrl(host: string, port: number): string {
     return `http://${localHost}:${port}`;
 }
 
+function reportLegacyCloudflareMigration(
+    result: ReturnType<typeof migrateLegacyCloudflareState>,
+): void {
+    if (!result.certMigrated && !result.credentialsMigrated) return;
+    const migrated = [
+        result.certMigrated ? "登录凭据" : undefined,
+        result.credentialsMigrated ? "Tunnel 凭据" : undefined,
+    ].filter((value): value is string => Boolean(value));
+    printInfo(`已把旧 ~/.cloudflared 的${migrated.join("和")}迁移到 codex-mcp 私有目录。`);
+}
+
 async function ensureLogin(bin: string): Promise<void> {
     const certPath = getCloudflareOriginCertPath();
-    if (existsSync(certPath)) {
+    if (hasManagedCloudflareLogin()) {
         printSuccess("已登录 Cloudflare，无需重复登录。");
         return;
     }
+    if (existsSync(certPath)) {
+        printWarning("codex-mcp 保存的 Cloudflare 登录凭据无效，将重新登录。");
+        clearManagedCloudflareLogin();
+    }
     printInfo("正在打开浏览器，请登录 Cloudflare 并完成授权…");
-    const code = await runCloudflaredInherit(bin, ["tunnel", "login"]);
+    const code = await runCloudflaredInherit(bin, cloudflaredManagementArgs("login"));
     if (code !== 0) {
         throw new Error(
             "Cloudflare 登录没有完成。Named Tunnel 登录需要账号中至少有一个已接入 Cloudflare 的域名；如果账号没有域名，<UUID>.cfargotunnel.com 也不能直接作为 ChatGPT 连接地址。",
@@ -331,7 +368,7 @@ async function ensureTunnelCreated(
         () =>
             runCloudflared(
                 bin,
-                ["tunnel", "create", tunnelName],
+                cloudflaredManagementArgs("create", tunnelName),
                 { allowFailure: true },
             ),
     );
@@ -359,21 +396,13 @@ async function deleteTunnel(
     tunnelName: string,
     tunnelId: string,
 ): Promise<void> {
-    const byName = await runCloudflared(
-        bin,
-        ["tunnel", "delete", "-f", tunnelName],
-        { allowFailure: true, timeoutMs: 120_000 },
-    );
-    if (byName.code === 0) {
-        return;
-    }
     const byId = await runCloudflared(
         bin,
-        ["tunnel", "delete", "-f", tunnelId],
+        cloudflaredManagementArgs("delete", "-f", tunnelId),
         { allowFailure: true, timeoutMs: 120_000 },
     );
     if (byId.code !== 0) {
-        const detail = (byId.stderr || byName.stderr || byId.stdout || byName.stdout).trim();
+        const detail = (byId.stderr || byId.stdout).trim();
         throw new Error(
             `Could not delete tunnel ${tunnelName} (${tunnelId}) to recreate credentials: ${detail}`,
         );
@@ -386,7 +415,7 @@ async function findTunnelIdByName(
 ): Promise<string | undefined> {
     const jsonAttempt = await runCloudflared(
         bin,
-        ["tunnel", "list", "--output", "json"],
+        cloudflaredManagementArgs("list", "--output", "json"),
         { allowFailure: true, timeoutMs: 60_000 },
     );
     if (jsonAttempt.code === 0 && jsonAttempt.stdout.trim()) {
@@ -404,7 +433,7 @@ async function findTunnelIdByName(
         }
     }
 
-    const list = await runCloudflared(bin, ["tunnel", "list"], {
+    const list = await runCloudflared(bin, cloudflaredManagementArgs("list"), {
         allowFailure: true,
         timeoutMs: 60_000,
     });
@@ -464,7 +493,6 @@ function tryReadExistingYml():
 
 async function ensureDnsRoute(
     bin: string,
-    tunnelName: string,
     domain: string,
     tunnelId: string,
 ): Promise<void> {
@@ -474,7 +502,7 @@ async function ensureDnsRoute(
         () =>
             runCloudflared(
                 bin,
-                ["tunnel", "route", "dns", tunnelName, domain],
+                cloudflaredManagementArgs("route", "dns", tunnelId, domain),
                 { allowFailure: true, timeoutMs: 120_000 },
             ),
     );
@@ -501,7 +529,13 @@ async function ensureDnsRoute(
         () =>
             runCloudflared(
                 bin,
-                ["tunnel", "route", "dns", "--overwrite-dns", tunnelName, domain],
+                cloudflaredManagementArgs(
+                    "route",
+                    "dns",
+                    "--overwrite-dns",
+                    tunnelId,
+                    domain,
+                ),
                 { allowFailure: true, timeoutMs: 120_000 },
             ),
     );
@@ -510,6 +544,14 @@ async function ensureDnsRoute(
         return;
     }
     throw new Error(`更新域名 DNS 失败：${(overwrite.stderr || overwrite.stdout).trim()}`);
+}
+
+export function cloudflaredManagementArgs(...args: string[]): string[] {
+    const command = ["tunnel", "--config", ensureCloudflaredManagementConfig()];
+    if (args[0] !== "login" && hasManagedCloudflareLogin()) {
+        command.push("--origincert", getCloudflareOriginCertPath());
+    }
+    return [...command, ...args];
 }
 
 function isDnsRecordConflict(stderr: string, stdout: string): boolean {

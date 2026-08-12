@@ -11,6 +11,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { getUserConfigPath } from "../config/user-config.js";
+import { getCloudflareOriginCertPath } from "./cloudflare-account.js";
 import { getCloudflaredConfigPath } from "./yml.js";
 
 interface FileSnapshot {
@@ -31,7 +32,11 @@ export interface PublicSetupTransaction {
  * but the last known-good local config and cloudflared route remain intact.
  */
 export function beginPublicSetupTransaction(
-    paths: string[] = [getUserConfigPath(), getCloudflaredConfigPath()],
+    paths: string[] = [
+        getUserConfigPath(),
+        getCloudflaredConfigPath(),
+        getCloudflareOriginCertPath(),
+    ],
 ): PublicSetupTransaction {
     const snapshots = [...new Set(paths)].map(snapshotFile);
     let finished = false;

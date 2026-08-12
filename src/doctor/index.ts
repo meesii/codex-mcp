@@ -3,8 +3,15 @@ import { hasAdminPassword } from "../auth/password-store.js";
 import { findRipgrep } from "../lib/search/ripgrep.js";
 import { runSubprocess } from "../lib/util/subprocess.js";
 import { suggestCloudflaredBin, probeCloudflaredVersion } from "../tunnel/bin.js";
+import {
+    getCloudflareOriginCertPath,
+    getLegacyCloudflareOriginCertPath,
+    getLegacyTunnelCredentialsPath,
+    hasManagedCloudflareLogin,
+} from "../tunnel/cloudflare-account.js";
 import { getCloudflaredConfigPath, getCredentialsPath } from "../tunnel/yml.js";
 import { getUserConfigPath, loadUserConfig } from "../config/user-config.js";
+import { describeEnabledCapabilitySources, resolveCapabilitiesConfig } from "../capabilities/config.js";
 
 export type DoctorLevel = "ok" | "warn" | "error";
 
@@ -33,7 +40,6 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
                 : `当前是 ${process.versions.node}，需要 22 或更高版本`,
     });
 
-    checks.push(await checkCommand("Codex", "codex", ["--version"], false));
     checks.push(await checkCommand("Git", "git", ["--version"], false));
     checks.push(await checkRipgrep());
 
@@ -53,6 +59,16 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             level: "error",
             detail: readableError(error),
         });
+    }
+
+    const capabilityConfig = resolveCapabilitiesConfig(userConfig?.capabilities);
+    checks.push({
+        label: "外部能力",
+        level: "ok",
+        detail: `${describeEnabledCapabilitySources(capabilityConfig)} · ${capabilityConfig.sync === "watch" ? "自动同步" : "仅启动读取"}`,
+    });
+    if (capabilityConfig.sources.codex.mcp) {
+        checks.push(await checkCommand("Codex", "codex", ["--version"], false));
     }
 
     try {
@@ -111,14 +127,36 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             }
         }
 
+        const legacyTunnelStatePending = Boolean(
+            userConfig?.tunnelId &&
+            canRead(getLegacyCloudflareOriginCertPath()) &&
+            canRead(getLegacyTunnelCredentialsPath(userConfig.tunnelId)),
+        );
+        if (userConfig?.domain || userConfig?.tunnelId) {
+            const managedLoginPath = getCloudflareOriginCertPath();
+            const managedLogin = hasManagedCloudflareLogin();
+            checks.push({
+                label: "Cloudflare 登录",
+                level: managedLogin ? "ok" : "warn",
+                detail: managedLogin
+                    ? `codex-mcp 私有登录：${managedLoginPath}`
+                    : legacyTunnelStatePending
+                      ? "检测到旧 ~/.cloudflared 登录和 Tunnel 凭据；下次启动或 setup 会在账号匹配后安全迁移"
+                      : "没有可用的 codex-mcp 私有登录；Tunnel 仍可运行，但修改 Cloudflare 配置时需要重新登录",
+            });
+        }
+
         if (userConfig?.tunnelId) {
             const credentialsPath = getCredentialsPath(userConfig.tunnelId);
+            const managedCredentials = canRead(credentialsPath);
             checks.push({
                 label: "Tunnel 凭据",
-                level: canRead(credentialsPath) ? "ok" : "error",
-                detail: canRead(credentialsPath)
+                level: managedCredentials ? "ok" : legacyTunnelStatePending ? "warn" : "error",
+                detail: managedCredentials
                     ? "已找到"
-                    : `缺少本机凭据：${credentialsPath}`,
+                    : legacyTunnelStatePending
+                      ? "检测到旧 ~/.cloudflared Tunnel 凭据；下次启动或 setup 会在账号匹配后迁移"
+                      : `缺少本机凭据：${credentialsPath}`,
             });
         } else {
             checks.push({

@@ -6,6 +6,7 @@ import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { configureToolRegistrationPolicy } from "../lib/tool/log.js";
 import type { ProjectContext } from "../config/project.js";
 import type { SkillRegistry } from "../skills/registry.js";
+import type { CapabilityManager } from "../capabilities/manager.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import type { GoalStore } from "../goals/store.js";
 import type { UiSettingsStore } from "../ui/settings.js";
@@ -73,10 +74,10 @@ export function buildServerInstructions(
     addTool("permission_list", "list active external-access grants for this client plus permanent grants.");
     addTool("permission_grant", "user-confirmed session/one-time/permanent authorization for write/exec outside registered workspaces; session is the normal default, permanent requires explicit lasting intent.");
     addTool("permission_revoke", "revoke matching external-access grants for an exact directory/capability.");
-    addTool("skills_list", "list skills imported from local Codex skill roots.");
+    addTool("skills_list", "list model-invocable skills from enabled external capability sources.");
     addTool("skill_read", "read a matching skill's SKILL.md or referenced text file before following it.");
     addTool("agents_for_path", "load global + nested AGENTS.md rules for a project path.");
-    addTool("capabilities_reload", "force-refresh imported Codex MCPs and skills; automatic watching is also enabled in the CLI.");
+    addTool("capabilities_reload", "force-refresh enabled external MCP and Skill sources; automatic watching depends on the configured sync mode.");
     addTool("workspace_roots", "list the primary and additional trusted workspace roots.");
     addTool("workspace_add", "persistently trust an existing directory as a read/write/exec workspace; use only when the user explicitly requests broader workspace trust.");
     addTool("workspace_remove", "remove persisted trust for an additional workspace; primary workspace cannot be removed at runtime.");
@@ -142,7 +143,7 @@ export function buildServerInstructions(
     }
     if (skills?.hasSkills() && allows("skill_read")) {
         limits.push(
-            "- Codex skills: when a listed skill clearly matches the task, call skill_read before acting; do not infer the full skill from its description.",
+            "- Imported skills: when a listed skill clearly matches the task, call skill_read before acting; do not infer the full skill from its description.",
         );
     }
 
@@ -178,6 +179,7 @@ export function createMcpServer(
     processes: ProcessSessionAccess,
     hub: DownstreamMcpHub,
     skills: SkillRegistry,
+    capabilities: CapabilityManager | undefined,
     agents: AgentInstructionRegistry,
     workspace: WorkspaceRegistry,
     goals: GoalStore,
@@ -217,6 +219,7 @@ export function createMcpServer(
         processes,
         hub,
         skills,
+        capabilities,
         agents,
         workspace,
         goals,

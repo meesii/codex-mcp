@@ -141,6 +141,7 @@ export class DownstreamMcpHub {
     private closed = false;
     private generation = 0;
     private importError?: string;
+    private configLoader?: () => Promise<UserMcpConfig>;
 
     private constructor() {}
 
@@ -151,9 +152,9 @@ export class DownstreamMcpHub {
         } = {},
     ): Promise<DownstreamMcpHub> {
         const hub = new DownstreamMcpHub();
+        hub.configLoader = options.loadConfig ?? loadMergedMcpConfig;
         try {
-            const loadConfig = options.loadConfig ?? loadMergedMcpConfig;
-            await hub.reloadFromConfig(await loadConfig());
+            await hub.reloadFromConfig(await hub.configLoader());
         } catch (error) {
             const normalized = error instanceof Error ? error : new Error(String(error));
             hub.importError = clipImportError(normalized.message);
@@ -174,15 +175,21 @@ export class DownstreamMcpHub {
         return this.importError;
     }
 
-    async reloadFromDefaultConfig(): Promise<DownstreamReloadResult> {
+    async reloadFromConfiguredSource(): Promise<DownstreamReloadResult> {
+        const loadConfig = this.configLoader ?? loadMergedMcpConfig;
         try {
-            const result = await this.reloadFromConfig(await loadMergedMcpConfig());
+            const result = await this.reloadFromConfig(await loadConfig());
             this.importError = undefined;
             return result;
         } catch (error) {
             this.importError = clipImportError(error instanceof Error ? error.message : String(error));
             throw error;
         }
+    }
+
+    /** Compatibility alias for older embedders. */
+    async reloadFromDefaultConfig(): Promise<DownstreamReloadResult> {
+        return await this.reloadFromConfiguredSource();
     }
 
     async reloadFromConfig(config: UserMcpConfig): Promise<DownstreamReloadResult> {

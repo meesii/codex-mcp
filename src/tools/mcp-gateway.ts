@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
+import type { CapabilityManager } from "../capabilities/manager.js";
 import { registerTool } from "../lib/tool/log.js";
 import {
     openWorldAnnotations,
@@ -56,8 +57,9 @@ const promptSchema = z.object({
 export function registerMcpGatewayTools(
     server: McpServer,
     hub: DownstreamMcpHub,
+    capabilities?: CapabilityManager,
 ): void {
-    registerMcpServersTool(server, hub);
+    registerMcpServersTool(server, hub, capabilities);
     registerMcpReconnectTool(server, hub);
     registerMcpToolsTool(server, hub);
     registerMcpCallTool(server, hub);
@@ -67,18 +69,31 @@ export function registerMcpGatewayTools(
     registerMcpPromptGetTool(server, hub);
 }
 
-function registerMcpServersTool(server: McpServer, hub: DownstreamMcpHub): void {
+function registerMcpServersTool(
+    server: McpServer,
+    hub: DownstreamMcpHub,
+    capabilities?: CapabilityManager,
+): void {
     registerTool(
         server,
         "mcp_servers",
         withToolAuth({
             title: "List downstream MCP servers",
             description:
-                "List imported Codex MCP servers with connection state and negotiated tools/resources/prompts capabilities.",
+                "List downstream MCP servers imported from enabled external capability sources, with connection state, negotiated capabilities, and per-source diagnostics when available.",
             inputSchema: {},
             outputSchema: {
                 generation: z.number().int(),
                 importError: z.string().nullable(),
+                sources: z.array(z.object({
+                    source: z.enum(["agents", "codex", "claude"]),
+                    enabled: z.boolean(),
+                    mcpEnabled: z.boolean(),
+                    skillsEnabled: z.boolean(),
+                    mcpCount: z.number().int(),
+                    skillCount: z.number().int(),
+                    warnings: z.array(z.string()),
+                })),
                 servers: z.array(
                     z.object({
                         name: z.string(),
@@ -100,13 +115,15 @@ function registerMcpServersTool(server: McpServer, hub: DownstreamMcpHub): void 
                 capabilities: item.capabilities ?? null,
             }));
             const importError = hub.getImportError() ?? null;
+            const sources = capabilities?.getDiagnostics() ?? [];
             return okResult(
                 importError
-                    ? `Codex MCP import is unavailable; core codex-mcp remains usable. ${importError}`
+                    ? `External MCP import is unavailable; core codex-mcp remains usable. ${importError}`
                     : `Listed ${servers.length} downstream MCP server(s).`,
                 {
                     generation: hub.getGeneration(),
                     importError,
+                    sources,
                     servers,
                 },
             );

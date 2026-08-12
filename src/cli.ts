@@ -9,7 +9,8 @@ import {
     verifyAdminPassword,
 } from "./auth/password-store.js";
 import { DownstreamMcpHub } from "./downstream/hub.js";
-import { CodexCapabilityWatcher } from "./capabilities/runtime.js";
+import { CapabilityManager } from "./capabilities/manager.js";
+import { CapabilityWatcher } from "./capabilities/runtime.js";
 import { resolveAllowedTools } from "./capabilities/policy.js";
 import { createHttpServer } from "./server/http-server.js";
 import { isToolLogEnabled } from "./lib/tool/log.js";
@@ -28,7 +29,7 @@ import {
     printSummary,
     printWarning,
 } from "./lib/util/terminal.js";
-import { SkillRegistry } from "./skills/registry.js";
+import { configureCapabilitySources, describeCapabilitiesConfig } from "./capabilities/setup.js";
 import { askSecret, askSelect, canPromptInteractively, withSpinner } from "./tunnel/prompt.js";
 import { CloudflaredSidecar } from "./tunnel/sidecar.js";
 import { verifyTunnelRoute } from "./tunnel/verify.js";
@@ -339,18 +340,27 @@ async function runServe(flags: CliFlags): Promise<void> {
         }
     }
 
-    const hub = await DownstreamMcpHub.connectFromDefaultConfig();
+    const capabilities = new CapabilityManager(config.projectRoot);
+    const hub = await DownstreamMcpHub.connectFromDefaultConfig({
+        loadConfig: () => capabilities.loadMcpConfig(),
+    });
     if (hub.getImportError()) {
-        printWarning(`Codex MCP 配置导入失败；核心服务会继续启动：${hub.getImportError()}`);
+        printWarning(`外部 MCP 配置加载失败；核心服务会继续启动：${hub.getImportError()}`);
     }
-    const skills = SkillRegistry.discoverDefault();
+    const skills = capabilities.createSkillRegistry();
+    for (const diagnostic of capabilities.getDiagnostics(skills)) {
+        for (const warning of diagnostic.warnings) {
+            printWarning(`${diagnostic.source} 能力源：${warning}`);
+        }
+    }
     const server = createHttpServer(config, {
         hub,
         skills,
+        capabilities,
         allowedToolsResolver: resolveAllowedTools,
     });
     await server.listen();
-    const capabilityWatcher = new CodexCapabilityWatcher(hub, skills);
+    const capabilityWatcher = new CapabilityWatcher(capabilities, hub, skills);
     capabilityWatcher.start();
 
     let sidecar: CloudflaredSidecar | undefined;
@@ -472,6 +482,7 @@ async function runFirstTimeSetup(): Promise<void> {
         const verified = await verifySetupResult(candidate);
         return { result: candidate, verification: verified };
     });
+    await configureCapabilitySources();
     const generatedPassword = await ensureGeneratedAdminPassword({ display: false });
     printCompletedSetup(result, verification, generatedPassword);
 }
@@ -486,6 +497,7 @@ async function runSetupManager(current: ReturnType<typeof loadUserConfig>): Prom
         },
         ...(current.tunnelName ? [{ label: "Tunnel", value: current.tunnelName }] : []),
         { label: "连接密码", value: "已设置" },
+        { label: "外部能力", value: describeCapabilitiesConfig(current.capabilities) },
     ]);
 
     const action = await askSelect(
@@ -493,7 +505,17 @@ async function runSetupManager(current: ReturnType<typeof loadUserConfig>): Prom
         [
             { value: "check", label: "检查当前配置", hint: "验证公网地址是否确实到达这台电脑" },
             { value: "public", label: "修改公网连接", hint: "重新选择域名或 Cloudflare 配置" },
+            ...(current.useCloudflared === false
+                ? []
+                : [
+                      {
+                          value: "cloudflare",
+                          label: "重新登录 / 切换 Cloudflare 账号",
+                          hint: "只重置 codex-mcp 私有登录，不修改系统 ~/.cloudflared",
+                      },
+                  ]),
             { value: "password", label: "修改连接密码" },
+            { value: "capabilities", label: "管理外部能力", hint: "Codex / Claude Code / Agent Skills" },
             { value: "exit", label: "退出，不做修改" },
         ],
         "check",
@@ -507,12 +529,19 @@ async function runSetupManager(current: ReturnType<typeof loadUserConfig>): Prom
         await configureAdminPassword();
         return;
     }
+    if (action === "capabilities") {
+        const result = await configureCapabilitySources();
+        printOutro(result.changed ? "外部能力设置已保存" : "外部能力设置保持不变");
+        return;
+    }
 
     const { result, verification } = await withPublicSetupTransaction(async () => {
         const candidate =
             action === "public"
                 ? await runTunnelWizard()
-                : await ensureTunnelSetup({ host: current.host, port: current.port });
+                : action === "cloudflare"
+                  ? await runTunnelWizard({ forceCloudflareLogin: true })
+                  : await ensureTunnelSetup({ host: current.host, port: current.port });
         const verified = await verifySetupResult(candidate);
         return { result: candidate, verification: verified };
     });

@@ -1,10 +1,11 @@
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import type { DownstreamMcpHub, DownstreamReloadResult } from "../downstream/hub.js";
 import { writeRuntimeLog } from "../lib/runtime-log.js";
 import { printCompactLog } from "../lib/util/terminal.js";
 import type { SkillRegistry } from "../skills/registry.js";
+import type { CapabilityManager } from "./manager.js";
+import type { CapabilityWatchTarget } from "./provider.js";
 
 const RELOAD_DEBOUNCE_MS = 400;
 
@@ -16,34 +17,29 @@ export interface CapabilityReloadResult {
     };
 }
 
-interface WatchTarget {
-    key: string;
-    directory: string;
-    fileName?: string;
-    recursiveWhenExact: boolean;
-}
-
 interface ActiveWatcher {
     watchedDirectory: string;
     recursive: boolean;
     watcher: FSWatcher;
 }
 
-export async function reloadCodexCapabilities(
+export async function reloadCapabilities(
+    manager: CapabilityManager,
     hub: DownstreamMcpHub,
     skills: SkillRegistry,
 ): Promise<CapabilityReloadResult> {
-    const skillResult = skills.refresh();
-    const mcpResult = await hub.reloadFromDefaultConfig();
+    const skillResult = manager.refreshSkills(skills);
+    const mcpResult = await hub.reloadFromConfig(await manager.loadMcpConfig());
     return { mcp: mcpResult, skills: skillResult };
 }
 
 /**
- * Watch Codex MCP config and skill roots. Missing target directories are watched
- * through their nearest existing ancestor; after every reload watchers are
- * reconciled so newly created roots receive their own recursive watcher.
+ * Watch enabled external capability sources. Missing target directories are watched
+ * through their nearest existing ancestor; after every reload watchers are reconciled
+ * so newly created roots receive their own recursive watcher. In startup sync mode the
+ * manager returns no watch targets and this class remains inert.
  */
-export class CodexCapabilityWatcher {
+export class CapabilityWatcher {
     private readonly watchers = new Map<string, ActiveWatcher>();
     private timer?: NodeJS.Timeout;
     private reloading = false;
@@ -51,6 +47,7 @@ export class CodexCapabilityWatcher {
     private started = false;
 
     constructor(
+        private readonly manager: CapabilityManager,
         private readonly hub: DownstreamMcpHub,
         private readonly skills: SkillRegistry,
         private readonly onError: (error: unknown) => void = (error) => {
@@ -60,7 +57,6 @@ export class CodexCapabilityWatcher {
                 reason: error instanceof Error ? error.name : "unknown",
             });
         },
-        private readonly homeDirectory = homedir(),
     ) {}
 
     start(): void {
@@ -77,31 +73,9 @@ export class CodexCapabilityWatcher {
         this.watchers.clear();
     }
 
-    private targets(): WatchTarget[] {
-        return [
-            {
-                key: "codex-config",
-                directory: join(this.homeDirectory, ".codex"),
-                fileName: "config.toml",
-                recursiveWhenExact: false,
-            },
-            {
-                key: "codex-mcp-config",
-                directory: join(this.homeDirectory, ".codex-mcp"),
-                fileName: "mcp.json",
-                recursiveWhenExact: false,
-            },
-            ...this.skills.getRoots().map((root) => ({
-                key: `skill:${resolve(root.path)}`,
-                directory: resolve(root.path),
-                recursiveWhenExact: true,
-            })),
-        ];
-    }
-
     private refreshWatchers(): void {
         if (!this.started) return;
-        const targets = this.targets();
+        const targets = this.manager.getWatchTargets();
         const expected = new Set(targets.map((target) => target.key));
 
         for (const [key, active] of this.watchers) {
@@ -113,7 +87,7 @@ export class CodexCapabilityWatcher {
         for (const target of targets) this.ensureWatcher(target);
     }
 
-    private ensureWatcher(target: WatchTarget): void {
+    private ensureWatcher(target: CapabilityWatchTarget): void {
         const exactExists = isDirectory(target.directory);
         const watchedDirectory = exactExists
             ? target.directory
@@ -179,7 +153,7 @@ export class CodexCapabilityWatcher {
         }
         this.reloading = true;
         try {
-            await reloadCodexCapabilities(this.hub, this.skills);
+            await reloadCapabilities(this.manager, this.hub, this.skills);
         } catch (error) {
             this.onError(error);
         } finally {

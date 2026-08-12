@@ -22,6 +22,7 @@ import { UiSettingsStore } from "../ui/settings.js";
 import { WorkspaceRegistry } from "../workspace/registry.js";
 import type { PermissionGrantStore } from "../permissions/store.js";
 import { PermissionRuntime } from "../permissions/runtime.js";
+import type { CapabilityManager } from "../capabilities/manager.js";
 
 const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_INITIALIZES_PER_WINDOW = 60;
@@ -30,8 +31,10 @@ const LOCAL_PROCESS_OWNER_ID = "local:noauth";
 export interface CreateHttpServerOptions {
     /** Shared downstream MCP hub; defaults to an empty hub. */
     hub?: DownstreamMcpHub;
-    /** Shared Codex skill registry; defaults to an empty registry. */
+    /** Shared imported skill registry; defaults to an empty registry. */
     skills?: SkillRegistry;
+    /** External capability source manager used by reload/status tools. */
+    capabilities?: CapabilityManager;
     /** Scoped AGENTS.md registry; defaults to one bound to projectRoot. */
     agents?: AgentInstructionRegistry;
     /** Optional goal storage directory override, primarily for isolated tests. */
@@ -49,6 +52,7 @@ export interface RunningHttpServer {
     project: ProjectContext;
     hub: DownstreamMcpHub;
     skills: SkillRegistry;
+    capabilities?: CapabilityManager;
     agents: AgentInstructionRegistry;
     goals: GoalStore;
     uiSettings: UiSettingsStore;
@@ -136,6 +140,7 @@ export function createHttpServer(
                 processes,
                 hub,
                 skills,
+                options.capabilities,
                 agents,
                 workspace,
                 goals,
@@ -284,6 +289,7 @@ export function createHttpServer(
         project,
         hub,
         skills,
+        ...(options.capabilities ? { capabilities: options.capabilities } : {}),
         agents,
         goals,
         uiSettings,

@@ -8,7 +8,9 @@ import { errorResult, okResult } from "../lib/tool/result.js";
 const skillInfoSchema = z.object({
     name: z.string(),
     description: z.string(),
-    source: z.enum(["agents", "codex"]),
+    source: z.enum(["agents", "codex", "claude"]),
+    scope: z.enum(["user", "project"]).optional(),
+    workspaceRoot: z.string().optional(),
 });
 
 export function registerSkillTools(server: McpServer, skills: SkillRegistry): void {
@@ -16,9 +18,9 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
         server,
         "skills_list",
         withToolAuth({
-            title: "List Codex skills",
+            title: "List imported skills",
             description:
-                "List skills imported from the local Codex skill roots. Use skill_read before following a skill that matches the current task.",
+                "List model-invocable skills discovered from enabled external capability sources. Use skill_read before following a skill that matches the current task.",
             inputSchema: {},
             outputSchema: {
                 count: z.number().int(),
@@ -28,7 +30,7 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
         }),
         async () => {
             const listed = skills.list();
-            return okResult(`Listed ${listed.length} Codex skill(s).`, {
+            return okResult(`Listed ${listed.length} imported skill(s).`, {
                 count: listed.length,
                 skills: listed,
             });
@@ -39,9 +41,9 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
         server,
         "skill_read",
         withToolAuth({
-            title: "Read Codex skill",
+            title: "Read imported skill",
             description:
-                "Read SKILL.md or another text file inside a discovered Codex skill. path defaults to SKILL.md and must stay inside that skill directory.",
+                "Read SKILL.md or another text file inside a discovered imported skill. path defaults to SKILL.md and must stay inside that skill directory.",
             inputSchema: {
                 name: z.string().min(1).describe("Skill name from skills_list."),
                 path: z

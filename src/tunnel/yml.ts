@@ -15,8 +15,29 @@ export function getCloudflaredConfigPath(): string {
     return join(getUserConfigDir(), "cloudflared.yml");
 }
 
+export function getCloudflaredManagementConfigPath(): string {
+    return join(getUserConfigDir(), "cloudflared-management.yml");
+}
+
+export function getManagedCloudflareDir(): string {
+    return join(getUserConfigDir(), "cloudflare");
+}
+
+export function getManagedCloudflaredStateDir(): string {
+    return join(getManagedCloudflareDir(), ".cloudflared");
+}
+
+export function ensureCloudflaredManagementConfig(): string {
+    const filePath = getCloudflaredManagementConfigPath();
+    mkdirSync(dirname(filePath), { recursive: true });
+    // Always pass an explicit config to cloudflared management commands so an
+    // unrelated ~/.cloudflared/config.yml from an older Tunnel setup cannot leak in.
+    writeFileSync(filePath, "no-autoupdate: true\n", "utf8");
+    return filePath;
+}
+
 export function getCredentialsPath(tunnelId: string): string {
-    return expandHomePath(`~/.cloudflared/${tunnelId}.json`);
+    return join(getManagedCloudflaredStateDir(), `${tunnelId}.json`);
 }
 
 export function readCloudflaredYml(

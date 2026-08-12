@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { terminateChildProcess } from "../lib/process/tree.js";
+import { getManagedCloudflareDir } from "./yml.js";
 
 const MAX_CAPTURE_CHARS = 1_000_000;
 
@@ -7,6 +9,25 @@ export interface CloudflaredRunResult {
     code: number | null;
     stdout: string;
     stderr: string;
+}
+
+export function cloudflaredChildEnv(
+    base: NodeJS.ProcessEnv = process.env,
+    managedHome: string = getManagedCloudflareDir(),
+): NodeJS.ProcessEnv {
+    mkdirSync(managedHome, { recursive: true });
+    const env = { ...base };
+    for (const key of Object.keys(env)) {
+        if (key.toUpperCase().startsWith("TUNNEL_")) {
+            delete env[key];
+        }
+    }
+    // cloudflared derives cert.pem and <UUID>.json from the user home directory.
+    // Give it a private home so unrelated ~/.cloudflared state is never selected
+    // or overwritten by codex-mcp management and sidecar processes.
+    env.HOME = managedHome;
+    env.USERPROFILE = managedHome;
+    return env;
 }
 
 export async function runCloudflared(
@@ -19,7 +40,7 @@ export async function runCloudflared(
         const child = spawn(bin, args, {
             stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true,
-            env: process.env,
+            env: cloudflaredChildEnv(),
             detached: process.platform !== "win32",
         });
         let stdout = "";
@@ -83,7 +104,7 @@ export async function runCloudflaredInherit(
         const child = spawn(bin, args, {
             stdio: "inherit",
             windowsHide: false,
-            env: process.env,
+            env: cloudflaredChildEnv(),
         });
         child.on("error", reject);
         child.on("close", (code) => resolve(code ?? 1));

@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type Agent } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { promisify } from "node:util";
+import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
@@ -12,7 +14,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_REDIRECTS = 5;
 const DOH_MAX_BYTES = 64 * 1024;
 const DOH_TIMEOUT_MS = 5_000;
-const MAC_PROXY_CACHE_MS = 30_000;
+const SYSTEM_PROXY_CACHE_MS = 30_000;
 const MAX_PROXY_AGENTS = 8;
 
 const blockedIpv4 = new BlockList();
@@ -64,7 +66,7 @@ export interface SafeHttpOptions {
     headers?: Record<string, string>;
     /** Tests or explicitly trusted local integrations only. */
     allowPrivate?: boolean;
-    /** Disable automatic HTTPS proxy discovery for a specific trusted call. */
+    /** Disable automatic HTTP(S) proxy discovery for a specific trusted call. */
     useProxy?: boolean;
 }
 
@@ -81,22 +83,23 @@ interface ResolvedAddress {
     family: 4 | 6;
 }
 
-interface MacProxyCache {
+interface SystemProxyCache {
     expiresAt: number;
-    httpsProxy?: URL;
+    protocol: "http:" | "https:";
+    proxies: URL[];
 }
 
-let macProxyCache: MacProxyCache | undefined;
-const proxyAgents = new Map<string, HttpsProxyAgent<string>>();
+let systemProxyCache: SystemProxyCache | undefined;
+const proxyAgents = new Map<string, Agent>();
 
 /**
  * Fetch an HTTP(S) resource while enforcing SSRF, redirect, timeout, response-size,
- * and DNS-rebinding policy. HTTPS requests honor standard proxy environment variables
- * and, on macOS, the active static Secure Web Proxy setting. When a proxy is used,
- * public DNS resolution is independently checked through DNS-over-HTTPS and the proxy
- * CONNECT target is pinned to one of those validated public IPs. TLS SNI and certificate
- * validation still use the original hostname. This keeps proxy support from weakening
- * the public-target SSRF / DNS-rebinding boundary.
+ * and DNS-rebinding policy. Public HTTP(S) requests prefer discovered proxies (environment first,
+ * then the operating system's proxy settings) and fall back to a direct connection.
+ * When a proxy is used, public DNS resolution is independently checked through
+ * DNS-over-HTTPS and the proxied destination is pinned to one of those validated public
+ * IPs. TLS SNI and certificate validation still use the original hostname. This keeps
+ * proxy support from weakening the public-target SSRF / DNS-rebinding boundary.
  */
 export async function safeHttpGet(
     input: string | URL,
@@ -122,62 +125,31 @@ async function requestOne(
         throw new Error("timeoutMs must be positive");
     }
 
-    const proxy =
-        !options.allowPrivate && options.useProxy !== false && url.protocol === "https:"
-            ? await resolveHttpsProxy(url)
-            : undefined;
+    const proxies =
+        !options.allowPrivate && options.useProxy !== false
+            ? await resolveProxies(url)
+            : [];
     const requestHeaders = {
         "User-Agent": "codex-mcp/0.1",
         "Accept-Encoding": "identity",
         ...(options.headers ?? {}),
     };
 
-    if (proxy) {
-        const addresses = await resolvePublicAddresses(url.hostname, proxy);
-        const targets = addresses
-            .sort((left, right) => left.family - right.family)
-            .slice(0, 2);
-        if (targets.length === 0) {
-            throw new Error(`No public addresses found for ${url.hostname}`);
+    const proxyErrors: string[] = [];
+    for (const proxy of proxies) {
+        try {
+            return await requestThroughProxy(
+                url,
+                proxy,
+                options,
+                redirectsRemaining,
+                maxBytes,
+                timeoutMs,
+                requestHeaders,
+            );
+        } catch (error) {
+            proxyErrors.push(`${proxy.host}: ${error instanceof Error ? error.message : String(error)}`);
         }
-        // A local forward proxy can transiently reset a CONNECT to one CDN edge while another
-        // validated edge succeeds. Give each of up to two public IPs a second bounded attempt.
-        const attempts = [...targets, ...targets];
-        const perAttemptTimeoutMs = Math.max(1_500, Math.floor(timeoutMs / attempts.length));
-        let lastError: unknown;
-        for (const target of attempts) {
-            const port = Number(url.port || "443");
-            const agent = getHttpsProxyAgent(proxy);
-            const req = httpsRequest({
-                protocol: "https:",
-                hostname: target.address,
-                port,
-                path: `${url.pathname}${url.search}`,
-                method: "GET",
-                servername: url.hostname,
-                agent,
-                headers: {
-                    Host: url.host,
-                    ...requestHeaders,
-                },
-            });
-            try {
-                return await finishRequest(
-                    req,
-                    url,
-                    options,
-                    redirectsRemaining,
-                    maxBytes,
-                    perAttemptTimeoutMs,
-                );
-            } catch (error) {
-                lastError = error;
-                if (!isRetryableProxyConnectionError(error)) throw error;
-            }
-        }
-        throw lastError instanceof Error
-            ? lastError
-            : new Error(`Unable to connect to ${url.hostname} through configured HTTPS proxy`);
     }
 
     const lookup = options.allowPrivate ? undefined : createSafeLookup();
@@ -187,7 +159,73 @@ async function requestOne(
         lookup,
         headers: requestHeaders,
     });
-    return finishRequest(req, url, options, redirectsRemaining, maxBytes, timeoutMs);
+    try {
+        return await finishRequest(req, url, options, redirectsRemaining, maxBytes, timeoutMs);
+    } catch (error) {
+        if (proxyErrors.length === 0) throw error;
+        const directDetail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+            `Proxy attempts failed (${proxyErrors.join("; ")}); direct connection failed: ${directDetail}`,
+        );
+    }
+}
+
+async function requestThroughProxy(
+    url: URL,
+    proxy: URL,
+    options: SafeHttpOptions,
+    redirectsRemaining: number,
+    maxBytes: number,
+    timeoutMs: number,
+    requestHeaders: Record<string, string>,
+): Promise<SafeHttpResponse> {
+    const addresses = await resolvePublicAddresses(url.hostname, proxy);
+    const targets = addresses
+        .sort((left, right) => left.family - right.family)
+        .slice(0, 2);
+    if (targets.length === 0) {
+        throw new Error(`No public addresses found for ${url.hostname}`);
+    }
+
+    const attempts = [...targets, ...targets];
+    const perAttemptTimeoutMs = Math.max(1_500, Math.floor(timeoutMs / attempts.length));
+    let lastError: unknown;
+    for (const target of attempts) {
+        const port = Number(url.port || (url.protocol === "https:" ? "443" : "80"));
+        const agent = getProxyAgent(proxy, url.protocol);
+        const common = {
+            protocol: url.protocol,
+            hostname: target.address,
+            port,
+            path: `${url.pathname}${url.search}`,
+            method: "GET",
+            agent,
+            headers: {
+                Host: url.host,
+                ...requestHeaders,
+            },
+        };
+        const req =
+            url.protocol === "https:"
+                ? httpsRequest({ ...common, servername: url.hostname })
+                : httpRequest(common);
+        try {
+            return await finishRequest(
+                req,
+                url,
+                options,
+                redirectsRemaining,
+                maxBytes,
+                perAttemptTimeoutMs,
+            );
+        } catch (error) {
+            lastError = error;
+            if (!isRetryableProxyConnectionError(error)) throw error;
+        }
+    }
+    throw lastError instanceof Error
+        ? lastError
+        : new Error(`Unable to connect to ${url.hostname} through configured proxy`);
 }
 
 function finishRequest(
@@ -402,7 +440,7 @@ async function queryDoh(
 ): Promise<ResolvedAddress[]> {
     const query = new URLSearchParams({ name: hostname, type });
     const path = `${provider.path}?${query.toString()}`;
-    const agent = getHttpsProxyAgent(proxy);
+    const agent = getProxyAgent(proxy, "https:");
     const body = await new Promise<Buffer>((resolve, reject) => {
         const req = httpsRequest({
             protocol: "https:",
@@ -467,17 +505,40 @@ async function queryDoh(
     return out;
 }
 
-async function resolveHttpsProxy(url: URL): Promise<URL | undefined> {
-    if (matchesNoProxy(url)) return undefined;
-    const envValue =
-        process.env.HTTPS_PROXY ??
-        process.env.https_proxy ??
-        process.env.ALL_PROXY ??
-        process.env.all_proxy;
-    if (envValue?.trim()) return parseProxyUrl(envValue.trim(), "proxy environment variable");
-    if (process.platform !== "darwin") return undefined;
-    const systemProxy = await getMacHttpsProxy();
-    return systemProxy;
+async function resolveProxies(url: URL): Promise<URL[]> {
+    if (matchesNoProxy(url)) return [];
+    const protocol = url.protocol === "https:" ? "https:" : "http:";
+    const proxies = proxyEnvironmentCandidates(process.env, protocol);
+    proxies.push(...(await getSystemProxies(protocol)));
+    return dedupeProxyUrls(proxies);
+}
+
+/** @internal Exported for deterministic proxy-priority regression coverage. */
+export function proxyEnvironmentCandidates(
+    env: NodeJS.ProcessEnv,
+    protocol: "http:" | "https:" = "https:",
+): URL[] {
+    const values =
+        protocol === "https:"
+            ? [
+                  env.HTTPS_PROXY,
+                  env.https_proxy,
+                  env.HTTP_PROXY,
+                  env.http_proxy,
+                  env.ALL_PROXY,
+                  env.all_proxy,
+              ]
+            : [env.HTTP_PROXY, env.http_proxy, env.ALL_PROXY, env.all_proxy];
+    const proxies: URL[] = [];
+    for (const value of values) {
+        if (!value?.trim()) continue;
+        try {
+            proxies.push(parseProxyUrl(value.trim(), "proxy environment variable"));
+        } catch {
+            // Ignore malformed entries and continue with other discovered proxies/direct fallback.
+        }
+    }
+    return dedupeProxyUrls(proxies);
 }
 
 function matchesNoProxy(url: URL): boolean {
@@ -518,48 +579,247 @@ function splitNoProxyToken(token: string): [string, string | undefined] {
     return [token, undefined];
 }
 
-async function getMacHttpsProxy(): Promise<URL | undefined> {
+async function getSystemProxies(protocol: "http:" | "https:"): Promise<URL[]> {
     const now = Date.now();
-    if (macProxyCache && macProxyCache.expiresAt > now) return macProxyCache.httpsProxy;
+    if (
+        systemProxyCache &&
+        systemProxyCache.protocol === protocol &&
+        systemProxyCache.expiresAt > now
+    ) {
+        return systemProxyCache.proxies;
+    }
+
+    let proxies: URL[] = [];
     try {
-        const { stdout } = await execFileAsync("/usr/sbin/scutil", ["--proxy"], {
+        if (process.platform === "darwin") {
+            proxies = await getMacProxies(protocol);
+        } else if (process.platform === "win32") {
+            proxies = await getWindowsProxies(protocol);
+        } else if (process.platform === "linux") {
+            proxies = await getLinuxProxies(protocol);
+        }
+    } catch {
+        proxies = [];
+    }
+
+    systemProxyCache = {
+        expiresAt: now + SYSTEM_PROXY_CACHE_MS,
+        protocol,
+        proxies: dedupeProxyUrls(proxies),
+    };
+    return systemProxyCache.proxies;
+}
+
+async function getMacProxies(protocol: "http:" | "https:"): Promise<URL[]> {
+    const { stdout } = await execFileAsync("/usr/sbin/scutil", ["--proxy"], {
+        timeout: 1_500,
+        maxBuffer: 64 * 1024,
+        encoding: "utf8",
+    });
+    return parseMacSystemProxies(stdout, protocol);
+}
+
+async function getWindowsProxies(protocol: "http:" | "https:"): Promise<URL[]> {
+    const script = [
+        "$p=Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction Stop;",
+        "[pscustomobject]@{ProxyEnable=$p.ProxyEnable;ProxyServer=$p.ProxyServer}|ConvertTo-Json -Compress",
+    ].join("");
+    const { stdout } = await execFileAsync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        {
             timeout: 1_500,
             maxBuffer: 64 * 1024,
             encoding: "utf8",
-        });
-        const enabled = /^\s*HTTPSEnable\s*:\s*1\s*$/m.test(stdout);
-        const host = /^\s*HTTPSProxy\s*:\s*(\S+)\s*$/m.exec(stdout)?.[1];
-        const portText = /^\s*HTTPSPort\s*:\s*(\d+)\s*$/m.exec(stdout)?.[1];
-        let httpsProxy: URL | undefined;
-        if (enabled && host && portText) {
-            httpsProxy = parseProxyUrl(`http://${host}:${portText}`, "macOS Secure Web Proxy");
-        }
-        macProxyCache = { expiresAt: now + MAC_PROXY_CACHE_MS, httpsProxy };
-        return httpsProxy;
-    } catch {
-        macProxyCache = { expiresAt: now + MAC_PROXY_CACHE_MS };
-        return undefined;
-    }
+            windowsHide: true,
+        },
+    );
+    return parseWindowsSystemProxies(stdout, protocol);
 }
 
-function getHttpsProxyAgent(proxy: URL): HttpsProxyAgent<string> {
-    const key = proxy.href;
+async function getLinuxProxies(protocol: "http:" | "https:"): Promise<URL[]> {
+    const { stdout: modeOut } = await execFileAsync(
+        "gsettings",
+        ["get", "org.gnome.system.proxy", "mode"],
+        {
+            timeout: 1_000,
+            maxBuffer: 8 * 1024,
+            encoding: "utf8",
+        },
+    );
+    if (stripGsettingsString(modeOut) !== "manual") return [];
+
+    const [httpsHost, httpsPort, httpHost, httpPort, socksHost, socksPort] = await Promise.all([
+        readGsettingsValue("org.gnome.system.proxy.https", "host"),
+        readGsettingsValue("org.gnome.system.proxy.https", "port"),
+        readGsettingsValue("org.gnome.system.proxy.http", "host"),
+        readGsettingsValue("org.gnome.system.proxy.http", "port"),
+        readGsettingsValue("org.gnome.system.proxy.socks", "host"),
+        readGsettingsValue("org.gnome.system.proxy.socks", "port"),
+    ]);
+    const httpsPair: [string | undefined, number | undefined] = [
+        stripGsettingsString(httpsHost),
+        parseProxyPort(httpsPort),
+    ];
+    const httpPair: [string | undefined, number | undefined] = [
+        stripGsettingsString(httpHost),
+        parseProxyPort(httpPort),
+    ];
+    const proxies = proxyUrlsFromHostPortPairs(
+        protocol === "https:" ? [httpsPair, httpPair] : [httpPair],
+    );
+    const socksHostValue = stripGsettingsString(socksHost);
+    const socksPortValue = parseProxyPort(socksPort);
+    if (socksHostValue && socksPortValue) {
+        proxies.push(...parseProxyCandidates([`socks5://${socksHostValue}:${socksPortValue}`]));
+    }
+    return dedupeProxyUrls(proxies);
+}
+
+async function readGsettingsValue(schema: string, key: string): Promise<string> {
+    const { stdout } = await execFileAsync("gsettings", ["get", schema, key], {
+        timeout: 1_000,
+        maxBuffer: 8 * 1024,
+        encoding: "utf8",
+    });
+    return stdout.trim();
+}
+
+/** @internal Exported for deterministic proxy-discovery regression coverage. */
+export function parseMacSystemProxies(
+    stdout: string,
+    protocol: "http:" | "https:" = "https:",
+): URL[] {
+    const pairs: Array<[string | undefined, number | undefined]> = [];
+    if (protocol === "https:" && /^\s*HTTPSEnable\s*:\s*1\s*$/m.test(stdout)) {
+        pairs.push([
+            /^\s*HTTPSProxy\s*:\s*(\S+)\s*$/m.exec(stdout)?.[1],
+            parseProxyPort(/^\s*HTTPSPort\s*:\s*(\d+)\s*$/m.exec(stdout)?.[1]),
+        ]);
+    }
+    if (/^\s*HTTPEnable\s*:\s*1\s*$/m.test(stdout)) {
+        pairs.push([
+            /^\s*HTTPProxy\s*:\s*(\S+)\s*$/m.exec(stdout)?.[1],
+            parseProxyPort(/^\s*HTTPPort\s*:\s*(\d+)\s*$/m.exec(stdout)?.[1]),
+        ]);
+    }
+    const proxies = proxyUrlsFromHostPortPairs(pairs);
+    if (/^\s*SOCKSEnable\s*:\s*1\s*$/m.test(stdout)) {
+        const host = /^\s*SOCKSProxy\s*:\s*(\S+)\s*$/m.exec(stdout)?.[1];
+        const port = parseProxyPort(/^\s*SOCKSPort\s*:\s*(\d+)\s*$/m.exec(stdout)?.[1]);
+        if (host && port) {
+            proxies.push(...parseProxyCandidates([`socks5://${host}:${port}`]));
+        }
+    }
+    return dedupeProxyUrls(proxies);
+}
+
+/** @internal Exported for deterministic proxy-discovery regression coverage. */
+export function parseWindowsSystemProxies(
+    stdout: string,
+    protocol: "http:" | "https:" = "https:",
+): URL[] {
+    let payload: { ProxyEnable?: unknown; ProxyServer?: unknown };
+    try {
+        payload = JSON.parse(stdout.trim()) as { ProxyEnable?: unknown; ProxyServer?: unknown };
+    } catch {
+        return [];
+    }
+    if (Number(payload.ProxyEnable) !== 1 || typeof payload.ProxyServer !== "string") return [];
+
+    const raw = payload.ProxyServer.trim();
+    if (!raw) return [];
+    if (!raw.includes("=")) return parseProxyCandidates([raw]);
+
+    const entries = new Map<string, string>();
+    for (const part of raw.split(";")) {
+        const separator = part.indexOf("=");
+        if (separator <= 0) continue;
+        entries.set(part.slice(0, separator).trim().toLowerCase(), part.slice(separator + 1).trim());
+    }
+    const proxies = parseProxyCandidates(
+        protocol === "https:"
+            ? [entries.get("https"), entries.get("http")]
+            : [entries.get("http")],
+    );
+    const socks = entries.get("socks");
+    if (socks) {
+        const value = /^[a-z][a-z0-9+.-]*:\/\//i.test(socks) ? socks : `socks5://${socks}`;
+        proxies.push(...parseProxyCandidates([value]));
+    }
+    return dedupeProxyUrls(proxies);
+}
+
+function parseProxyCandidates(values: Array<string | undefined>): URL[] {
+    const proxies: URL[] = [];
+    for (const value of values) {
+        if (!value) continue;
+        try {
+            proxies.push(parseProxyUrl(value, "system proxy"));
+        } catch {
+            // Ignore malformed system entries; direct fallback remains available.
+        }
+    }
+    return dedupeProxyUrls(proxies);
+}
+
+function proxyUrlsFromHostPortPairs(
+    pairs: Array<[string | undefined, number | undefined]>,
+): URL[] {
+    return parseProxyCandidates(
+        pairs.map(([host, port]) => (host && port ? `http://${host}:${port}` : undefined)),
+    );
+}
+
+function stripGsettingsString(value: string): string {
+    const trimmed = value.trim();
+    if (
+        (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+        (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    ) {
+        return trimmed.slice(1, -1);
+    }
+    return trimmed;
+}
+
+function parseProxyPort(value: string | undefined): number | undefined {
+    if (!value) return undefined;
+    const port = Number.parseInt(value.trim(), 10);
+    return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+}
+
+function dedupeProxyUrls(proxies: URL[]): URL[] {
+    const seen = new Set<string>();
+    const out: URL[] = [];
+    for (const proxy of proxies) {
+        if (seen.has(proxy.href)) continue;
+        seen.add(proxy.href);
+        out.push(proxy);
+    }
+    return out;
+}
+
+function getProxyAgent(proxy: URL, targetProtocol: string): Agent {
+    const key = `${targetProtocol}|${proxy.href}`;
     const existing = proxyAgents.get(key);
     if (existing) return existing;
     if (proxyAgents.size >= MAX_PROXY_AGENTS) {
-        const oldest = proxyAgents.entries().next().value as
-            | [string, HttpsProxyAgent<string>]
-            | undefined;
+        const oldest = proxyAgents.entries().next().value as [string, Agent] | undefined;
         if (oldest) {
             oldest[1].destroy();
             proxyAgents.delete(oldest[0]);
         }
     }
-    const agent = new HttpsProxyAgent(proxy, {
+    const options = {
         keepAlive: true,
         maxSockets: 8,
         maxFreeSockets: 2,
-    });
+    };
+    const agent = isSocksProxy(proxy)
+        ? new SocksProxyAgent(proxy.href, options)
+        : targetProtocol === "https:"
+          ? new HttpsProxyAgent(proxy, options)
+          : new HttpProxyAgent(proxy, options);
     proxyAgents.set(key, agent);
     return agent;
 }
@@ -572,13 +832,23 @@ function parseProxyUrl(value: string, source: string): URL {
     } catch {
         throw new Error(`Invalid ${source}`);
     }
-    if (proxy.protocol !== "http:" && proxy.protocol !== "https:") {
-        throw new Error(`${source} must use http or https`);
+    if (!isSupportedProxyProtocol(proxy.protocol)) {
+        throw new Error(`${source} must use http, https, socks4, socks4a, socks5, or socks5h`);
     }
     if (!proxy.hostname || (proxy.pathname && proxy.pathname !== "/") || proxy.search || proxy.hash) {
         throw new Error(`Invalid ${source}`);
     }
     return proxy;
+}
+
+function isSupportedProxyProtocol(protocol: string): boolean {
+    return new Set(["http:", "https:", "socks:", "socks4:", "socks4a:", "socks5:", "socks5h:"]).has(
+        protocol,
+    );
+}
+
+function isSocksProxy(proxy: URL): boolean {
+    return proxy.protocol.startsWith("socks");
 }
 
 function normalizeHostname(hostname: string): string {

@@ -10,12 +10,15 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const MAX_SKILL_FILE_CHARS = 80_000;
 
-export type SkillSource = "agents" | "codex";
+export type SkillSource = "agents" | "codex" | "claude";
+export type SkillScope = "user" | "project";
 
 export interface SkillInfo {
     name: string;
     description: string;
     source: SkillSource;
+    scope?: SkillScope;
+    workspaceRoot?: string;
 }
 
 export interface SkillFileResult {
@@ -32,33 +35,49 @@ interface SkillEntry extends SkillInfo {
 export interface SkillRoot {
     path: string;
     source: SkillSource;
+    scope?: SkillScope;
+    workspaceRoot?: string;
+    /** Prefix model-facing names for secondary workspace scoped skills. */
+    namePrefix?: string;
+    /** Respect Claude's disable-model-invocation frontmatter by hiding such skills. */
+    respectModelInvocation?: boolean;
 }
 
 export class SkillRegistry {
     private readonly skills = new Map<string, SkillEntry>();
+    private readonly claudeUserSkillNames = new Set<string>();
+    private roots: SkillRoot[];
     private generation = 0;
 
-    private constructor(private readonly roots: SkillRoot[]) {}
+    private constructor(roots: SkillRoot[]) {
+        this.roots = roots.map((root) => ({ ...root }));
+    }
 
     static empty(): SkillRegistry {
         return new SkillRegistry([]);
     }
 
+    /** Compatibility default used by tests/embedders that do not create a CapabilityManager. */
     static discoverDefault(): SkillRegistry {
         return SkillRegistry.discover([
-            { path: join(homedir(), ".agents", "skills"), source: "agents" },
-            { path: join(homedir(), ".codex", "skills"), source: "codex" },
+            { path: join(homedir(), ".agents", "skills"), source: "agents", scope: "user" },
+            { path: join(homedir(), ".codex", "skills"), source: "codex", scope: "user" },
         ]);
     }
 
     static discover(roots: SkillRoot[]): SkillRegistry {
-        const registry = new SkillRegistry(roots.map((root) => ({ ...root })));
+        const registry = new SkillRegistry(roots);
         registry.refresh();
         return registry;
     }
 
+    setRoots(roots: SkillRoot[]): void {
+        this.roots = roots.map((root) => ({ ...root }));
+    }
+
     refresh(): { generation: number; count: number } {
         this.skills.clear();
+        this.claudeUserSkillNames.clear();
         for (const root of this.roots) {
             this.discoverRoot(root);
         }
@@ -80,7 +99,13 @@ export class SkillRegistry {
 
     list(): SkillInfo[] {
         return [...this.skills.values()]
-            .map(({ name, description, source }) => ({ name, description, source }))
+            .map(({ name, description, source, scope, workspaceRoot }) => ({
+                name,
+                description,
+                source,
+                ...(scope ? { scope } : {}),
+                ...(workspaceRoot ? { workspaceRoot } : {}),
+            }))
             .sort((left, right) => left.name.localeCompare(right.name));
     }
 
@@ -88,11 +113,11 @@ export class SkillRegistry {
         const skills = this.list();
         if (skills.length === 0) return "";
         return [
-            "Codex skills (read matching skills with skill_read before following them):",
-            ...skills.map(
-                (skill) =>
-                    `- ${skill.name} — ${clipOneLine(skill.description || "No description", 220)}`,
-            ),
+            "Imported skills (read a matching skill with skill_read before following it):",
+            ...skills.map((skill) => {
+                const scope = skill.workspaceRoot ? ` [workspace ${skill.workspaceRoot}]` : "";
+                return `- ${skill.name}${scope} — ${clipOneLine(skill.description || "No description", 220)}`;
+            }),
         ].join("\n");
     }
 
@@ -101,7 +126,7 @@ export class SkillRegistry {
         if (!entry) {
             const known = this.list().map((skill) => skill.name);
             const hint = known.length > 0 ? `known: ${known.join(", ")}` : "none discovered";
-            throw new Error(`unknown Codex skill "${name}" (${hint})`);
+            throw new Error(`unknown skill "${name}" (${hint})`);
         }
 
         const relativePath = normalizeSkillRelativePath(path);
@@ -146,15 +171,15 @@ export class SkillRegistry {
 
         for (const directoryName of names.sort()) {
             if (directoryName === ".system") {
-                this.discoverSystemSkills(join(root.path, directoryName), root.source);
+                this.discoverSystemSkills(join(root.path, directoryName), root);
                 continue;
             }
             if (directoryName.startsWith(".")) continue;
-            this.discoverSkillDirectory(join(root.path, directoryName), directoryName, root.source);
+            this.discoverSkillDirectory(join(root.path, directoryName), directoryName, root);
         }
     }
 
-    private discoverSystemSkills(systemRoot: string, source: SkillSource): void {
+    private discoverSystemSkills(systemRoot: string, root: SkillRoot): void {
         let names: string[];
         try {
             names = readdirSync(systemRoot);
@@ -163,14 +188,14 @@ export class SkillRegistry {
         }
         for (const directoryName of names.sort()) {
             if (directoryName.startsWith(".")) continue;
-            this.discoverSkillDirectory(join(systemRoot, directoryName), directoryName, source);
+            this.discoverSkillDirectory(join(systemRoot, directoryName), directoryName, root);
         }
     }
 
     private discoverSkillDirectory(
         skillLink: string,
         directoryName: string,
-        source: SkillSource,
+        root: SkillRoot,
     ): void {
         const skillFile = join(skillLink, "SKILL.md");
         if (!existsSync(skillFile)) return;
@@ -186,26 +211,52 @@ export class SkillRegistry {
         }
 
         const metadata = parseSkillMetadata(contents, directoryName);
-        if (this.skills.has(metadata.name)) return;
-        this.skills.set(metadata.name, {
-            ...metadata,
-            source,
+        if (root.source === "claude") {
+            if (root.scope === "project" && this.claudeUserSkillNames.has(metadata.name)) return;
+            if (root.scope === "user") this.claudeUserSkillNames.add(metadata.name);
+        }
+        if (
+            root.respectModelInvocation &&
+            (!metadata.modelInvocable || !metadata.portableModelInvocation)
+        ) {
+            return;
+        }
+        const name = `${root.namePrefix ?? ""}${metadata.name}`;
+        if (this.skills.has(name)) return;
+        this.skills.set(name, {
+            name,
+            description: metadata.description,
+            source: root.source,
+            ...(root.scope ? { scope: root.scope } : {}),
+            ...(root.workspaceRoot ? { workspaceRoot: root.workspaceRoot } : {}),
             root: canonicalRoot,
         });
     }
 }
 
-function parseSkillMetadata(
-    contents: string,
-    fallbackName: string,
-): Pick<SkillInfo, "name" | "description"> {
+interface ParsedSkillMetadata {
+    name: string;
+    description: string;
+    modelInvocable: boolean;
+    portableModelInvocation: boolean;
+}
+
+function parseSkillMetadata(contents: string, fallbackName: string): ParsedSkillMetadata {
     const lines = contents.replaceAll("\r\n", "\n").split("\n");
     if (lines[0]?.trim() !== "---") {
-        return { name: fallbackName, description: "" };
+        return {
+            name: fallbackName,
+            description: "",
+            modelInvocable: true,
+            portableModelInvocation: true,
+        };
     }
 
     let name = fallbackName;
     let description = "";
+    let whenToUse = "";
+    let modelInvocable = true;
+    let portableModelInvocation = true;
     for (let index = 1; index < lines.length; index += 1) {
         const line = lines[index]!;
         if (line.trim() === "---") break;
@@ -214,25 +265,67 @@ function parseSkillMetadata(
             name = unquoteYamlScalar(nameMatch[1]!.trim()) || fallbackName;
             continue;
         }
-        const descriptionMatch = line.match(/^description:\s*(.*)$/);
-        if (!descriptionMatch) continue;
-
-        const scalar = descriptionMatch[1]!.trim();
-        if (scalar !== ">" && scalar !== "|") {
-            description = unquoteYamlScalar(scalar);
+        const disableMatch = line.match(/^disable-model-invocation:\s*(.*)$/);
+        if (disableMatch) {
+            modelInvocable = !parseYamlBoolean(disableMatch[1]!.trim(), false);
             continue;
         }
-
-        const folded: string[] = [];
-        while (index + 1 < lines.length) {
-            const next = lines[index + 1]!;
-            if (!/^\s+/.test(next)) break;
-            index += 1;
-            folded.push(next.trim());
+        const allowedToolsMatch = line.match(/^allowed-tools:\s*(.*)$/);
+        if (allowedToolsMatch) {
+            // Claude can restrict the tool surface while a skill runs. codex-mcp cannot
+            // currently reproduce that per-skill sandbox, so do not auto-expose it.
+            portableModelInvocation = false;
+            continue;
         }
-        description = scalar === ">" ? folded.join(" ") : folded.join("\n");
+        const hooksMatch = line.match(/^hooks:\s*(.*)$/);
+        if (hooksMatch) {
+            portableModelInvocation = false;
+            continue;
+        }
+        const contextMatch = line.match(/^context:\s*(.*)$/);
+        if (contextMatch && unquoteYamlScalar(contextMatch[1]!.trim()).toLowerCase() === "fork") {
+            portableModelInvocation = false;
+            continue;
+        }
+        const agentMatch = line.match(/^agent:\s*(.*)$/);
+        if (agentMatch && unquoteYamlScalar(agentMatch[1]!.trim())) {
+            portableModelInvocation = false;
+            continue;
+        }
+        const descriptionMatch = line.match(/^(description|when_to_use):\s*(.*)$/);
+        if (!descriptionMatch) continue;
+        const key = descriptionMatch[1]!;
+        const scalar = descriptionMatch[2]!.trim();
+        let parsed: string;
+        if (scalar !== ">" && scalar !== "|") {
+            parsed = unquoteYamlScalar(scalar);
+        } else {
+            const folded: string[] = [];
+            while (index + 1 < lines.length) {
+                const next = lines[index + 1]!;
+                if (!/^\s+/.test(next)) break;
+                index += 1;
+                folded.push(next.trim());
+            }
+            parsed = scalar === ">" ? folded.join(" ") : folded.join("\n");
+        }
+        if (key === "description") description = parsed;
+        else whenToUse = parsed;
     }
-    return { name, description };
+    if (/!`[^`\n]+`/.test(contents)) {
+        // Claude executes dynamic context commands before the model sees the skill.
+        // Returning the literal syntax would change semantics, so fail closed.
+        portableModelInvocation = false;
+    }
+    if (whenToUse) description = description ? `${description} ${whenToUse}` : whenToUse;
+    return { name, description, modelInvocable, portableModelInvocation };
+}
+
+function parseYamlBoolean(value: string, fallback: boolean): boolean {
+    const normalized = unquoteYamlScalar(value).trim().toLowerCase();
+    if (["true", "yes", "on", "1"].includes(normalized)) return true;
+    if (["false", "no", "off", "0"].includes(normalized)) return false;
+    return fallback;
 }
 
 function unquoteYamlScalar(value: string): string {
