@@ -112,6 +112,8 @@ Claude Code 的项目能力不会无条件变成全局能力：主工作区的 l
 
 同名能力按 `priority` 从前到后决定优先级；`~/.codex-mcp/mcp.json` 仍然是最终的本地覆盖层。
 
+每个 ChatGPT 会话需要先选择一个已注册项目。新版 action surface 优先使用 `project_list` / `project_select`；如果 ChatGPT 仍使用旧的已批准 action snapshot、看不到这些后增工具，`workspace_projects(project_id=...)` 是稳定兼容入口，会先绑定当前会话再列出项目。不要自动猜测项目，切换已绑定项目需要用户确认并传 `force=true`。
+
 ### 多工作区与外部文件授权
 
 启动目录（或 `--root` 指定的目录）仍然是 **主工作区**，相对路径、默认命令目录和默认项目上下文都以它为准。需要同时操作其他目录时，可以直接让 ChatGPT“把 `/path/to/another-project` 添加为工作区”；`workspace_add` 会把它作为长期可信的读写/执行工作区并保存到 `~/.codex-mcp/config.json`，`workspace_remove` 可以移除额外工作区，主工作区不会在运行中被移除。
@@ -123,6 +125,16 @@ Claude Code 的项目能力不会无条件变成全局能力：主工作区的 l
 - **永久授权**：保存到 `~/.codex-mcp/config.json`，以后启动仍然有效。
 
 授权按 **目录 + 能力** 区分，目前能力分为工作区外 `write` 和外部命令目录 `exec`。支持 MCP elicitation 的客户端可以在原操作中直接确认；其他客户端会先收到需要授权的结果，再通过 `permission_grant` 完成用户确认，然后重试原操作。日常个人开发默认使用当前会话授权；只有你明确只放行一次时才使用单次授权，明确要求长期允许时才使用永久授权。经常反复使用的项目目录更适合直接通过 `workspace_add` 加入可信工作区。可以用 `permission_list` 查看当前授权，用 `permission_revoke` 撤销指定目录和能力的授权。
+
+如果授权或工作区控制工具不在 ChatGPT 当前 action 列表中，不会把这些高风险操作塞进 `workspace_projects` 绕过确认。此时应在 ChatGPT 中 Refresh 或重新发布 MCP app actions。服务端保留 `tools/list_changed` 通知，但它只能请求客户端重新读取元数据，不能替代 ChatGPT 对新增 action 的批准。
+
+### ChatGPT Tool ABI
+
+- 高频 coding tools 保持独立和稳定；新能力优先为已发布工具增加可选参数。
+- `workspace_projects(project_id/project_path/force)` 是旧 ChatGPT snapshot 下的稳定项目绑定 ABI，只修改会话绑定，不授予外部访问，也不修改持久工作区信任。
+- 低频控制面提供 `project_control`、`permission_control`、`workspace_control` 网关；原有细粒度工具继续保留，已有核心流程不依赖这些新 action 立即可见。
+- `server_info` 返回 `compatibility.surfaceVersion`、稳定工具列表、fallback 能力和自检结果；可传 `host_tools` 比较 host snapshot 与服务器完整工具集。
+- 当前观察到的 49 个工具是旧 snapshot 的具体结果，不是服务端 hard limit。
 
 也可以手动在配置里登记额外工作区，例如：
 

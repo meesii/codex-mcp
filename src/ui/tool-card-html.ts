@@ -329,6 +329,7 @@ export function toolCardHtml(toolName?: string): string {
   }
 
   var LABELS = {
+    project_control: "管理会话项目",
     read: "读取文件",
     write: "写入文件",
     edit: "修改文件",
@@ -352,9 +353,11 @@ export function toolCardHtml(toolName?: string): string {
     permission_list: "查看外部授权",
     permission_grant: "授权外部访问",
     permission_revoke: "撤销外部授权",
+    permission_control: "管理外部授权",
     workspace_roots: "列出工作区",
     workspace_add: "添加工作区",
     workspace_remove: "移除工作区",
+    workspace_control: "管理工作区",
     workspace_projects: "列出工作区项目",
     workspace_search: "搜索工作区",
     workspace_context: "读取项目上下文",
@@ -399,9 +402,12 @@ export function toolCardHtml(toolName?: string): string {
     project_path: "项目",
     max_depth: "深度",
     capability: "权限",
-    duration: "授权范围"
+    duration: "授权范围",
+    action: "操作",
+    project_id: "项目 ID"
   };
   var PARAM_KEYS = {
+    project_control: ["action", "project_id", "project_path", "force"],
     read: ["path", "offset", "limit"],
     write: ["path"],
     edit: ["path"],
@@ -425,10 +431,12 @@ export function toolCardHtml(toolName?: string): string {
     permission_list: [],
     permission_grant: ["capability", "path", "duration"],
     permission_revoke: ["capability", "path"],
+    permission_control: ["action", "capability", "path", "duration"],
     workspace_roots: [],
     workspace_add: ["path"],
     workspace_remove: ["path"],
-    workspace_projects: ["max_depth"],
+    workspace_control: ["action", "path"],
+    workspace_projects: ["project_id", "project_path", "force", "max_depth"],
     workspace_search: ["pattern", "path"],
     workspace_context: ["path", "intent"],
     context_pack: ["query", "path"],

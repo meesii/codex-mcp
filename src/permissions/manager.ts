@@ -53,22 +53,29 @@ export class PermissionManager {
     private readonly fallbackOwnerId: string;
     private readonly runtime: PermissionRuntime;
     private readonly store: PermissionGrantStore;
+    private readonly projectProvider: () => ProjectContext;
 
     constructor(
         private readonly server: McpServer,
-        private readonly project: ProjectContext,
+        project: ProjectContext | (() => ProjectContext),
         options: PermissionManagerOptions = {},
     ) {
         this.fallbackOwnerId = options.ownerId ?? "local:noauth";
         this.runtime = options.runtime ?? new PermissionRuntime();
         this.store = options.store ?? new UserConfigPermissionGrantStore();
+        this.projectProvider = typeof project === "function" ? project : () => project;
+    }
+
+    private currentProject(): ProjectContext {
+        return this.projectProvider();
     }
 
     async authorize(request: PermissionRequest): Promise<void> {
+        const project = this.currentProject();
         const targets = [...new Set(request.targets)];
         if (targets.length === 0) return;
 
-        const externalTargets = targets.filter((target) => !this.project.isWorkspacePath(target));
+        const externalTargets = targets.filter((target) => !project.isWorkspacePath(target));
         if (externalTargets.length === 0) return;
 
         const notPermanent = externalTargets.filter(
@@ -113,7 +120,7 @@ export class PermissionManager {
         path: string,
         duration: PermissionGrantDuration,
     ): PermissionGrant {
-        const canonicalPath = this.project.resolveExternalPath(path);
+        const canonicalPath = this.currentProject().resolveExternalPath(path);
         const grant: PermissionGrant = { capability, path: canonicalPath };
         if (duration === "permanent") {
             this.store.add(grant);
@@ -136,7 +143,7 @@ export class PermissionManager {
     ): { grant: PermissionGrant; removed: number } {
         const grant: PermissionGrant = {
             capability,
-            path: this.project.resolveExternalPath(path),
+            path: this.currentProject().resolveExternalPath(path),
         };
         const permanentRemoved = this.store.remove(grant);
         const runtimeRemoved = this.runtime.removeGrant(this.currentOwnerId(), grant);
@@ -197,8 +204,8 @@ export class PermissionManager {
             return "approved";
         } catch {
             // Legacy/stateless transports cannot reliably route server-initiated
-            // requests. Fall back to permission_grant instead of failing closed on
-            // a protocol detail the user cannot fix.
+            // requests. The returned error explains the visible fallback action
+            // and stale-snapshot recovery without weakening authorization.
             return "unsupported";
         }
     }
@@ -218,8 +225,11 @@ function buildFallbackMessage(request: PermissionRequest): string {
         "需要用户授权后才能继续工作区外操作。",
         `${capabilityLabel(request.capability)}目标：${summarizeTargets(request.targets)}`,
         `授权目录：${request.scope}`,
-        `调用 permission_grant(capability=${request.capability}, path=${JSON.stringify(request.scope)}, duration=session) 授权当前会话后重试。`,
+        "首选恢复路径是由 MCP host 在原操作中处理 elicitation；当前 host/transport 未完成该流程。",
+        `如果 permission_grant 可见，用户确认后调用 permission_grant(capability=${request.capability}, path=${JSON.stringify(request.scope)}, duration=session)，再重试原操作。`,
+        `如果只看到稳定控制网关，可在用户确认后调用 permission_control(action=grant, capability=${request.capability}, path=${JSON.stringify(request.scope)}, duration=session)。`,
         "用户明确只允许一次时使用 duration=once；只有明确要求长期允许时才使用 permanent。",
+        "如果 permission_grant 和 permission_control 都不可见，说明 host 使用的 approved action snapshot 已过期；请在 ChatGPT 中 Refresh 或重新发布 MCP app actions 后再授权。不要通过 workspace_projects 等只承担项目绑定兼容职责的工具绕过授权。",
     ].join(" ");
 }
 

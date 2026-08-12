@@ -4,9 +4,11 @@ import type { PermissionManager } from "../permissions/manager.js";
 import { PERMISSION_CAPABILITIES } from "../permissions/types.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
+import { projectErrorResult } from "../server/project-router.js";
 
 const DURATIONS = ["once", "session", "permanent"] as const;
+const PERMISSION_CONTROL_ACTIONS = ["list", "grant", "revoke"] as const;
 const permissionGrantSchema = z.object({
     capability: z.enum(PERMISSION_CAPABILITIES),
     path: z.string(),
@@ -74,7 +76,7 @@ export function registerPermissionTools(
                     { capability, path: grant.path, duration },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -107,7 +109,78 @@ export function registerPermissionTools(
                     { capability, path: grant.path, removed },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
+            }
+        },
+    );
+
+    registerTool(
+        server,
+        "permission_control",
+        withToolAuth({
+            title: "Manage external access",
+            description:
+                "Stable low-frequency external-authorization gateway. Prefer MCP elicitation during the original operation. Use action=grant only after explicit user confirmation; permanent grants require explicit lasting intent. This write-annotated gateway does not make authorization available through read-only compatibility tools.",
+            inputSchema: {
+                action: z.enum(PERMISSION_CONTROL_ACTIONS),
+                capability: z.enum(PERMISSION_CAPABILITIES).optional(),
+                path: z.string().min(1).optional(),
+                duration: z.enum(DURATIONS).optional(),
+            },
+            outputSchema: {
+                action: z.enum(PERMISSION_CONTROL_ACTIONS),
+                grants: z.array(permissionGrantSchema),
+                capability: z.enum(PERMISSION_CAPABILITIES).nullable(),
+                path: z.string().nullable(),
+                duration: z.enum(DURATIONS).nullable(),
+                removed: z.number().int(),
+            },
+            annotations: writeAnnotations,
+        }),
+        async ({ action, capability, path, duration }) => {
+            try {
+                let capabilityResult: (typeof PERMISSION_CAPABILITIES)[number] | null = null;
+                let pathResult: string | null = null;
+                let durationResult: (typeof DURATIONS)[number] | null = null;
+                let removed = 0;
+                if (action === "grant") {
+                    if (!capability || !path) {
+                        throw new Error("action=grant 需要 capability 和 path。");
+                    }
+                    const selectedDuration = duration ?? "session";
+                    const added = permissions.grant(capability, path, selectedDuration);
+                    capabilityResult = added.capability;
+                    pathResult = added.path;
+                    durationResult = selectedDuration;
+                } else if (action === "revoke") {
+                    if (!capability || !path) {
+                        throw new Error("action=revoke 需要 capability 和 path。");
+                    }
+                    const revoked = permissions.revoke(capability, path);
+                    removed = revoked.removed;
+                    capabilityResult = revoked.grant.capability;
+                    pathResult = revoked.grant.path;
+                } else if (capability !== undefined || path !== undefined || duration !== undefined) {
+                    throw new Error("capability、path 和 duration 仅适用于 grant/revoke。");
+                }
+                const grants = permissions.listGrants();
+                return okResult(
+                    action === "grant"
+                        ? `Authorized ${capabilityResult} access to ${pathResult} (${durationResult}).`
+                        : action === "revoke"
+                          ? `Revoked ${removed} matching external-access grant(s).`
+                          : `Listed ${grants.length} external access grant(s).`,
+                    {
+                        action,
+                        grants,
+                        capability: capabilityResult,
+                        path: pathResult,
+                        duration: durationResult,
+                        removed,
+                    },
+                );
+            } catch (error) {
+                return projectErrorResult(error);
             }
         },
     );

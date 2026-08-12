@@ -4,10 +4,13 @@ import { Minimatch } from "minimatch";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
-import { AccessDeniedError } from "../config/project.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const MAX_DISCOVERED_FILES = 50_000;
 const MAX_RETURNED_FILES = 500;
@@ -98,7 +101,7 @@ export async function listGlobFiles(
     return { files: state.files, scanTruncated };
 }
 
-export function registerGlobTool(server: McpServer, project: ProjectContext): void {
+export function registerGlobTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "glob",
@@ -131,6 +134,7 @@ export function registerGlobTool(server: McpServer, project: ProjectContext): vo
         }),
         async ({ pattern, path, exclude, max_results: maxResults }) => {
             try {
+                const { project } = scope();
                 const excludes = exclude === undefined ? [] : Array.isArray(exclude) ? exclude : [exclude];
                 const { files, scanTruncated } = await listGlobFiles(
                     project,
@@ -152,11 +156,7 @@ export function registerGlobTool(server: McpServer, project: ProjectContext): vo
                     },
                 );
             } catch (error) {
-                const message =
-                    error instanceof AccessDeniedError || error instanceof Error
-                        ? error.message
-                        : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

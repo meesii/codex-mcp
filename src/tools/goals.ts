@@ -4,7 +4,6 @@ import {
     GOAL_CRITERION_STATUSES,
     GOAL_STATUSES,
     GOAL_TASK_STATUSES,
-    GoalStore,
     type GoalRecord,
     type GoalTaskStatus,
 } from "../goals/store.js";
@@ -14,7 +13,11 @@ import {
     stateWriteAnnotations,
     withToolAuth,
 } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const MAX_TEXT = 8_000;
 const MAX_LIST_ITEMS = 100;
@@ -88,7 +91,7 @@ const goalPathInput = z
 
 const boundedText = (label: string) => z.string().min(1).max(MAX_TEXT).describe(label);
 
-export function registerGoalTools(server: McpServer, goals: GoalStore): void {
+export function registerGoalTools(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "goal_start",
@@ -122,6 +125,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         }),
         async ({ path, objective, constraints, tasks, acceptance_criteria: acceptanceCriteria }) => {
             try {
+                const { goals } = scope();
                 const goal = await goals.start({
                     scopePath: path,
                     objective,
@@ -134,7 +138,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
                     { goal },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -172,6 +176,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         }),
         async ({ goal_id: goalId, path }) => {
             try {
+                const { goals } = scope();
                 const snapshot = await goals.status(goalId, path);
                 const selected = snapshot.goal;
                 return okResult(
@@ -181,7 +186,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
                     { ...snapshot },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -255,6 +260,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         }),
         async (input) => {
             try {
+                const { goals } = scope();
                 const goal = await goals.update({
                     goalId: input.goal_id,
                     scopePath: input.path,
@@ -287,7 +293,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
                     { goal },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -311,6 +317,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         }),
         async ({ goal_id: goalId, path, criterion_id: criterionId, status, evidence }) => {
             try {
+                const { goals } = scope();
                 const goal = await goals.verify({
                     goalId,
                     scopePath: path,
@@ -323,7 +330,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
                     { goal },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -345,10 +352,11 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         }),
         async ({ goal_id: goalId, path, summary }) => {
             try {
+                const { goals } = scope();
                 const goal = await goals.finish(goalId, path, summary);
                 return okResult(`Completed ${goal.id}.`, { goal });
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -370,17 +378,14 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         }),
         async ({ goal_id: goalId, path, reason }) => {
             try {
+                const { goals } = scope();
                 const goal = await goals.cancel(goalId, path, reason);
                 return okResult(`Cancelled ${goal.id}.`, { goal });
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
-}
-
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
 }
 
 /** @internal Keep the type exported for focused tests without duplicating the schema shape. */

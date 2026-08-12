@@ -1,6 +1,11 @@
 import type { ToolName } from "../tools/names.js";
 
 export const TOOL_LABELS: Record<ToolName, string> = {
+    project_list: "列出已注册项目",
+    project_select: "绑定项目",
+    project_current: "查看当前项目",
+    project_unbind: "解绑项目",
+    project_control: "管理会话项目",
     read: "读取文件",
     read_many: "批量读取文件",
     write: "写入文件",
@@ -31,6 +36,7 @@ export const TOOL_LABELS: Record<ToolName, string> = {
     permission_list: "查看外部授权",
     permission_grant: "授权外部访问",
     permission_revoke: "撤销外部授权",
+    permission_control: "管理外部授权",
     skills_list: "列出 Codex Skills",
     skill_read: "读取 Codex Skill",
     agents_for_path: "读取项目指令",
@@ -38,6 +44,7 @@ export const TOOL_LABELS: Record<ToolName, string> = {
     workspace_roots: "列出工作区",
     workspace_add: "添加工作区",
     workspace_remove: "移除工作区",
+    workspace_control: "管理工作区",
     workspace_projects: "列出工作区项目",
     workspace_search: "搜索工作区",
     workspace_context: "读取项目上下文",
@@ -59,6 +66,11 @@ export const TOOL_LABELS: Record<ToolName, string> = {
 };
 
 export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }> = {
+    project_list: { invoking: "正在列出已注册项目…", invoked: "已注册项目已列出" },
+    project_select: { invoking: "正在绑定项目…", invoked: "项目绑定完成" },
+    project_current: { invoking: "正在查看当前项目…", invoked: "当前项目已读取" },
+    project_unbind: { invoking: "正在解绑项目…", invoked: "项目已解绑" },
+    project_control: { invoking: "正在管理会话项目…", invoked: "会话项目已更新" },
     read: { invoking: "正在读取文件…", invoked: "文件读取完成" },
     read_many: { invoking: "正在批量读取文件…", invoked: "批量读取完成" },
     write: { invoking: "正在写入文件…", invoked: "文件写入完成" },
@@ -89,6 +101,7 @@ export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }
     permission_list: { invoking: "正在查看外部授权…", invoked: "外部授权已列出" },
     permission_grant: { invoking: "正在授权外部访问…", invoked: "外部访问已授权" },
     permission_revoke: { invoking: "正在撤销外部授权…", invoked: "外部授权已撤销" },
+    permission_control: { invoking: "正在管理外部授权…", invoked: "外部授权已更新" },
     skills_list: { invoking: "正在列出 Codex Skills…", invoked: "Codex Skills 已列出" },
     skill_read: { invoking: "正在读取 Codex Skill…", invoked: "Codex Skill 已读取" },
     agents_for_path: { invoking: "正在读取项目指令…", invoked: "项目指令已加载" },
@@ -96,6 +109,7 @@ export const TOOL_STATUS: Record<ToolName, { invoking: string; invoked: string }
     workspace_roots: { invoking: "正在列出工作区…", invoked: "工作区已列出" },
     workspace_add: { invoking: "正在添加工作区…", invoked: "工作区已添加" },
     workspace_remove: { invoking: "正在移除工作区…", invoked: "工作区已移除" },
+    workspace_control: { invoking: "正在管理工作区…", invoked: "工作区已更新" },
     workspace_projects: { invoking: "正在发现工作区项目…", invoked: "工作区项目已列出" },
     workspace_search: { invoking: "正在搜索工作区…", invoked: "工作区搜索完成" },
     workspace_context: { invoking: "正在读取项目上下文…", invoked: "项目上下文已读取" },

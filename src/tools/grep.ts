@@ -4,12 +4,15 @@ import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
-import { AccessDeniedError } from "../config/project.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import { findRipgrep } from "../lib/search/ripgrep.js";
 import { structuredSearch, type StructuredSearchMatch } from "../lib/search/structured.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const MAX_WALK_FILES = 50_000;
 const MAX_FALLBACK_FILE_BYTES = 2 * 1024 * 1024;
@@ -138,7 +141,7 @@ export async function runFallbackRegexGrep(
     });
 }
 
-export function registerGrepTool(server: McpServer, project: ProjectContext): void {
+export function registerGrepTool(server: McpServer, scope: ToolScopeProvider): void {
     const matchSchema = z.object({
         path: z.string(),
         line: z.number().int(),
@@ -210,6 +213,7 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
             files_only: filesOnly,
         }) => {
             try {
+                const { project } = scope();
                 const scopedAbsolute = project.resolveReadPath(scopePath ?? ".");
                 const info = await stat(scopedAbsolute).catch(() => null);
                 if (!info || (!info.isDirectory() && !info.isFile())) {
@@ -271,11 +275,7 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
                     },
                 );
             } catch (error) {
-                const message =
-                    error instanceof AccessDeniedError || error instanceof Error
-                        ? error.message
-                        : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

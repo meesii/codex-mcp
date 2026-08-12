@@ -6,7 +6,11 @@ import type { ProjectContext } from "../config/project.js";
 import { runGitReadOnly } from "../lib/fs/git-readonly.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const MAX_GIT_DIFF_BYTES = 120_000;
 const MAX_GIT_STATUS_BYTES = 2 * 1024 * 1024;
@@ -14,7 +18,7 @@ const MAX_GIT_BRANCH_BYTES = 1024 * 1024;
 const MAX_STATUS_FILES = 500;
 const MAX_BRANCHES = 500;
 
-export function registerGitTools(server: McpServer, project: ProjectContext): void {
+export function registerGitTools(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "git_status",
@@ -51,6 +55,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path, paths, max_files: maxFiles, summary_only: summaryOnly }) => {
             try {
+                const { project } = scope();
                 const repo = await resolveRepository(project, path);
                 const branchResult = await runGitReadOnly(repo.absolute, ["branch", "--show-current"], {
                     maxOutputBytes: 64 * 1024,
@@ -86,7 +91,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
                     },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -118,6 +123,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path, paths, staged }) => {
             try {
+                const { project } = scope();
                 const repo = await resolveRepository(project, path);
                 const args = ["diff", "--no-ext-diff", "--no-textconv", "--unified=3"];
                 if (staged) args.push("--cached");
@@ -141,7 +147,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
                     },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -172,6 +178,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path, limit }) => {
             try {
+                const { project } = scope();
                 const repo = await resolveRepository(project, path);
                 const result = await runGitReadOnly(repo.absolute, [
                     "log",
@@ -192,7 +199,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
                     commits,
                 });
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -218,6 +225,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path, revision }) => {
             try {
+                const { project } = scope();
                 const repo = await resolveRepository(project, path);
                 const rev = revision?.trim() || "HEAD";
                 if (rev.startsWith("-")) throw new Error("revision must not begin with '-'");
@@ -244,7 +252,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
                     },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -271,6 +279,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path }) => {
             try {
+                const { project } = scope();
                 const repo = await resolveRepository(project, path);
                 const result = await runGitReadOnly(
                     repo.absolute,
@@ -297,7 +306,7 @@ export function registerGitTools(server: McpServer, project: ProjectContext): vo
                     { repository: repo.relative, branches, truncated },
                 );
             } catch (error) {
-                return errorResult(errorMessage(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -369,8 +378,4 @@ function validateRepositoryRelativePath(repository: string, input: string): stri
         throw new Error(`Git diff path escapes repository: ${input}`);
     }
     return relationship.replaceAll("\\", "/") || ".";
-}
-
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
 }

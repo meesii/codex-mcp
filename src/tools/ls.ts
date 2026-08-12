@@ -1,15 +1,17 @@
 import { readdir, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../config/project.js";
-import { AccessDeniedError } from "../config/project.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const MAX_DIRECTORY_ENTRIES = 2_000;
 
-export function registerLsTool(server: McpServer, project: ProjectContext): void {
+export function registerLsTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "ls",
@@ -37,6 +39,7 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
         }),
         async ({ path: dirPath }) => {
             try {
+                const { project } = scope();
                 const absolutePath = project.resolveReadPath(dirPath ?? ".");
                 const info = await stat(absolutePath);
                 if (!info.isDirectory()) {
@@ -66,11 +69,7 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
                     },
                 );
             } catch (error) {
-                const message =
-                    error instanceof AccessDeniedError || error instanceof Error
-                        ? error.message
-                        : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

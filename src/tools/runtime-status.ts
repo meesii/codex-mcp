@@ -1,10 +1,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { runtimeTelemetry } from "../lib/util/telemetry.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { okResult } from "../lib/tool/result.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const latencyMetricSchema = z.object({
     calls: z.number().int().nonnegative(),
@@ -28,10 +31,7 @@ const downstreamServerMetricSchema = latencyMetricSchema.extend({
     server: z.string(),
 });
 
-export function registerRuntimeStatusTool(
-    server: McpServer,
-    processes: ProcessSessionAccess,
-): void {
+export function registerRuntimeStatusTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "runtime_status",
@@ -70,11 +70,16 @@ export function registerRuntimeStatusTool(
             annotations: readOnlyAnnotations,
         }),
         async () => {
-            const snapshot = runtimeTelemetry.snapshot(processes.runtimeStats());
-            return okResult(
-                `Runtime telemetry: ${snapshot.http.requests} MCP HTTP request(s), ${snapshot.tools.length} observed tool(s).`,
-                { ...snapshot },
-            );
+            try {
+                const { processes } = scope();
+                const snapshot = runtimeTelemetry.snapshot(processes.runtimeStats());
+                return okResult(
+                    `Runtime telemetry: ${snapshot.http.requests} MCP HTTP request(s), ${snapshot.tools.length} observed tool(s).`,
+                    { ...snapshot },
+                );
+            } catch (error) {
+                return projectErrorResult(error);
+            }
         },
     );
 }

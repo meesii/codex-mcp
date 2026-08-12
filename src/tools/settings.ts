@@ -66,7 +66,7 @@ export function registerSettingsTools(
         withToolAuth({
             title: "Update codex-mcp settings",
             description:
-                "Persist ChatGPT-facing UI settings. `tools` controls ordinary coding tool cards; `status` controls Summary and Goal cards. The settings panel always remains available. Call with no arguments to request a tool-list refresh without changing settings. Every successful call sends the standard tools/list_changed notification so capable clients refresh tool metadata.",
+                "Persist ChatGPT-facing UI settings. `tools` controls ordinary coding tool cards; `status` controls Summary and Goal cards. Call with no arguments to request a tool-list refresh without changing settings. Every successful call sends tools/list_changed, but this cannot approve or replace a ChatGPT frozen action snapshot; Refresh/re-publish the app for newly added top-level actions.",
             inputSchema: {
                 tools: z
                     .boolean()
@@ -86,15 +86,17 @@ export function registerSettingsTools(
         }),
         async ({ tools, status }) => {
             try {
-                if (tools === undefined && status === undefined) {
-                    return errorResult("Provide at least one setting: tools or status.");
-                }
-                const ui = settings.update({ tools, status });
-                // Descriptor metadata changed. The next stateless MCP request builds
-                // tools from the fresh preference snapshot; ask the host to re-list.
+                const ui =
+                    tools === undefined && status === undefined
+                        ? settings.get()
+                        : settings.update({ tools, status });
+                // Descriptor metadata changed. Ask capable hosts to re-list, while
+                // recognizing that ChatGPT action approval snapshots may stay frozen.
                 await Promise.resolve(server.sendToolListChanged());
                 return okResult(
-                    `Saved UI settings: ordinary tools ${ui.tools ? "on" : "off"}; status ${ui.status ? "on" : "off"}.`,
+                    tools === undefined && status === undefined
+                        ? "Requested a fresh MCP tool list from the client."
+                        : `Saved UI settings: ordinary tools ${ui.tools ? "on" : "off"}; status ${ui.status ? "on" : "off"}.`,
                     {
                         ui,
                         toolListChangedRequested: true,
