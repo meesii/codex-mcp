@@ -1,6 +1,6 @@
 {
     "name": "codex-mcp",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "description": "Lean local coding MCP server for ChatGPT with embedded OAuth and Streamable HTTP.",
     "type": "module",
     "main": "dist/cli.js",
