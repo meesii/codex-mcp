@@ -2,6 +2,8 @@ import {
     confirm,
     isCancel,
     password,
+    select,
+    spinner,
     text,
 } from "@clack/prompts";
 import { stdin as input, stdout as output } from "node:process";
@@ -60,6 +62,32 @@ export async function askLine(
 }
 
 /**
+ * Ask the user to choose one value from a terminal menu.
+ *
+ * @param question - Prompt text
+ * @param options - Selectable string values
+ * @param initialValue - Initially selected value
+ * @returns Selected value
+ */
+export async function askSelect(
+    question: string,
+    options: Array<{ value: string; label?: string; hint?: string }>,
+    initialValue?: string,
+): Promise<string> {
+    requireInteractiveTerminal();
+    if (options.length === 0) {
+        throw new Error("选择列表不能为空");
+    }
+    return promptValue(
+        await select({
+            message: question,
+            options,
+            ...(initialValue !== undefined ? { initialValue } : {}),
+        }),
+    );
+}
+
+/**
  * Read a secret from an interactive TTY without echoing it.
  *
  * @param question - Prompt text
@@ -68,6 +96,25 @@ export async function askLine(
 export async function askSecret(question: string): Promise<string> {
     requireInteractiveTerminal();
     return promptValue(await password({ message: question }));
+}
+
+/** Run one setup operation with a Clack spinner and a deterministic terminal outcome. */
+export async function withSpinner<T>(
+    message: string,
+    successMessage: string,
+    action: () => Promise<T>,
+): Promise<T> {
+    requireInteractiveTerminal();
+    const progress = spinner();
+    progress.start(message);
+    try {
+        const result = await action();
+        progress.stop(successMessage);
+        return result;
+    } catch (error) {
+        progress.stop("操作失败");
+        throw error;
+    }
 }
 
 function requireInteractiveTerminal(): void {

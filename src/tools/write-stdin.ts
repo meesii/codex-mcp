@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
@@ -11,7 +11,7 @@ const PROCESS_CAPTURE_CHARS = 200_000;
 
 export function registerWriteStdinTool(
     server: McpServer,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
 ): void {
     registerTool(
         server,

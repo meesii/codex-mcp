@@ -125,8 +125,9 @@ async function selectCodegraphProject(
 ): Promise<{ absolute?: string; relative: string; reason?: string }> {
     if (requestedPath?.trim()) {
         const absolute = project.resolvePath(requestedPath.trim());
-        if (hasCodegraphAtOrAbove(project.root, absolute)) {
-            return { absolute, relative: requestedPath.trim() };
+        const workspaceRoot = containingWorkspaceRoot(project, absolute);
+        if (workspaceRoot && hasCodegraphAtOrAbove(workspaceRoot, absolute)) {
+            return { absolute, relative: project.displayPath(absolute) };
         }
         return {
             relative: requestedPath.trim(),
@@ -155,8 +156,14 @@ async function selectCodegraphProject(
         reason:
             indexed.length > 1
                 ? `multiple CodeGraph projects are available (${indexed.map((item) => item.path).join(", ")}); specify project_path`
-                : "no CodeGraph index discovered under project_root",
+                : "no CodeGraph index discovered under registered workspaces",
     };
+}
+
+function containingWorkspaceRoot(project: ProjectContext, candidate: string): string | undefined {
+    return project.roots
+        .filter((root) => isInside(root, candidate))
+        .sort((left, right) => right.length - left.length)[0];
 }
 
 function hasCodegraphAtOrAbove(projectRoot: string, candidate: string): boolean {

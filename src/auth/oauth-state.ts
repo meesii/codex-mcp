@@ -289,6 +289,7 @@ export class OAuthStateStore {
             scopes: [...record.scopes],
             expiresAt: Math.floor(record.expiresAt / 1000),
             resource: record.resource ? new URL(record.resource) : undefined,
+            extra: { codexMcpSessionId: record.familyId },
         };
     }
 

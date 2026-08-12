@@ -2,13 +2,16 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config/loader.js";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { configureToolRegistrationPolicy } from "../lib/tool/log.js";
 import type { ProjectContext } from "../config/project.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import type { GoalStore } from "../goals/store.js";
 import type { UiSettingsStore } from "../ui/settings.js";
+import { PermissionManager } from "../permissions/manager.js";
+import type { PermissionGrantStore } from "../permissions/store.js";
+import type { PermissionRuntime } from "../permissions/runtime.js";
 import { registerAllTools } from "../tools/register.js";
 import { PACKAGE_VERSION } from "./version.js";
 
@@ -22,13 +25,16 @@ export function buildServerInstructions(
     skills?: SkillRegistry,
     agents?: AgentInstructionRegistry,
     allowedTools?: ReadonlySet<string>,
+    workspaceRoots?: readonly string[],
 ): string {
     const shell = instructionShellName();
+    const trustedRoots = workspaceRoots?.length ? [...workspaceRoots] : [projectRoot];
     const environment = [
         "<environment_context>",
         `  <project_root>${projectRoot}</project_root>`,
+        `  <workspace_roots>${trustedRoots.join(" | ")}</workspace_roots>`,
         `  <shell>${shell}</shell>`,
-        "  <paths>relative to project_root unless noted</paths>",
+        "  <paths>relative paths use project_root; absolute reads may be outside workspaces; outside-workspace writes/exec cwd require user approval</paths>",
         "</environment_context>",
     ].join("\n");
 
@@ -64,11 +70,17 @@ export function buildServerInstructions(
     addTool("goal_cancel", "cancel an abandoned/replaced goal while preserving its history.");
     addTool("settings_get", "open/read codex-mcp ChatGPT UI visibility settings.");
     addTool("settings_update", "persist ordinary-tool/status UI visibility and notify the client to refresh tool metadata.");
+    addTool("permission_list", "list active external-access grants for this client plus permanent grants.");
+    addTool("permission_grant", "user-confirmed session/one-time/permanent authorization for write/exec outside registered workspaces; session is the normal default, permanent requires explicit lasting intent.");
+    addTool("permission_revoke", "revoke matching external-access grants for an exact directory/capability.");
     addTool("skills_list", "list skills imported from local Codex skill roots.");
     addTool("skill_read", "read a matching skill's SKILL.md or referenced text file before following it.");
     addTool("agents_for_path", "load global + nested AGENTS.md rules for a project path.");
     addTool("capabilities_reload", "force-refresh imported Codex MCPs and skills; automatic watching is also enabled in the CLI.");
-    addTool("workspace_projects", "discover Git projects under project_root.");
+    addTool("workspace_roots", "list the primary and additional trusted workspace roots.");
+    addTool("workspace_add", "persistently trust an existing directory as a read/write/exec workspace; use only when the user explicitly requests broader workspace trust.");
+    addTool("workspace_remove", "remove persisted trust for an additional workspace; primary workspace cannot be removed at runtime.");
+    addTool("workspace_projects", "discover Git projects across registered workspaces.");
     addTool("workspace_search", "bounded structured search across the workspace.");
     addTool("workspace_context", "one-call Chat-oriented project snapshot: Git/current Goal/processes/instructions/Skills/focus/entry points/warnings; prefer first for continue/look-at-this-project prompts.");
     addTool("context_pack", "assemble scope-focused project/files/AGENTS/skills context; after using it for a scope, do not re-load agents_for_path unless moving deeper.");
@@ -113,6 +125,12 @@ export function buildServerInstructions(
             "- ChatGPT custom UI: ordinary tool cards default off; Summary/Goal status cards default on. Use settings_get to open the interactive settings panel or settings_update for direct changes.",
         );
     }
+    if (allows("permission_grant")) {
+        limits.push(
+            "- External filesystem writes / external command cwd: if a tool reports permission required, call permission_grant for the exact directory and retry. Use duration=session by default; use once only when the user wants one-operation access, and permanent only for explicit lasting trust.",
+            "- If the user clearly treats an external directory as a recurring project/workspace, prefer suggesting or using workspace_add with user confirmation instead of repeatedly granting temporary external access. Do not upgrade a one-off directory to a workspace silently.",
+        );
+    }
     if (["edit", "apply_patch", "write", "bash"].some(allows)) {
         const recoveryTools = ["edit", "apply_patch", "write", "bash"].filter(allows).join("/");
         limits.push(`- On tool failure: inspect the returned error/output, then use ${recoveryTools} when appropriate and retry.`);
@@ -129,7 +147,7 @@ export function buildServerInstructions(
     }
 
     const bodyParts = [
-        "Codex-MCP: local project coding tools. Paths are under project_root. Shell is " + shell + ".",
+        "Codex-MCP: local coding tools with a primary project plus optional additional workspaces. Relative paths use project_root; absolute reads may go outside workspaces. Shell is " + shell + ".",
     ];
     if (toolMap.length > 0) {
         bodyParts.push("", "Tool map (pick by goal):", ...toolMap);
@@ -157,7 +175,7 @@ export function buildServerInstructions(
 export function createMcpServer(
     config: ServerConfig,
     project: ProjectContext,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
     hub: DownstreamMcpHub,
     skills: SkillRegistry,
     agents: AgentInstructionRegistry,
@@ -165,6 +183,9 @@ export function createMcpServer(
     goals: GoalStore,
     uiSettings: UiSettingsStore,
     allowedTools?: ReadonlySet<string>,
+    permissionStore?: PermissionGrantStore,
+    permissionRuntime?: PermissionRuntime,
+    permissionOwnerId?: string,
 ): McpServer {
     const server = new McpServer(
         {
@@ -178,10 +199,16 @@ export function createMcpServer(
                 skills,
                 agents,
                 allowedTools,
+                project.roots,
             ),
         },
     );
 
+    const permissions = new PermissionManager(server, project, {
+        ...(permissionStore ? { store: permissionStore } : {}),
+        ...(permissionRuntime ? { runtime: permissionRuntime } : {}),
+        ...(permissionOwnerId ? { ownerId: permissionOwnerId } : {}),
+    });
     configureToolRegistrationPolicy(server, allowedTools);
     registerAllTools(
         server,
@@ -194,6 +221,7 @@ export function createMcpServer(
         workspace,
         goals,
         uiSettings,
+        permissions,
     );
     return server;
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessInfo, ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessInfo, ProcessSessionAccess } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
@@ -25,7 +25,7 @@ const processInfoSchema = z.object({
 
 export function registerProcessInspectTools(
     server: McpServer,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
 ): void {
     registerTool(
         server,

@@ -314,12 +314,12 @@ async function resolveRepository(
     const topLevel = result.stdout.trim();
     if (!topLevel) throw new Error(`not a Git repository: ${inputPath?.trim() || "."}`);
     const canonical = await realpath(topLevel);
-    if (!isInside(project.root, canonical)) {
-        throw new Error("Git repository root is outside project_root");
+    if (!project.isWorkspacePath(canonical)) {
+        throw new Error("Git repository root is outside registered workspaces");
     }
     return {
         absolute: canonical,
-        relative: relative(project.root, canonical).replaceAll("\\", "/") || ".",
+        relative: project.displayPath(canonical),
     };
 }
 

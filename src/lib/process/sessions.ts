@@ -58,6 +58,16 @@ export interface ProcessInfo {
     outputTruncated: boolean;
 }
 
+export interface ProcessSessionAccess {
+    start(input: StartProcessInput): Promise<ProcessSnapshot>;
+    poll(input: PollProcessInput): Promise<ProcessSnapshot>;
+    kill(processId: number): Promise<ProcessSnapshot>;
+    list(): ProcessInfo[];
+    runtimeStats(): ProcessRuntimeStats;
+    status(processId: number): ProcessInfo;
+    peek(processId: number, maxOutputChars?: number): ProcessSnapshot;
+}
+
 interface ProcessSession {
     id: number;
     ownerScope?: string;
@@ -93,7 +103,7 @@ interface SharedProcessState {
  * only see processes created by that owner. Root `shutdown()` is reserved for
  * server shutdown and terminates every process across owners.
  */
-export class ProcessSessionManager {
+export class ProcessSessionManager implements ProcessSessionAccess {
     private readonly state: SharedProcessState;
 
     constructor(

@@ -6,9 +6,14 @@ import { AgentInstructionRegistry } from "../src/agents/registry.js";
 import { ProjectContext } from "../src/config/project.js";
 import { resolveWidgetDomain, type ServerConfig } from "../src/config/loader.js";
 import { createHttpServer } from "../src/server/http-server.js";
+import { isPathRelationshipInside } from "../src/lib/fs/path-guard.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 
 async function main(): Promise<void> {
+    assert.equal(isPathRelationshipInside("D:\\outside"), false);
+    assert.equal(isPathRelationshipInside("..\\outside"), false);
+    assert.equal(isPathRelationshipInside("nested\\deeper"), true);
+
     const home = await mkdtemp(join(tmpdir(), "codex-mcp-agents-home-"));
     await mkdir(join(home, ".codex"), { recursive: true });
     await writeFile(join(home, ".codex", "AGENTS.md"), "GLOBAL-RULE\n", "utf8");
@@ -34,7 +39,7 @@ async function main(): Promise<void> {
     assert.match(initializeBlock, /GLOBAL-RULE/);
     assert.match(initializeBlock, /ROOT-RULE/);
     assert.doesNotMatch(initializeBlock, /NESTED-RULE/);
-    assert.throws(() => agents.forPath("../outside"), /outside project root/i);
+    assert.throws(() => agents.forPath("../outside"), /outside registered workspaces/i);
 
     const host = "127.0.0.1";
     const allowedHosts: string[] = [];

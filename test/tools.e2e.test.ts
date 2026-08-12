@@ -458,10 +458,9 @@ async function main(): Promise<void> {
             join(ctx.fixtureRoot, "outside-link"),
             process.platform === "win32" ? "junction" : "dir",
         );
-        assertToolError(
-            await mcp.callTool("read", { path: "outside-link/secret.txt" }),
-            "read symlink escape",
-        );
+        const outsideRead = await mcp.callTool("read", { path: "outside-link/secret.txt" });
+        assert.notEqual(outsideRead.isError, true, toolText(outsideRead));
+        assert.match(String((outsideRead.structuredContent as { content?: string })?.content ?? ""), /outside-secret/);
         assertToolError(
             await mcp.callTool("write", {
                 path: "outside-link/new.txt",
@@ -490,10 +489,10 @@ async function main(): Promise<void> {
             }),
             "apply_patch symlink escape",
         );
-        assertToolError(
-            await mcp.callTool("ls", { path: "outside-link" }),
-            "ls symlink escape",
-        );
+        const outsideList = await mcp.callTool("ls", { path: "outside-link" });
+        assert.notEqual(outsideList.isError, true, toolText(outsideList));
+        const outsideEntries = (outsideList.structuredContent as { entries?: Array<{ name: string }> })?.entries ?? [];
+        assert.ok(outsideEntries.some((entry) => entry.name === "secret.txt"));
         await assert.rejects(readFile(join(outsideRoot, "new.txt"), "utf8"), /ENOENT/);
         assert.equal(await readFile(join(outsideRoot, "secret.txt"), "utf8"), "outside-secret\n");
 

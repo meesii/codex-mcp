@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { runtimeTelemetry } from "../lib/util/telemetry.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
@@ -30,7 +30,7 @@ const downstreamServerMetricSchema = latencyMetricSchema.extend({
 
 export function registerRuntimeStatusTool(
     server: McpServer,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
 ): void {
     registerTool(
         server,

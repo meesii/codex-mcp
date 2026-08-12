@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ProjectContext } from "../../config/project.js";
 import { findRipgrep, runRipgrep } from "./ripgrep.js";
 import { truncateText } from "./truncate.js";
@@ -53,7 +53,7 @@ export async function structuredSearch(
     if (!rgPath) throw new Error("Structured search requires ripgrep (rg)");
 
     const scope = input.path?.trim() || ".";
-    const scopedAbsolute = project.resolvePath(scope);
+    const scopedAbsolute = project.resolveReadPath(scope);
     const info = await stat(scopedAbsolute).catch(() => null);
     if (!info || (!info.isDirectory() && !info.isFile())) {
         throw new Error(`Invalid search path: ${scope}`);
@@ -90,7 +90,7 @@ export async function structuredSearch(
         const allFiles = result.stdout
             .split(/\r?\n/)
             .filter(Boolean)
-            .map((item) => normalizeResultPath(project.root, searchRoot, item));
+            .map((item) => normalizeResultPath(project, searchRoot, item));
         const files = allFiles.slice(0, maxResults);
         return {
             matches: [],
@@ -120,7 +120,7 @@ export async function structuredSearch(
         }
         if (event.type !== "match" && event.type !== "context") continue;
         const data = event.data;
-        const relativePath = normalizeResultPath(project.root, searchRoot, data.path?.text ?? "");
+        const relativePath = normalizeResultPath(project, searchRoot, data.path?.text ?? "");
         if (!relativePath) continue;
 
         const candidate = {
@@ -170,9 +170,9 @@ export async function structuredSearch(
     };
 }
 
-function normalizeResultPath(projectRoot: string, searchRoot: string, rgPath: string): string {
+function normalizeResultPath(project: ProjectContext, searchRoot: string, rgPath: string): string {
     if (!rgPath) return "";
-    return relative(projectRoot, join(searchRoot, rgPath)).replaceAll("\\", "/");
+    return project.displayPath(join(searchRoot, rgPath));
 }
 
 function firstColumn(data: RgJsonData): number {

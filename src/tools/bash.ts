@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
 import { AccessDeniedError } from "../config/project.js";
+import type { PermissionManager } from "../permissions/manager.js";
 import { terminateChildProcess } from "../lib/process/tree.js";
 import { registerTool } from "../lib/tool/log.js";
 import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
@@ -89,20 +90,24 @@ async function runShellCommand(
     });
 }
 
-export function registerBashTool(server: McpServer, project: ProjectContext): void {
+export function registerBashTool(
+    server: McpServer,
+    project: ProjectContext,
+    permissions: PermissionManager,
+): void {
     registerTool(
         server,
         "bash",
         withToolAuth({
             title: "Run shell command",
             description:
-                "Run a short foreground shell command in project_root or an optional guarded project-relative cwd. Output defaults to a compact summary/tail budget; request tail, head_tail, or full when needed. Windows uses PowerShell; Unix uses bash. Do NOT use this to read/search/edit source — use read/grep/glob/ls/edit/apply_patch/write. For long-running servers/watchers use exec_command.",
+                "Run a short foreground shell command in the primary workspace or an optional workspace-relative/absolute cwd. An external cwd triggers lightweight user approval; in-workspace commands remain frictionless. Output is bounded. Windows uses PowerShell; Unix uses bash. Do NOT use this to read/search/edit source.",
             inputSchema: {
                 command: z.string().min(1).max(32_000).describe("Shell command to run."),
                 cwd: z
                     .string()
                     .optional()
-                    .describe("Optional working directory relative to project_root."),
+                    .describe("Optional workspace-relative or absolute working directory."),
                 timeout_ms: z
                     .number()
                     .int()
@@ -142,9 +147,15 @@ export function registerBashTool(server: McpServer, project: ProjectContext): vo
             max_output_chars: maxOutputChars,
         }) => {
             try {
+                const effectiveCwd = project.resolveExternalPath(cwd ?? ".");
+                await permissions.authorize({
+                    capability: "exec",
+                    targets: [effectiveCwd],
+                    scope: effectiveCwd,
+                    reason: `在 ${cwd ?? "."} 执行命令`,
+                });
                 return await project.lock.runExclusive(async () => {
                     const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
-                    const effectiveCwd = project.resolvePath(cwd ?? ".");
                     const effectiveMode: OutputMode = outputMode ?? "summary";
                     const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
                     const result = await runShellCommand(command, effectiveCwd, effectiveTimeout);

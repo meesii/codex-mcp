@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { homedir, hostname as osHostname } from "node:os";
 import { resolveCname } from "node:dns/promises";
-import { expandHomePath } from "../config/loader.js";
 import { printInfo, printSuccess, printWarning } from "../lib/util/terminal.js";
 import { ensureManagedTool } from "../managed-tools/install.js";
 import {
@@ -16,12 +17,16 @@ import {
     probeCloudflaredVersion,
     suggestCloudflaredBin,
 } from "./bin.js";
+import {
+    discoverCloudflareZones,
+    getCloudflareOriginCertPath,
+} from "./cloudflare-account.js";
 import { runCloudflared, runCloudflaredInherit } from "./exec.js";
 import {
     requireDnsOverwriteConfirmation,
     requireTunnelDeleteConfirmation,
 } from "./confirm.js";
-import { askLine, askYesNo, canPromptInteractively } from "./prompt.js";
+import { askLine, askSelect, askYesNo, canPromptInteractively, withSpinner } from "./prompt.js";
 import {
     getCloudflaredConfigPath,
     getCredentialsPath,
@@ -66,11 +71,7 @@ export async function ensureTunnelSetup(
             };
         }
         // Fully configured cloudflared → just refresh yml / resolve bin.
-        if (
-            userConfig.useCloudflared === true &&
-            userConfig.cloudflaredBin &&
-            userConfig.tunnelId
-        ) {
+        if (userConfig.useCloudflared === true && userConfig.tunnelId) {
             return await finalizeCloudflared(userConfig, host, port);
         }
         // Domain saved but tunnel setup was interrupted → resume wizard.
@@ -87,6 +88,12 @@ export async function runTunnelWizard(): Promise<TunnelSetupResult> {
     return ensureTunnelSetup({ force: true });
 }
 
+export function isPublicSetupConfigured(userConfig: UserConfig): boolean {
+    if (!userConfig.domain) return false;
+    if (userConfig.useCloudflared === false) return true;
+    return Boolean(userConfig.tunnelId);
+}
+
 async function runConfigWizard(
     userConfig: UserConfig,
     host: string,
@@ -98,52 +105,73 @@ async function runConfigWizard(
     printInfo("设置公网连接");
     printInfo(`配置保存在：${configPath}`);
 
-    // 1) Domain first — always.
-    const domainDefault =
-        userConfig.domain ?? existingYml?.hostname ?? undefined;
-    let domainRaw = "";
-    while (!domainRaw) {
-        domainRaw = (
-            await askLine(
-                "给 ChatGPT 使用的域名（例如 mcp.example.com）",
-                domainDefault,
-            )
-        ).trim();
-        if (!domainRaw) {
-            printWarning("需要填写一个域名。没有域名时可用 `codex-mcp --local` 只在本机运行。");
-        }
-    }
-    const domain = normalizeHostname(domainRaw);
-
-    userConfig = saveUserConfig({
-        host,
-        port,
-        domain,
-    });
-    printSuccess(`域名已保存：${domain}`);
-
-    // 2) Optional cloudflared.
+    // 1) Choose whether codex-mcp should manage the public Cloudflare entry.
     const useCloudflared = await askYesNo(
         "要让 codex-mcp 自动配置 Cloudflare Tunnel 吗？",
         true,
     );
     if (!useCloudflared) {
-        userConfig = saveUserConfig({ useCloudflared: false });
+        const domain = await askPublicDomain(
+            userConfig.domain ?? existingYml?.hostname,
+        );
+        userConfig = saveUserConfig({ host, port, domain, useCloudflared: false });
+        printSuccess(`域名已保存：${domain}`);
         printSuccess("域名已保存。请你自己准备 HTTPS 公网入口；需要自动配置时可重新运行 `codex-mcp tunnel`。");
         return { userConfig, domain, useCloudflared: false };
     }
 
-    // 3) Prepare cloudflared, then tunnel ops.
-    const bin = await resolveOrInstallCloudflaredBin(userConfig.cloudflaredBin);
-    const tunnelName =
-        (
-            await askLine(
-                "Tunnel 名称",
-                userConfig.tunnelName ?? "codex-mcp",
-            )
-        ).trim() || "codex-mcp";
-
+    // 2) Prepare + login first so the wizard can discover usable Cloudflare zones.
+    const bin = await withSpinner(
+        "正在准备 Cloudflare 连接组件…",
+        "Cloudflare 连接组件已就绪",
+        () => resolveOrInstallCloudflaredBin(userConfig.cloudflaredBin),
+    );
     await ensureLogin(bin);
+
+    const discovery = await withSpinner(
+        "正在读取 Cloudflare 账号中的域名…",
+        "Cloudflare 域名读取完成",
+        () => discoverCloudflareZones(),
+    );
+    const zones = discovery.zones;
+    if (zones.length === 0) {
+        throw new Error(
+            "Cloudflare 账号里没有可用于公网 hostname 的域名。Named Tunnel 的 <UUID>.cfargotunnel.com 只能作为你自己 DNS 记录的 CNAME 目标，不能直接作为 ChatGPT 连接地址；请先把一个域名接入 Cloudflare 后重试。",
+        );
+    }
+    printSuccess(`已检测到 ${zones.length} 个可用 Cloudflare 域名。`);
+    if (!discovery.complete) {
+        printWarning("Cloudflare 没有允许列出全部域名，当前只使用登录时选中的域名。");
+    }
+
+    // 3) Select the Cloudflare zone, then choose the subdomain prefix.
+    const previousDomain = userConfig.domain ?? existingYml?.hostname;
+    const preferredZone = findMatchingZone(previousDomain, zones) ?? zones[0];
+    const zone =
+        zones.length === 1
+            ? zones[0]
+            : await askSelect(
+                  "请选择用于 codex-mcp 的 Cloudflare 域名",
+                  zones.map((value) => ({ value, label: value })),
+                  preferredZone,
+              );
+    if (zones.length === 1) {
+        printSuccess(`使用 Cloudflare 域名：${zone}`);
+    }
+
+    const previousPrefix = subdomainPrefixForZone(previousDomain, zone);
+    const prefixDefault =
+        previousPrefix && !previousPrefix.includes(".") ? previousPrefix : "codex-mcp";
+    const domain = await askCloudflareHostname(zone, prefixDefault);
+    userConfig = saveUserConfig({ host, port, domain });
+    printSuccess(`域名已保存：${domain}`);
+
+    // 4) Create/reuse a stable machine-specific named Tunnel and route the hostname.
+    const tunnelName = userConfig.tunnelName ?? defaultTunnelName();
+    if (!userConfig.tunnelName) {
+        userConfig = saveUserConfig({ tunnelName });
+    }
+
     const tunnelId = await ensureTunnelCreated(
         bin,
         tunnelName,
@@ -247,7 +275,7 @@ function localServiceUrl(host: string, port: number): string {
 }
 
 async function ensureLogin(bin: string): Promise<void> {
-    const certPath = expandHomePath("~/.cloudflared/cert.pem");
+    const certPath = getCloudflareOriginCertPath();
     if (existsSync(certPath)) {
         printSuccess("已登录 Cloudflare，无需重复登录。");
         return;
@@ -255,7 +283,9 @@ async function ensureLogin(bin: string): Promise<void> {
     printInfo("正在打开浏览器，请登录 Cloudflare 并完成授权…");
     const code = await runCloudflaredInherit(bin, ["tunnel", "login"]);
     if (code !== 0) {
-        throw new Error("Cloudflare 登录没有完成，请重新运行 `codex-mcp tunnel`");
+        throw new Error(
+            "Cloudflare 登录没有完成。Named Tunnel 登录需要账号中至少有一个已接入 Cloudflare 的域名；如果账号没有域名，<UUID>.cfargotunnel.com 也不能直接作为 ChatGPT 连接地址。",
+        );
     }
     if (!existsSync(certPath)) {
         throw new Error(`Cloudflare 登录完成了，但没有找到登录凭据：${certPath}`);
@@ -267,7 +297,11 @@ async function ensureTunnelCreated(
     tunnelName: string,
     knownId?: string,
 ): Promise<string> {
-    const existing = await findTunnelIdByName(bin, tunnelName);
+    const existing = await withSpinner(
+        "正在检查现有 Cloudflare Tunnel…",
+        "Cloudflare Tunnel 检查完成",
+        () => findTunnelIdByName(bin, tunnelName),
+    );
     if (knownId && existing === knownId && existsSync(getCredentialsPath(knownId))) {
         printSuccess(`继续使用现有 Tunnel：${tunnelName}`);
         return knownId;
@@ -284,14 +318,22 @@ async function ensureTunnelCreated(
     if (existing) {
         printWarning("Cloudflare 上已经有同名 Tunnel，但这台电脑缺少它的凭据。");
         await requireTunnelDeleteConfirmation(tunnelName);
-        await deleteTunnel(bin, tunnelName, existing);
+        await withSpinner(
+            "正在删除无法复用的旧 Tunnel…",
+            "旧 Tunnel 已删除",
+            () => deleteTunnel(bin, tunnelName, existing),
+        );
     }
 
-    printInfo(`正在创建 Tunnel：${tunnelName}…`);
-    const result = await runCloudflared(
-        bin,
-        ["tunnel", "create", tunnelName],
-        { allowFailure: true },
+    const result = await withSpinner(
+        "正在创建 Cloudflare Tunnel…",
+        "Cloudflare Tunnel 创建请求完成",
+        () =>
+            runCloudflared(
+                bin,
+                ["tunnel", "create", tunnelName],
+                { allowFailure: true },
+            ),
     );
     const combined = `${result.stdout}\n${result.stderr}`;
     const created = combined.match(TUNNEL_ID_RE)?.[0];
@@ -391,16 +433,13 @@ async function resolveOrInstallCloudflaredBin(
 ): Promise<string> {
     const existing = await suggestCloudflaredBin(configured);
     if (existing) {
-        const version = await probeCloudflaredVersion(existing);
-        printSuccess(`公网连接组件已就绪：${version}`);
+        await probeCloudflaredVersion(existing);
         return existing;
     }
 
-    printInfo("正在准备公网连接组件…");
     try {
         const installed = await ensureManagedTool("cloudflared");
-        const version = await probeCloudflaredVersion(installed.path);
-        printSuccess(`公网连接组件已准备：${version}`);
+        await probeCloudflaredVersion(installed.path);
         return installed.path;
     } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -429,14 +468,18 @@ async function ensureDnsRoute(
     domain: string,
     tunnelId: string,
 ): Promise<void> {
-    printInfo(`正在把域名 ${domain} 连接到 Tunnel…`);
-    const create = await runCloudflared(
-        bin,
-        ["tunnel", "route", "dns", tunnelName, domain],
-        { allowFailure: true, timeoutMs: 120_000 },
+    const create = await withSpinner(
+        `正在把域名 ${domain} 连接到 Tunnel…`,
+        "DNS 路由请求完成",
+        () =>
+            runCloudflared(
+                bin,
+                ["tunnel", "route", "dns", tunnelName, domain],
+                { allowFailure: true, timeoutMs: 120_000 },
+            ),
     );
     if (create.code === 0) {
-        printSuccess("域名连接已配置。启动时会再做一次真实连通检查。");
+        printSuccess("域名连接已配置。");
         return;
     }
 
@@ -452,13 +495,18 @@ async function ensureDnsRoute(
 
     printWarning(`域名 ${domain} 已经有其它 DNS 记录，需要确认是否替换。`);
     await requireDnsOverwriteConfirmation(domain);
-    const overwrite = await runCloudflared(
-        bin,
-        ["tunnel", "route", "dns", "--overwrite-dns", tunnelName, domain],
-        { allowFailure: true, timeoutMs: 120_000 },
+    const overwrite = await withSpinner(
+        "正在更新 Cloudflare DNS…",
+        "DNS 更新请求完成",
+        () =>
+            runCloudflared(
+                bin,
+                ["tunnel", "route", "dns", "--overwrite-dns", tunnelName, domain],
+                { allowFailure: true, timeoutMs: 120_000 },
+            ),
     );
     if (overwrite.code === 0) {
-        printSuccess("DNS 已更新。启动时会再做一次真实连通检查。");
+        printSuccess("DNS 已更新。");
         return;
     }
     throw new Error(`更新域名 DNS 失败：${(overwrite.stderr || overwrite.stdout).trim()}`);
@@ -485,5 +533,108 @@ async function dnsPointsToTunnel(
         );
     } catch {
         return false;
+    }
+}
+
+async function askPublicDomain(
+    defaultValue?: string,
+    allowedZones?: string[],
+): Promise<string> {
+    while (true) {
+        const domainRaw = (
+            await askLine(
+                "给 ChatGPT 使用的域名（例如 mcp.example.com）",
+                defaultValue,
+            )
+        ).trim();
+        if (!domainRaw) {
+            printWarning("需要填写一个域名。没有域名时可用 `codex-mcp --local` 只在本机运行。");
+            continue;
+        }
+        let domain: string;
+        try {
+            domain = normalizeHostname(domainRaw);
+        } catch (error) {
+            printWarning(error instanceof Error ? error.message : String(error));
+            continue;
+        }
+        if (allowedZones && !hostnameBelongsToZones(domain, allowedZones)) {
+            printWarning(`这个域名不属于当前 Cloudflare 账号检测到的域名：${allowedZones.join("、")}`);
+            continue;
+        }
+        return domain;
+    }
+}
+
+export function hostnameBelongsToZones(hostname: string, zones: string[]): boolean {
+    const normalized = normalizeHostname(hostname);
+    return zones.some((zone) => normalized === zone || normalized.endsWith(`.${zone}`));
+}
+
+export function findMatchingZone(
+    hostname: string | undefined,
+    zones: string[],
+): string | undefined {
+    if (!hostname) return undefined;
+    const normalized = normalizeHostname(hostname);
+    return [...zones]
+        .sort((left, right) => right.length - left.length)
+        .find((zone) => normalized === zone || normalized.endsWith(`.${zone}`));
+}
+
+export function subdomainPrefixForZone(
+    hostname: string | undefined,
+    zone: string,
+): string | undefined {
+    if (!hostname) return undefined;
+    const normalized = normalizeHostname(hostname);
+    if (normalized === zone) return undefined;
+    const suffix = `.${zone}`;
+    if (!normalized.endsWith(suffix)) return undefined;
+    return normalized.slice(0, -suffix.length) || undefined;
+}
+
+export function defaultTunnelName(
+    machineHostname: string = osHostname(),
+    homeDirectory: string = homedir(),
+): string {
+    const slug =
+        machineHostname
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 28) || "host";
+    const suffix = createHash("sha256")
+        .update(`${machineHostname}\0${homeDirectory}`, "utf8")
+        .digest("hex")
+        .slice(0, 6);
+    return `codex-mcp-${slug}-${suffix}`;
+}
+
+export function cloudflareManagedHostname(zone: string, prefix: string): string {
+    const normalizedPrefix = prefix.trim();
+    if (!normalizedPrefix) {
+        throw new Error("需要填写子域名前缀，例如 codex-mcp。");
+    }
+    if (normalizedPrefix.includes(".")) {
+        throw new Error(
+            "Cloudflare 默认 Universal SSL 只覆盖所选域名的一级子域名。请使用不含点号的前缀，例如 codex-mcp；如确实需要多级子域名，请先在 Cloudflare 配置覆盖该 hostname 的 Edge Certificate。",
+        );
+    }
+    const hostname = normalizeHostname(`${normalizedPrefix}.${zone}`);
+    if (findMatchingZone(hostname, [zone]) !== zone) {
+        throw new Error("子域名不属于所选 Cloudflare 域名");
+    }
+    return hostname;
+}
+
+async function askCloudflareHostname(zone: string, defaultPrefix: string): Promise<string> {
+    while (true) {
+        const prefix = (await askLine("子域名前缀", defaultPrefix)).trim();
+        try {
+            return cloudflareManagedHostname(zone, prefix);
+        } catch (error) {
+            printWarning(error instanceof Error ? error.message : String(error));
+        }
     }
 }

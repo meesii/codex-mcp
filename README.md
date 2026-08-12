@@ -41,9 +41,15 @@ codex-mcp setup
 
 按提示完成：
 
-1. **保存密码** — 只显示一次，用于 ChatGPT 连接验证
-2. **填写域名** — 例如 `mcp.example.com`
-3. **登录 Cloudflare** — 自动创建 Tunnel 和 DNS
+1. **登录 Cloudflare** — 已登录时会直接复用现有凭据
+2. **自动检测域名** — 从 Cloudflare 账号读取可用域名；有多个时用交互菜单选择根域名，再填写子域名前缀（默认 `codex-mcp`）
+3. **创建 Tunnel 和 DNS** — Tunnel 名称按当前机器自动生成，不再要求普通用户填写
+4. **真实公网验证** — 临时启动本机探针和 Tunnel，确认 HTTPS 地址确实回到当前电脑
+5. **保存连接密码** — 只有公网验证成功后才生成并显示，用于 ChatGPT 连接验证
+
+再次运行 `codex-mcp setup` 时，如果配置已经完整，会先显示当前配置，并提供“检查当前配置 / 修改公网连接 / 修改连接密码”等操作，不会直接重走首次向导。
+
+Cloudflare 的 Named Tunnel 会生成 `<UUID>.cfargotunnel.com` 作为 DNS 的 CNAME 目标，但它不是可直接给 ChatGPT 使用的公网地址；自动 Tunnel 模式仍需要账号中至少有一个已接入 Cloudflare 的域名。
 
 检查配置是否正确：
 
@@ -67,11 +73,36 @@ codex-mcp 不会再询问项目目录，默认直接使用当前目录。需要�
 ### 第四步：连接 ChatGPT
 
 1. ChatGPT → Settings → Apps → Developer Mode → 添加 MCP server
-2. 填入刚才的连接地址
-3. 浏览器会打开验证页面，输入第一步保存的密码
+2. 填入 setup 最后显示的连接地址
+3. 浏览器会打开验证页面，输入 setup 最后显示并保存的连接密码
 4. 授权完成，ChatGPT 现在可以操作你的项目了
 
 连接后可以直接说“继续这个项目”“看看现在改了什么”或“先了解这个工程”。codex-mcp 会通过 `workspace_context` 一次整理 Git 状态、近期提交、Goal、进程、项目规则、Skills 和相关代码，再按需读取细节。
+
+### 多工作区与外部文件授权
+
+启动目录（或 `--root` 指定的目录）仍然是 **主工作区**，相对路径、默认命令目录和默认项目上下文都以它为准。需要同时操作其他目录时，可以直接让 ChatGPT“把 `/path/to/another-project` 添加为工作区”；`workspace_add` 会把它作为长期可信的读写/执行工作区并保存到 `~/.codex-mcp/config.json`，`workspace_remove` 可以移除额外工作区，主工作区不会在运行中被移除。
+
+没有加入工作区的绝对路径也可以直接读取，`read`、`grep`、`glob`、`ls` 等读取操作不会因为工作区边界额外打断你。对工作区外的写入或把命令 `cwd` 切到工作区外时，codex-mcp 才会请求授权：
+
+- **当前会话授权**：默认选项。在当前 MCP 会话/授权连接范围内保留该目录和能力的授权，避免连续改同一目录时反复确认。
+- **单次授权**：只允许下一次匹配的操作，用完即失效；适合你明确只想放行一次的操作。
+- **永久授权**：保存到 `~/.codex-mcp/config.json`，以后启动仍然有效。
+
+授权按 **目录 + 能力** 区分，目前能力分为工作区外 `write` 和外部命令目录 `exec`。支持 MCP elicitation 的客户端可以在原操作中直接确认；其他客户端会先收到需要授权的结果，再通过 `permission_grant` 完成用户确认，然后重试原操作。日常个人开发默认使用当前会话授权；只有你明确只放行一次时才使用单次授权，明确要求长期允许时才使用永久授权。经常反复使用的项目目录更适合直接通过 `workspace_add` 加入可信工作区。可以用 `permission_list` 查看当前授权，用 `permission_revoke` 撤销指定目录和能力的授权。
+
+也可以手动在配置里登记额外工作区，例如：
+
+```json
+{
+  "workspaces": [
+    "/path/to/project-a",
+    "/path/to/project-b"
+  ]
+}
+```
+
+> `bash` / `exec_command` 的授权边界是命令的工作目录，不是完整的系统沙箱。已经允许执行的 shell 命令仍然拥有当前系统用户本身的文件访问能力；这是为了避免把正常开发命令限制得过于难用。
 
 ---
 
@@ -100,7 +131,7 @@ Tunnel 原始日志单独保存在 `~/.codex-mcp/logs/tunnel.log`。
 | 命令 | 作用 |
 |------|------|
 | `codex-mcp` | 启动当前项目 |
-| `codex-mcp setup` | 首次设置 |
+| `codex-mcp setup` | 首次设置 / 管理公网连接 |
 | `codex-mcp doctor` | 检查配置状态 |
 | `codex-mcp auth` | 修改连接密码 |
 | `codex-mcp update` | 更新到最新版本 |

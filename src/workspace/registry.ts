@@ -1,5 +1,5 @@
 import { access, readFile, readdir } from "node:fs/promises";
-import { basename, join, relative } from "node:path";
+import { basename, join } from "node:path";
 import { runGitReadOnly } from "../lib/fs/git-readonly.js";
 import { structuredSearch } from "../lib/search/structured.js";
 import type { ProjectContext } from "../config/project.js";
@@ -56,6 +56,10 @@ export class WorkspaceRegistry {
 
     constructor(private readonly project: ProjectContext) {}
 
+    invalidate(): void {
+        this.topologyCache.clear();
+    }
+
     async listProjects(maxDepth = DEFAULT_MAX_DEPTH): Promise<WorkspaceProjectInfo[]> {
         const depth = Math.max(0, Math.min(Math.floor(maxDepth), 6));
         const topology = await this.listTopology(depth);
@@ -73,11 +77,18 @@ export class WorkspaceRegistry {
         if (cached && cached.expiresAt > now) return await cached.value;
 
         const value = (async () => {
-            const roots = await discoverGitRoots(this.project.root, maxDepth, DEFAULT_MAX_REPOS);
+            const discovered = new Set<string>();
+            for (const workspaceRoot of this.project.roots) {
+                const remaining = DEFAULT_MAX_REPOS - discovered.size;
+                if (remaining <= 0) break;
+                for (const root of await discoverGitRoots(workspaceRoot, maxDepth, remaining)) {
+                    discovered.add(root);
+                }
+            }
             return await mapWithConcurrency(
-                roots,
+                [...discovered],
                 TOPOLOGY_INSPECTION_CONCURRENCY,
-                (root) => inspectProjectTopology(this.project.root, root),
+                (root) => inspectProjectTopology(this.project, root),
             );
         })();
         this.topologyCache.set(maxDepth, {
@@ -177,10 +188,10 @@ async function discoverGitRoots(root: string, maxDepth: number, maxRepos: number
 }
 
 async function inspectProjectTopology(
-    workspaceRoot: string,
+    project: ProjectContext,
     repoRoot: string,
 ): Promise<WorkspaceProjectTopology> {
-    const relativePath = relative(workspaceRoot, repoRoot).replaceAll("\\", "/") || ".";
+    const relativePath = project.displayPath(repoRoot);
     const [kind, codegraph] = await Promise.all([
         detectProjectKind(repoRoot),
         pathExists(join(repoRoot, ".codegraph")),

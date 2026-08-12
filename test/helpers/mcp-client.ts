@@ -1,6 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import {
+    ElicitRequestSchema,
+    type CallToolResult,
+    type ElicitRequest,
+    type ElicitResult,
+} from "@modelcontextprotocol/sdk/types.js";
 
 export interface McpTestClient {
     client: Client;
@@ -8,6 +13,7 @@ export interface McpTestClient {
     callTool: (
         name: string,
         args: Record<string, unknown>,
+        meta?: Record<string, unknown>,
     ) => Promise<CallToolResult>;
     close: () => Promise<void>;
 }
@@ -21,8 +27,19 @@ export interface McpTestClient {
 export async function connectMcpClient(
     mcpUrl: string,
     headers?: Record<string, string>,
+    elicitationHandler?: (params: ElicitRequest["params"]) => Promise<ElicitResult> | ElicitResult,
 ): Promise<McpTestClient> {
-    const client = new Client({ name: "codex-mcp-e2e", version: "0.1.0" });
+    const client = new Client(
+        { name: "codex-mcp-e2e", version: "0.1.0" },
+        elicitationHandler
+            ? { capabilities: { elicitation: { form: {} } } }
+            : undefined,
+    );
+    if (elicitationHandler) {
+        client.setRequestHandler(ElicitRequestSchema, async (request) =>
+            await elicitationHandler(request.params),
+        );
+    }
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
         requestInit: headers ? { headers } : undefined,
     });
@@ -34,8 +51,12 @@ export async function connectMcpClient(
             const listed = await client.listTools();
             return listed.tools.map((tool) => tool.name).sort();
         },
-        callTool: async (name, args) => {
-            const result = await client.callTool({ name, arguments: args });
+        callTool: async (name, args, meta) => {
+            const result = await client.callTool({
+                name,
+                arguments: args,
+                ...(meta ? { _meta: meta } : {}),
+            });
             return result as CallToolResult;
         },
         close: async () => {

@@ -38,13 +38,14 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
         withToolAuth({
             title: "Read server info",
             description:
-                "Return the running codex-mcp version, process start time, bound project root, startup/disk core toolset fingerprints, and whether a restart is recommended because core tool source changed on disk after this process started. Use when a connector may still be attached to an older process/schema.",
+                "Return the running codex-mcp version, process start time, primary/additional workspace roots, startup/disk core toolset fingerprints, and whether a restart is recommended because core tool source changed on disk after this process started.",
             inputSchema: {},
             outputSchema: {
                 version: z.string(),
                 startedAt: z.string(),
                 pid: z.number().int(),
                 projectRoot: z.string(),
+                workspaceRoots: z.array(z.string()),
                 toolsetHash: z.string(),
                 diskToolsetHash: z.string(),
                 toolCount: z.number().int(),
@@ -55,6 +56,8 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
                     structuredSearch: z.boolean(),
                     commandCwd: z.boolean(),
                     mutationDiff: z.boolean(),
+                    externalReads: z.boolean(),
+                    externalAuthorization: z.boolean(),
                 }),
             },
             annotations: readOnlyAnnotations,
@@ -71,6 +74,7 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
                     startedAt: PROCESS_STARTED_AT,
                     pid: process.pid,
                     projectRoot: project.root,
+                    workspaceRoots: project.roots,
                     toolsetHash: STARTUP_TOOLSET_HASH,
                     diskToolsetHash,
                     toolCount: TOOL_NAMES.length,
@@ -81,6 +85,8 @@ export function registerServerInfoTool(server: McpServer, project: ProjectContex
                         structuredSearch: true,
                         commandCwd: true,
                         mutationDiff: true,
+                        externalReads: true,
+                        externalAuthorization: TOOL_NAMES.includes("permission_grant"),
                     },
                 },
             );

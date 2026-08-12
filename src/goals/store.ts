@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { AsyncMutex } from "../lib/util/mutex.js";
 import type { ProjectContext } from "../config/project.js";
@@ -52,7 +52,7 @@ export interface GoalVerification {
 export interface GoalRecord {
     id: string;
     projectRoot: string;
-    /** Project-relative scope under projectRoot, `.` for the bound root itself. */
+    /** Primary-root relative scope, or absolute path for an additional workspace. */
     scopePath: string;
     objective: string;
     status: GoalStatus;
@@ -550,7 +550,7 @@ export class GoalStore {
 
     private normalizeScopePath(input?: string): string {
         const absolute = this.project.resolvePath(input?.trim() || ".");
-        return relative(this.projectRoot, absolute).replaceAll("\\", "/") || ".";
+        return this.project.displayPath(absolute);
     }
 
     private resolveActiveGoalForScope(

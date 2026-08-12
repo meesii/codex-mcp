@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expandHomePath } from "./loader.js";
 
 export interface ClientCapabilitiesConfig {
@@ -16,6 +16,16 @@ export interface UserUiConfig {
     tools?: boolean;
     /** Show custom cards for summary/goal status tools. Defaults to true. */
     status?: boolean;
+}
+
+export interface PermissionGrantConfig {
+    capability: "write" | "exec";
+    /** Canonical absolute directory scope. */
+    path: string;
+}
+
+export interface UserPermissionsConfig {
+    grants?: PermissionGrantConfig[];
 }
 
 export interface UserConfig {
@@ -33,6 +43,10 @@ export interface UserConfig {
     tunnelId?: string;
     /** Optional per-client tool registration policy; omitted means full compatibility. */
     clientCapabilities?: ClientCapabilitiesConfig;
+    /** Additional trusted workspace roots. Primary root still comes from --root / cwd. */
+    workspaces?: string[];
+    /** Persistent grants for operations outside registered workspaces. */
+    permissions?: UserPermissionsConfig;
     /** ChatGPT-facing custom UI preferences. */
     ui?: UserUiConfig;
 }
@@ -86,6 +100,12 @@ export function saveUserConfig(patch: UserConfig): UserConfig {
     if (patch.tunnelId !== undefined) merged.tunnelId = patch.tunnelId;
     if (patch.clientCapabilities !== undefined) {
         merged.clientCapabilities = normalizeClientCapabilities(patch.clientCapabilities);
+    }
+    if (patch.workspaces !== undefined) {
+        merged.workspaces = normalizeWorkspacePaths(patch.workspaces);
+    }
+    if (patch.permissions !== undefined) {
+        merged.permissions = normalizePermissionsConfig(patch.permissions);
     }
     if (patch.ui !== undefined) {
         merged.ui = normalizeUserUiConfig({ ...(merged.ui ?? {}), ...patch.ui });
@@ -175,10 +195,55 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
     if (raw.clientCapabilities !== undefined) {
         config.clientCapabilities = normalizeClientCapabilities(raw.clientCapabilities);
     }
+    if (raw.workspaces !== undefined) {
+        config.workspaces = normalizeWorkspacePaths(raw.workspaces);
+    }
+    if (raw.permissions !== undefined) {
+        config.permissions = normalizePermissionsConfig(raw.permissions);
+    }
     if (raw.ui !== undefined) {
         config.ui = normalizeUserUiConfig(raw.ui);
     }
     return config;
+}
+
+function normalizeWorkspacePaths(value: unknown): string[] {
+    if (!Array.isArray(value)) throw new Error("workspaces must be an array");
+    const paths = value.map((item, index) => {
+        if (typeof item !== "string" || !item.trim()) {
+            throw new Error(`workspaces[${index}] must be a non-empty path`);
+        }
+        return resolve(expandHomePath(item.trim()));
+    });
+    return [...new Set(paths)];
+}
+
+function normalizePermissionsConfig(value: unknown): UserPermissionsConfig {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("permissions must be an object");
+    }
+    const raw = value as Record<string, unknown>;
+    const result: UserPermissionsConfig = {};
+    if (raw.grants !== undefined) {
+        if (!Array.isArray(raw.grants)) throw new Error("permissions.grants must be an array");
+        result.grants = raw.grants.map((item, index) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) {
+                throw new Error(`permissions.grants[${index}] must be an object`);
+            }
+            const grant = item as Record<string, unknown>;
+            if (grant.capability !== "write" && grant.capability !== "exec") {
+                throw new Error(`permissions.grants[${index}].capability is invalid`);
+            }
+            if (typeof grant.path !== "string" || !grant.path.trim()) {
+                throw new Error(`permissions.grants[${index}].path must be a non-empty path`);
+            }
+            return {
+                capability: grant.capability,
+                path: resolve(expandHomePath(grant.path.trim())),
+            };
+        });
+    }
+    return result;
 }
 
 function normalizeUserUiConfig(value: unknown): UserUiConfig {

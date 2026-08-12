@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
 import { AccessDeniedError } from "../config/project.js";
+import type { PermissionManager } from "../permissions/manager.js";
+import { isPathInsideRoot } from "../lib/fs/path-guard.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
@@ -37,14 +39,18 @@ const MAX_PATCH_CHARS = 500_000;
 const MAX_PATCH_FILES = 100;
 const MAX_RESULT_DIFF_CHARS = 40_000;
 
-export function registerApplyPatchTool(server: McpServer, project: ProjectContext): void {
+export function registerApplyPatchTool(
+    server: McpServer,
+    project: ProjectContext,
+    permissions: PermissionManager,
+): void {
     registerTool(
         server,
         "apply_patch",
         withToolAuth({
             title: "Apply unified patch",
             description:
-                "Apply a standard unified diff across one or more project files. All hunks and paths are validated before writes begin; paths cannot escape project_root. Prefer this for multi-hunk or multi-file changes and edit for one small exact replacement.",
+                "Apply a standard unified diff across one or more files. Relative paths use the primary workspace; absolute patch paths and symlink targets outside registered workspaces trigger one lightweight approval for the touched external scope. Prefer this for multi-hunk or multi-file changes.",
             inputSchema: {
                 patch: z
                     .string()
@@ -69,12 +75,20 @@ export function registerApplyPatchTool(server: McpServer, project: ProjectContex
         }),
         async ({ patch }) => {
             try {
-                return await project.lock.runExclusive(async () => {
-                    const parsed = parseUnifiedPatch(patch);
-                    if (parsed.length > MAX_PATCH_FILES) {
-                        return errorResult(`Patch touches ${parsed.length} files; maximum is ${MAX_PATCH_FILES}`);
-                    }
+                const parsed = parseUnifiedPatch(patch);
+                if (parsed.length > MAX_PATCH_FILES) {
+                    return errorResult(`Patch touches ${parsed.length} files; maximum is ${MAX_PATCH_FILES}`);
+                }
+                const targets = resolvePatchTargets(project, parsed);
+                const externalTargets = targets.filter((target) => !project.isWorkspacePath(target));
+                await permissions.authorize({
+                    capability: "write",
+                    targets,
+                    scope: commonDirectoryScope(externalTargets.length > 0 ? externalTargets : targets),
+                    reason: `应用包含 ${parsed.length} 个文件的补丁`,
+                });
 
+                return await project.lock.runExclusive(async () => {
                     const plan = await buildPlan(project, parsed);
                     const before = await snapshotTouchedPaths(plan);
                     try {
@@ -210,13 +224,33 @@ function parseHeaderPath(value: string): string | null {
     return path;
 }
 
+function resolvePatchTargets(project: ProjectContext, files: FilePatch[]): string[] {
+    const targets = new Set<string>();
+    for (const file of files) {
+        if (file.oldPath !== null) targets.add(project.resolveExternalPath(file.oldPath));
+        if (file.newPath !== null) targets.add(project.resolveExternalPath(file.newPath));
+    }
+    return [...targets];
+}
+
+function commonDirectoryScope(targets: string[]): string {
+    if (targets.length === 0) throw new Error("Patch has no target paths");
+    let scope = dirname(targets[0]!);
+    while (!targets.every((target) => isPathInsideRoot(target, scope))) {
+        const parent = dirname(scope);
+        if (parent === scope) return scope;
+        scope = parent;
+    }
+    return scope;
+}
+
 async function buildPlan(project: ProjectContext, files: FilePatch[]): Promise<PlannedChange[]> {
     const touched = new Set<string>();
     const plan: PlannedChange[] = [];
 
     for (const file of files) {
-        const oldAbsolute = file.oldPath === null ? null : project.resolvePath(file.oldPath);
-        const newAbsolute = file.newPath === null ? null : project.resolvePath(file.newPath);
+        const oldAbsolute = file.oldPath === null ? null : project.resolveExternalPath(file.oldPath);
+        const newAbsolute = file.newPath === null ? null : project.resolveExternalPath(file.newPath);
         for (const absolute of new Set([oldAbsolute, newAbsolute].filter((item): item is string => item !== null))) {
             if (touched.has(absolute)) throw new Error(`Patch touches the same path more than once: ${absolute}`);
             touched.add(absolute);

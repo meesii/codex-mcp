@@ -78,6 +78,7 @@ function registerMcpServersTool(server: McpServer, hub: DownstreamMcpHub): void 
             inputSchema: {},
             outputSchema: {
                 generation: z.number().int(),
+                importError: z.string().nullable(),
                 servers: z.array(
                     z.object({
                         name: z.string(),
@@ -98,10 +99,17 @@ function registerMcpServersTool(server: McpServer, hub: DownstreamMcpHub): void 
                 error: item.error ?? null,
                 capabilities: item.capabilities ?? null,
             }));
-            return okResult(`Listed ${servers.length} downstream MCP server(s).`, {
-                generation: hub.getGeneration(),
-                servers,
-            });
+            const importError = hub.getImportError() ?? null;
+            return okResult(
+                importError
+                    ? `Codex MCP import is unavailable; core codex-mcp remains usable. ${importError}`
+                    : `Listed ${servers.length} downstream MCP server(s).`,
+                {
+                    generation: hub.getGeneration(),
+                    importError,
+                    servers,
+                },
+            );
         },
     );
 }

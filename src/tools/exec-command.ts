@@ -1,19 +1,21 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
 import type { ProjectContext } from "../config/project.js";
 import { AccessDeniedError } from "../config/project.js";
+import type { PermissionManager } from "../permissions/manager.js";
 
 const DEFAULT_OUTPUT_CHARS = 12_000;
 
 export function registerExecCommandTool(
     server: McpServer,
     project: ProjectContext,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
+    permissions: PermissionManager,
 ): void {
     registerTool(
         server,
@@ -21,7 +23,7 @@ export function registerExecCommandTool(
         withToolAuth({
             title: "Execute command",
             description:
-                "Run a command in project_root or an optional guarded project-relative cwd, returning bounded output or a processId for ongoing interaction (Codex exec_command style). Short commands finish in one call. Long-running commands (npm run dev, watchers) return processId while still running — then write_stdin to poll/write stdin, process_kill to stop. Output defaults to summary mode. Prefer this over bash for servers/watchers. Windows: PowerShell; Unix: bash. Do NOT use this to read or edit source files.",
+                "Run a command in the primary workspace or an optional workspace-relative/absolute cwd, returning bounded output or a processId for ongoing interaction. An external cwd triggers lightweight user approval; in-workspace commands remain frictionless. Prefer this over bash for servers/watchers. Do NOT use this to read or edit source files.",
             inputSchema: {
                 command: z
                     .string()
@@ -30,7 +32,7 @@ export function registerExecCommandTool(
                 cwd: z
                     .string()
                     .optional()
-                    .describe("Optional working directory relative to project_root."),
+                    .describe("Optional workspace-relative or absolute working directory."),
                 name: z
                     .string()
                     .min(1)
@@ -79,7 +81,13 @@ export function registerExecCommandTool(
             max_output_chars: maxOutputChars,
         }) => {
             try {
-                const effectiveCwd = project.resolvePath(cwd ?? ".");
+                const effectiveCwd = project.resolveExternalPath(cwd ?? ".");
+                await permissions.authorize({
+                    capability: "exec",
+                    targets: [effectiveCwd],
+                    scope: effectiveCwd,
+                    reason: `在 ${cwd ?? "."} 执行长时命令`,
+                });
                 const effectiveMode: OutputMode = outputMode ?? "summary";
                 const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
                 const snapshot = await processes.start({

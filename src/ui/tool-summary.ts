@@ -34,6 +34,8 @@ const PARAM_LABELS: Record<string, string> = {
     staged: "暂存区",
     project_path: "项目",
     max_depth: "深度",
+    capability: "权限",
+    duration: "授权范围",
 };
 
 const PARAM_KEYS: Record<string, string[]> = {
@@ -57,6 +59,12 @@ const PARAM_KEYS: Record<string, string[]> = {
     skill_read: ["name", "path"],
     agents_for_path: ["path"],
     capabilities_reload: [],
+    permission_list: [],
+    permission_grant: ["capability", "path", "duration"],
+    permission_revoke: ["capability", "path"],
+    workspace_roots: [],
+    workspace_add: ["path"],
+    workspace_remove: ["path"],
     workspace_projects: ["max_depth"],
     workspace_search: ["pattern", "path"],
     workspace_context: ["path", "intent"],

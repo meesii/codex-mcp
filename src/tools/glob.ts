@@ -25,7 +25,7 @@ interface GlobWalkState {
 }
 
 async function walkGlobFiles(
-    projectRoot: string,
+    project: ProjectContext,
     scopeRoot: string,
     current: string,
     matcher: Minimatch,
@@ -39,12 +39,12 @@ async function walkGlobFiles(
 
         const full = join(current, entry.name);
         const scopeRelativePath = relative(scopeRoot, full).replaceAll("\\", "/");
-        const projectRelativePath = relative(projectRoot, full).replaceAll("\\", "/");
+        const projectRelativePath = project.displayPath(full);
         if (entry.isDirectory()) {
             if (matcher.negate || matcher.match(scopeRelativePath, true)) {
                 if (
                     await walkGlobFiles(
-                        projectRoot,
+                        project,
                         scopeRoot,
                         full,
                         matcher,
@@ -84,10 +84,10 @@ export async function listGlobFiles(
     const excludes = (options.exclude ?? []).map(
         (item) => new Minimatch(item.replaceAll("\\", "/"), GLOB_OPTIONS),
     );
-    const scopeRoot = project.resolvePath(options.path?.trim() || ".");
+    const scopeRoot = project.resolveReadPath(options.path?.trim() || ".");
     const state: GlobWalkState = { candidateCount: 0, files: [] };
     const scanTruncated = await walkGlobFiles(
-        project.root,
+        project,
         scopeRoot,
         scopeRoot,
         matcher,
@@ -105,7 +105,7 @@ export function registerGlobTool(server: McpServer, project: ProjectContext): vo
         withToolAuth({
             title: "Find files by glob",
             description:
-                "Find files by standard glob syntax with optional subtree scope, exclusion globs, and result limits. Returned paths stay project-relative.",
+                "Find files by standard glob syntax with optional subtree scope, exclusion globs, and result limits. Absolute scopes outside registered workspaces are readable without approval; returned external paths remain absolute.",
             inputSchema: {
                 pattern: z
                     .string()

@@ -84,7 +84,7 @@ const goalPathInput = z
     .string()
     .max(2_000)
     .optional()
-    .describe("Optional project-relative goal scope, e.g. codex-mcp or framepilot. Defaults to the bound project_root for goal_start. Use this to disambiguate when multiple scoped goals are active.");
+    .describe("Optional primary-workspace-relative or absolute registered-workspace goal scope. Defaults to project_root for goal_start. Use this to disambiguate when multiple scoped goals are active.");
 
 const boundedText = (label: string) => z.string().min(1).max(MAX_TEXT).describe(label);
 
@@ -95,7 +95,7 @@ export function registerGoalTools(server: McpServer, goals: GoalStore): void {
         withToolAuth({
             title: "Start project goal",
             description:
-                "Start one durable long-running goal for a project-relative scope under the bound workspace. Use for multi-step work that may span many tool calls or chat turns, not trivial one-shot tasks. Include concrete acceptance criteria so goal_finish can enforce verification. Different scopes may have active goals concurrently; each scope allows only one unfinished goal.",
+                "Start one durable long-running goal for a primary or additional registered workspace scope. Use for multi-step work that may span many tool calls or chat turns, not trivial one-shot tasks. Include concrete acceptance criteria so goal_finish can enforce verification. Different scopes may have active goals concurrently; each scope allows only one unfinished goal.",
             inputSchema: {
                 path: goalPathInput,
                 objective: boundedText("The durable outcome this scoped project work should achieve."),

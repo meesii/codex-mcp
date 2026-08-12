@@ -17,7 +17,7 @@ import { ProcessOwnerPool } from "../src/lib/process/owner-pool.js";
 import { ProcessSessionManager } from "../src/lib/process/sessions.js";
 import { RollingTextBuffer } from "../src/lib/process/rolling-buffer.js";
 import { RuntimeTelemetry } from "../src/lib/util/telemetry.js";
-import { commandShell } from "../src/lib/process/shell-command.js";
+import { commandShell, resolveWindowsPowerShell } from "../src/lib/process/shell-command.js";
 import { terminateChildProcess } from "../src/lib/process/tree.js";
 import { runRipgrep } from "../src/lib/search/ripgrep.js";
 import { runSubprocess } from "../src/lib/util/subprocess.js";
@@ -29,13 +29,27 @@ import {
     requireDnsOverwriteConfirmation,
     requireTunnelDeleteConfirmation,
 } from "../src/tunnel/confirm.js";
+import { parseCloudflareOriginToken } from "../src/tunnel/cloudflare-account.js";
 import { runCloudflared } from "../src/tunnel/exec.js";
 import {
     cloudflaredRunArgs,
     tunnelReadinessTimeoutMessage,
 } from "../src/tunnel/sidecar.js";
-import { findTunnelIdInListText } from "../src/tunnel/setup.js";
-import { verifyTunnelRoute } from "../src/tunnel/verify.js";
+import {
+    cloudflareManagedHostname,
+    defaultTunnelName,
+    findMatchingZone,
+    findTunnelIdInListText,
+    hostnameBelongsToZones,
+    isPublicSetupConfigured,
+    subdomainPrefixForZone,
+} from "../src/tunnel/setup.js";
+import { localServiceHost } from "../src/tunnel/setup-verify.js";
+import { withPublicSetupTransaction } from "../src/tunnel/setup-transaction.js";
+import {
+    tunnelVerificationFailureMessage,
+    verifyTunnelRoute,
+} from "../src/tunnel/verify.js";
 import {
     getCloudflaredConfigPath,
     readCloudflaredYml,
@@ -54,6 +68,22 @@ async function main(): Promise<void> {
         assert.equal(shell.file, "/bin/bash");
         assert.deepEqual(shell.args, ["-c", "echo ok"]);
     }
+    assert.equal(
+        resolveWindowsPowerShell(
+            { Path: "C:\\Windows\\System32;C:\\Program Files\\PowerShell\\7" },
+            (path) => path.toLowerCase() === "c:\\program files\\powershell\\7\\pwsh.exe",
+        ),
+        "pwsh.exe",
+        "PowerShell 7 should be preferred when pwsh.exe is available on PATH",
+    );
+    assert.equal(
+        resolveWindowsPowerShell(
+            { Path: "C:\\Windows\\System32;C:\\Tools" },
+            () => false,
+        ),
+        "powershell.exe",
+        "Windows PowerShell 5.1 must remain the fallback when pwsh is absent",
+    );
 
     const rolling = new RollingTextBuffer(10);
     assert.equal(rolling.append("1234"), false);
@@ -487,6 +517,79 @@ async function main(): Promise<void> {
     const tunnelListText = `${similarTunnelId} codex-mcp-prod 2026-08-07\n${exactTunnelId} codex-mcp 2026-08-07`;
     assert.equal(findTunnelIdInListText(tunnelListText, "codex-mcp"), exactTunnelId);
     assert.equal(findTunnelIdInListText(tunnelListText, "missing"), undefined);
+
+    const cloudflareTokenPayload = Buffer.from(
+        JSON.stringify({
+            accountID: "a".repeat(32),
+            apiToken: "test-api-token",
+            zoneID: "b".repeat(32),
+        }),
+        "utf8",
+    ).toString("base64");
+    assert.deepEqual(
+        parseCloudflareOriginToken(
+            `-----BEGIN ARGO TUNNEL TOKEN-----\n${cloudflareTokenPayload}\n-----END ARGO TUNNEL TOKEN-----\n`,
+        ),
+        {
+            accountID: "a".repeat(32),
+            apiToken: "test-api-token",
+            zoneID: "b".repeat(32),
+        },
+    );
+    assert.throws(() => parseCloudflareOriginToken("invalid"), /ARGO TUNNEL TOKEN/);
+    assert.equal(hostnameBelongsToZones("mcp.example.com", ["example.com"]), true);
+    assert.equal(hostnameBelongsToZones("example.com", ["example.com"]), true);
+    assert.equal(hostnameBelongsToZones("example.com.evil.test", ["example.com"]), false);
+    assert.equal(
+        findMatchingZone("mcp.dev.example.com", ["example.com", "dev.example.com"]),
+        "dev.example.com",
+    );
+    assert.equal(findMatchingZone("mcp.other.test", ["example.com"]), undefined);
+    assert.equal(subdomainPrefixForZone("mcp.example.com", "example.com"), "mcp");
+    assert.equal(subdomainPrefixForZone("one.two.example.com", "example.com"), "one.two");
+    assert.equal(subdomainPrefixForZone("example.com", "example.com"), undefined);
+    assert.equal(cloudflareManagedHostname("example.com", "codex-mcp"), "codex-mcp.example.com");
+    assert.throws(
+        () => cloudflareManagedHostname("example.com", "codex.mcp"),
+        /Universal SSL.*一级子域名.*不含点号/,
+    );
+    assert.throws(
+        () => cloudflareManagedHostname("example.com", ""),
+        /需要填写子域名前缀/,
+    );
+
+    const tlsFailure = tunnelVerificationFailureMessage(
+        "https://codex.mcp.example.com",
+        "write EPROTO error:0A000410:SSL routines:ssl3_read_bytes:sslv3 alert handshake failure:SSL alert number 40",
+    );
+    assert.match(tlsFailure, /TLS 握手在到达 Tunnel 之前失败/);
+    assert.match(tlsFailure, /codex-mcp\.example\.com/);
+    assert.match(tlsFailure, /codex\.mcp\.example\.com/);
+    assert.match(tlsFailure, /Edge Certificate/);
+    assert.match(tlsFailure, /EPROTO/);
+    const ordinaryTunnelFailure = tunnelVerificationFailureMessage(
+        "https://mcp.example.com",
+        "Request timed out after 5000ms",
+    );
+    assert.match(ordinaryTunnelFailure, /域名是否指向当前 Tunnel/);
+    assert.doesNotMatch(ordinaryTunnelFailure, /Edge Certificate/);
+
+    const generatedTunnelName = defaultTunnelName("LKW MacBook Pro", "/Users/lkw");
+    assert.match(generatedTunnelName, /^codex-mcp-lkw-macbook-pro-[0-9a-f]{6}$/);
+    assert.equal(generatedTunnelName, defaultTunnelName("LKW MacBook Pro", "/Users/lkw"));
+    assert.notEqual(generatedTunnelName, defaultTunnelName("LKW MacBook Pro", "/Users/other"));
+    assert.notEqual(generatedTunnelName, "codex-mcp");
+    assert.equal(isPublicSetupConfigured({ domain: "mcp.example.com", useCloudflared: false }), true);
+    assert.equal(
+        isPublicSetupConfigured({ domain: "mcp.example.com", useCloudflared: true, tunnelId: "id" }),
+        true,
+    );
+    assert.equal(isPublicSetupConfigured({ domain: "mcp.example.com", useCloudflared: true }), false);
+    assert.equal(isPublicSetupConfigured({ useCloudflared: false }), false);
+    assert.equal(localServiceHost("0.0.0.0"), "127.0.0.1");
+    assert.equal(localServiceHost("::"), "127.0.0.1");
+    assert.equal(localServiceHost("127.0.0.2"), "127.0.0.2");
+
     await assert.rejects(
         requireDnsOverwriteConfirmation("mcp.example.com", async (_question, defaultValue) => {
             assert.equal(defaultValue, false);
@@ -525,6 +628,31 @@ async function main(): Promise<void> {
             getCloudflaredConfigPath(),
             join(emptyHome, ".codex-mcp", "cloudflared.yml"),
         );
+        const setupConfigPath = join(emptyHome, ".codex-mcp", "config.json");
+        const setupYmlPath = getCloudflaredConfigPath();
+        const previousSetupConfig = '{"domain":"old.example.com","tunnelId":"old-tunnel"}\n';
+        const previousSetupYml = "tunnel: old-tunnel\n  - hostname: old.example.com\n";
+        await writeFile(setupConfigPath, previousSetupConfig, "utf8");
+        await writeFile(setupYmlPath, previousSetupYml, "utf8");
+        await assert.rejects(
+            withPublicSetupTransaction(async () => {
+                await writeFile(
+                    setupConfigPath,
+                    '{"domain":"new.example.com","tunnelId":"new-tunnel"}\n',
+                    "utf8",
+                );
+                await writeFile(
+                    setupYmlPath,
+                    "tunnel: new-tunnel\n  - hostname: new.example.com\n",
+                    "utf8",
+                );
+                throw new Error("setup verification failed");
+            }),
+            /setup verification failed/,
+        );
+        assert.equal(await readFile(setupConfigPath, "utf8"), previousSetupConfig);
+        assert.equal(await readFile(setupYmlPath, "utf8"), previousSetupYml);
+
         const apostropheConfig = join(emptyHome, ".codex-mcp", "apostrophe-cloudflared.yml");
         const apostropheCredentials = join(emptyHome, "user's tunnel", "credentials.json");
         writeCloudflaredYml(
@@ -588,8 +716,12 @@ async function main(): Promise<void> {
     const healthCtx = await startTestServer();
     try {
         const healthUrl = new URL("/healthz", healthCtx.mcpUrl);
-        const health = await fetch(healthUrl).then((response) => response.json());
-        assert.deepEqual(health, { ok: true });
+        const health = (await fetch(healthUrl).then((response) => response.json())) as {
+            ok?: boolean;
+            instance?: string;
+        };
+        assert.equal(health.ok, true);
+        assert.match(health.instance ?? "", /^[A-Za-z0-9_-]{16,}$/);
     } finally {
         await healthCtx.server.close();
     }
@@ -615,7 +747,12 @@ async function main(): Promise<void> {
             headers: { Origin: "https://mcp.example.com" },
         });
         assert.equal(allowedOriginResponse.status, 200);
-        assert.deepEqual(await allowedOriginResponse.json(), { ok: true });
+        const allowedHealth = (await allowedOriginResponse.json()) as {
+            ok?: boolean;
+            instance?: string;
+        };
+        assert.equal(allowedHealth.ok, true);
+        assert.match(allowedHealth.instance ?? "", /^[A-Za-z0-9_-]{16,}$/);
 
         const rejectedOriginResponse = await fetch(healthUrl, {
             headers: { Origin: "https://attacker.example" },

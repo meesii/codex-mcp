@@ -8,6 +8,7 @@ import { createOAuthRuntime, type OAuthRuntime } from "../auth/server.js";
 import { hasAdminPassword } from "../auth/password-store.js";
 import { DownstreamMcpHub } from "../downstream/hub.js";
 import { ProcessOwnerPool } from "../lib/process/owner-pool.js";
+import { CurrentOwnerProcessSessions } from "../lib/process/current-owner.js";
 import { ProcessSessionManager } from "../lib/process/sessions.js";
 import { createNodeHttpAdapter } from "../lib/http/node-adapter.js";
 import { requestClientKey } from "../lib/http/request-ip.js";
@@ -19,6 +20,8 @@ import { SkillRegistry } from "../skills/registry.js";
 import { GoalStore } from "../goals/store.js";
 import { UiSettingsStore } from "../ui/settings.js";
 import { WorkspaceRegistry } from "../workspace/registry.js";
+import type { PermissionGrantStore } from "../permissions/store.js";
+import { PermissionRuntime } from "../permissions/runtime.js";
 
 const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_INITIALIZES_PER_WINDOW = 60;
@@ -37,6 +40,8 @@ export interface CreateHttpServerOptions {
     uiSettings?: UiSettingsStore;
     /** Optional per-client tool policy resolver; omitted means all tools. */
     allowedToolsResolver?: (clientId?: string) => ReadonlySet<string> | undefined;
+    /** Optional permission persistence backend; defaults to ~/.codex-mcp/config.json. */
+    permissionStore?: PermissionGrantStore;
 }
 
 export interface RunningHttpServer {
@@ -78,7 +83,7 @@ export function createHttpServer(
 ): RunningHttpServer {
     const hub = options.hub ?? DownstreamMcpHub.empty();
     const skills = options.skills ?? SkillRegistry.empty();
-    const project = new ProjectContext(config.projectRoot);
+    const project = new ProjectContext(config.projectRoot, config.workspaceRoots ?? [config.projectRoot]);
     const workspace = new WorkspaceRegistry(project);
     const agents = options.agents ?? new AgentInstructionRegistry(project);
     const goals = new GoalStore(project, options.goalStorageDir);
@@ -107,46 +112,39 @@ export function createHttpServer(
               }
             : {}),
     });
-    const processOwners = new ProcessOwnerPool(new ProcessSessionManager());
+    const rootProcesses = new ProcessSessionManager();
+    const processOwners = new ProcessOwnerPool(rootProcesses);
+    const permissionRuntime = new PermissionRuntime();
     const mcpHandler = createMcpHandler(
         (context) => {
             const authClientId = config.oauthRequired ? context.authInfo?.clientId : undefined;
-            const processLease = processOwners.acquire(
-                resolveProcessOwnerId(config.oauthRequired, authClientId),
+            const processOwnerId = resolveProcessOwnerId(config.oauthRequired, authClientId);
+            const permissionOwnerId = resolvePermissionOwnerId(
+                config.oauthRequired,
+                authClientId,
+                context.authInfo?.extra,
+                context.requestInfo,
             );
-            let released = false;
-            const releaseLease = (): void => {
-                if (released) return;
-                released = true;
-                processLease.release();
-            };
-
-            try {
-                const server = createMcpServer(
-                    config,
-                    project,
-                    processLease.processes,
-                    hub,
-                    skills,
-                    agents,
-                    workspace,
-                    goals,
-                    uiSettings,
-                    allowedToolsResolver(authClientId),
-                );
-                const previousOnClose = server.server.onclose;
-                server.server.onclose = () => {
-                    try {
-                        previousOnClose?.();
-                    } finally {
-                        releaseLease();
-                    }
-                };
-                return server;
-            } catch (error) {
-                releaseLease();
-                throw error;
-            }
+            const processes = new CurrentOwnerProcessSessions(
+                rootProcesses,
+                processOwners,
+                processOwnerId,
+            );
+            return createMcpServer(
+                config,
+                project,
+                processes,
+                hub,
+                skills,
+                agents,
+                workspace,
+                goals,
+                uiSettings,
+                allowedToolsResolver(authClientId),
+                options.permissionStore,
+                permissionRuntime,
+                permissionOwnerId,
+            );
         },
         {
             legacy: "stateless",
@@ -165,6 +163,7 @@ export function createHttpServer(
     let httpServer: NodeHttpServer | undefined;
     let boundPort = config.port;
     let oauthRuntimePromise: Promise<OAuthRuntime> | undefined;
+    const instanceId = randomBytes(18).toString("base64url");
     const tunnelProbe = {
         path: `/.well-known/codex-mcp-tunnel-check/${randomBytes(24).toString("base64url")}`,
         expectedBody: randomBytes(32).toString("base64url"),
@@ -197,7 +196,8 @@ export function createHttpServer(
     });
 
     app.get("/healthz", (_req, res) => {
-        res.json({ ok: true });
+        res.setHeader("Cache-Control", "no-store");
+        res.json({ ok: true, instance: instanceId });
     });
 
     // A high-entropy path and independent high-entropy response let the local CLI prove that
@@ -319,6 +319,7 @@ export function createHttpServer(
         close: async () => {
             await mcpHandler.close();
             await processOwners.shutdown();
+            permissionRuntime.clear();
             await hub.close();
             await closeNodeServer(httpServer);
             httpServer = undefined;
@@ -335,6 +336,24 @@ function resolveProcessOwnerId(
         throw new Error("Authenticated MCP request is missing an OAuth client id");
     }
     return `oauth:${authClientId}`;
+}
+
+function resolvePermissionOwnerId(
+    oauthRequired: boolean,
+    authClientId: string | undefined,
+    authExtra: Record<string, unknown> | undefined,
+    requestInfo?: Request,
+): string {
+    const transportSessionId = requestInfo?.headers.get("mcp-session-id")?.trim();
+    if (transportSessionId) {
+        return `mcp-session:${transportSessionId}`;
+    }
+    if (!oauthRequired) return LOCAL_PROCESS_OWNER_ID;
+    const oauthSessionId = authExtra?.codexMcpSessionId;
+    if (typeof oauthSessionId === "string" && oauthSessionId.length > 0) {
+        return `oauth-session:${oauthSessionId}`;
+    }
+    return resolveProcessOwnerId(true, authClientId);
 }
 
 async function closeNodeServer(server: NodeHttpServer | undefined): Promise<void> {

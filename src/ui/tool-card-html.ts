@@ -349,6 +349,12 @@ export function toolCardHtml(toolName?: string): string {
     skill_read: "读取 Codex Skill",
     agents_for_path: "读取项目指令",
     capabilities_reload: "刷新 Codex 能力",
+    permission_list: "查看外部授权",
+    permission_grant: "授权外部访问",
+    permission_revoke: "撤销外部授权",
+    workspace_roots: "列出工作区",
+    workspace_add: "添加工作区",
+    workspace_remove: "移除工作区",
     workspace_projects: "列出工作区项目",
     workspace_search: "搜索工作区",
     workspace_context: "读取项目上下文",
@@ -391,7 +397,9 @@ export function toolCardHtml(toolName?: string): string {
     revision: "版本",
     staged: "暂存区",
     project_path: "项目",
-    max_depth: "深度"
+    max_depth: "深度",
+    capability: "权限",
+    duration: "授权范围"
   };
   var PARAM_KEYS = {
     read: ["path", "offset", "limit"],
@@ -414,6 +422,12 @@ export function toolCardHtml(toolName?: string): string {
     skill_read: ["name", "path"],
     agents_for_path: ["path"],
     capabilities_reload: [],
+    permission_list: [],
+    permission_grant: ["capability", "path", "duration"],
+    permission_revoke: ["capability", "path"],
+    workspace_roots: [],
+    workspace_add: ["path"],
+    workspace_remove: ["path"],
     workspace_projects: ["max_depth"],
     workspace_search: ["pattern", "path"],
     workspace_context: ["path", "intent"],

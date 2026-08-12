@@ -74,9 +74,23 @@ export async function verifyTunnelRoute(
         }
     }
 
-    throw new Error(
-        `无法通过公网地址访问当前 codex-mcp（${mcpUrl.origin}）：${lastDetail}。` +
-            "请检查域名是否指向当前 Tunnel，以及 Tunnel 是否已经启动。",
+    throw new Error(tunnelVerificationFailureMessage(mcpUrl.origin, lastDetail));
+}
+
+export function tunnelVerificationFailureMessage(origin: string, detail: string): string {
+    const prefix = `无法通过公网地址访问当前 codex-mcp（${origin}）：${detail}。`;
+    if (isTlsHandshakeFailure(detail)) {
+        return (
+            prefix +
+            "HTTPS TLS 握手在到达 Tunnel 之前失败。若使用 Cloudflare 默认 Universal SSL，请确认 hostname 仅比所选 Cloudflare 域名多一级（例如 codex-mcp.example.com，而不是 codex.mcp.example.com）；否则请为该 hostname 配置可覆盖它的 Cloudflare Edge Certificate。"
+        );
+    }
+    return prefix + "请检查域名是否指向当前 Tunnel，以及 Tunnel 是否已经启动。";
+}
+
+function isTlsHandshakeFailure(detail: string): boolean {
+    return /(?:\bEPROTO\b|handshake failure|tls handshake|ssl routines|alert number 40|ssl3_read_bytes)/i.test(
+        detail,
     );
 }
 

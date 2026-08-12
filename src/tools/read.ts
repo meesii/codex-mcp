@@ -78,9 +78,9 @@ export function registerReadTool(server: McpServer, project: ProjectContext): vo
         withToolAuth({
             title: "Read file",
             description:
-                "Read a project file before changing or explaining it. File text is in structuredContent.content and original LF/CRLF line endings are preserved. Prefer this over bash cat/type/Get-Content.",
+                "Read a file before changing or explaining it. Relative paths use the primary workspace; absolute paths may read outside registered workspaces without approval. File text is in structuredContent.content and original LF/CRLF line endings are preserved. Prefer this over bash cat/type/Get-Content.",
             inputSchema: {
-                path: z.string().describe("File path relative to the project root."),
+                path: z.string().describe("Workspace-relative or absolute file path."),
                 offset: z
                     .number()
                     .int()
@@ -106,7 +106,7 @@ export function registerReadTool(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path: filePath, offset, limit }) => {
             try {
-                const absolutePath = project.resolvePath(filePath);
+                const absolutePath = project.resolveReadPath(filePath);
                 const slice = await readTextSlice(absolutePath, offset ?? 1, limit);
                 return okResult(`Read ${filePath} (${slice.lineCount} lines).`, {
                     path: filePath,
@@ -133,7 +133,7 @@ export function registerReadManyTool(server: McpServer, project: ProjectContext)
         withToolAuth({
             title: "Read multiple files",
             description:
-                "Read up to 20 project files in one call. Each item supports the same line offset/limit as read; failures are reported per file so one missing file does not discard the rest.",
+                "Read up to 20 files in one call, including absolute paths outside registered workspaces. Each item supports the same line offset/limit as read; failures are reported per file so one missing file does not discard the rest.",
             inputSchema: {
                 files: z
                     .array(
@@ -176,7 +176,7 @@ export function registerReadManyTool(server: McpServer, project: ProjectContext)
             for (const item of files) {
                 const effectiveOffset = item.offset ?? 1;
                 try {
-                    const absolutePath = project.resolvePath(item.path);
+                    const absolutePath = project.resolveReadPath(item.path);
                     const slice = await readTextSlice(absolutePath, effectiveOffset, item.limit);
                     let content = slice.content;
                     let truncated = slice.truncated;

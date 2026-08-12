@@ -2,12 +2,13 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config/loader.js";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import type { ProjectContext } from "../config/project.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import type { GoalStore } from "../goals/store.js";
 import type { UiSettingsStore } from "../ui/settings.js";
+import type { PermissionManager } from "../permissions/manager.js";
 import { configureServerToolAuth } from "../lib/tool/meta.js";
 import {
     configureServerUiPreferences,
@@ -31,6 +32,7 @@ import { registerWebfetchTool } from "./webfetch.js";
 import { registerSummaryTool } from "./summary.js";
 import { registerGoalTools } from "./goals.js";
 import { registerSettingsTools } from "./settings.js";
+import { registerPermissionTools } from "./permissions.js";
 import { registerMcpGatewayTools } from "./mcp-gateway.js";
 import { registerSkillTools } from "./skills.js";
 import { registerAgentTools } from "./agents.js";
@@ -45,24 +47,25 @@ export function registerAllTools(
     server: McpServer,
     config: ServerConfig,
     project: ProjectContext,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
     hub: DownstreamMcpHub,
     skills: SkillRegistry,
     agents: AgentInstructionRegistry,
     workspace: WorkspaceRegistry,
     goals: GoalStore,
     uiSettings: UiSettingsStore,
+    permissions: PermissionManager,
 ): void {
     configureServerToolAuth(server, config.oauthRequired);
     configureServerUiPreferences(server, uiSettings.get());
     registerToolCardResource(server, config);
     registerReadTool(server, project);
     registerReadManyTool(server, project);
-    registerWriteTool(server, project);
-    registerEditTool(server, project);
-    registerApplyPatchTool(server, project);
-    registerBashTool(server, project);
-    registerExecCommandTool(server, project, processes);
+    registerWriteTool(server, project, permissions);
+    registerEditTool(server, project, permissions);
+    registerApplyPatchTool(server, project, permissions);
+    registerBashTool(server, project, permissions);
+    registerExecCommandTool(server, project, processes, permissions);
     registerWriteStdinTool(server, processes);
     registerProcessKillTool(server, processes);
     registerProcessInspectTools(server, processes);
@@ -75,6 +78,7 @@ export function registerAllTools(
     registerSummaryTool(server);
     registerGoalTools(server, goals);
     registerSettingsTools(server, uiSettings);
+    registerPermissionTools(server, permissions);
     registerSkillTools(server, skills);
     registerAgentTools(server, agents);
     registerCapabilityTools(server, hub, skills);

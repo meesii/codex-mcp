@@ -1,4 +1,4 @@
-import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
+import type { CallToolResult, McpServer, ServerContext } from "@modelcontextprotocol/server";
 import { toolUiMeta } from "../../ui/register-ui.js";
 import { securitySchemesForServer } from "./meta.js";
 import { summarizeOutcome, summarizeToolCall } from "../../ui/tool-summary.js";
@@ -7,6 +7,7 @@ import { resultText } from "./result.js";
 import { runtimeTelemetry } from "../util/telemetry.js";
 import { writeRuntimeLog } from "../runtime-log.js";
 import { printCompactLog } from "../util/terminal.js";
+import { runWithToolInvocationContext } from "./context.js";
 
 const TOOL_NAME_WIDTH = 18;
 const toolRegistrationPolicies = new WeakMap<McpServer, ReadonlySet<string>>();
@@ -219,30 +220,35 @@ export function registerTool(
         },
     };
 
-    const wrapped = async (args: Record<string, unknown>): Promise<CallToolResult> => {
-        const startedAt = performance.now();
-        try {
-            const result = withUiCardMeta(name, args, await handler(args));
-            const durationMs = performance.now() - startedAt;
-            runtimeTelemetry.recordTool(
-                name,
-                durationMs,
-                result.isError === true,
-                estimateResultBytes(result),
-            );
-            logToolCall(name, args, result, Math.round(durationMs));
-            return result;
-        } catch (error) {
-            const durationMs = performance.now() - startedAt;
-            runtimeTelemetry.recordTool(name, durationMs, true, 0);
-            logToolCall(
-                name,
-                args,
-                { thrown: error instanceof Error ? error.message : String(error) },
-                Math.round(durationMs),
-            );
-            throw error;
-        }
+    const wrapped = async (
+        args: Record<string, unknown>,
+        context: ServerContext,
+    ): Promise<CallToolResult> => {
+        return await runWithToolInvocationContext(context, async () => {
+            const startedAt = performance.now();
+            try {
+                const result = withUiCardMeta(name, args, await handler(args));
+                const durationMs = performance.now() - startedAt;
+                runtimeTelemetry.recordTool(
+                    name,
+                    durationMs,
+                    result.isError === true,
+                    estimateResultBytes(result),
+                );
+                logToolCall(name, args, result, Math.round(durationMs));
+                return result;
+            } catch (error) {
+                const durationMs = performance.now() - startedAt;
+                runtimeTelemetry.recordTool(name, durationMs, true, 0);
+                logToolCall(
+                    name,
+                    args,
+                    { thrown: error instanceof Error ? error.message : String(error) },
+                    Math.round(durationMs),
+                );
+                throw error;
+            }
+        });
     };
 
     // SDK overloads are wide; keep a single registration path here.
@@ -250,7 +256,7 @@ export function registerTool(
         server.registerTool as (
             toolName: string,
             conf: object,
-            fn: (args: Record<string, unknown>) => Promise<CallToolResult>,
+            fn: (args: Record<string, unknown>, context: ServerContext) => Promise<CallToolResult>,
         ) => void
     )(name, configWithUi, wrapped);
 }

@@ -146,6 +146,34 @@ async function main(): Promise<void> {
         widgetDomain: resolveWidgetDomain(allowedHosts, host, port),
     };
 
+    const degradedHub = await DownstreamMcpHub.connectFromDefaultConfig({
+        loadConfig: async () => {
+            throw new Error(`broken optional Codex MCP import ${"x".repeat(2_000)}`);
+        },
+    });
+    assert.equal(degradedHub.listServers().length, 0);
+    assert.match(degradedHub.getImportError() ?? "", /broken optional Codex MCP import/);
+    assert.ok((degradedHub.getImportError() ?? "").length <= 1_000);
+    const degradedServer = createHttpServer(config, { hub: degradedHub });
+    await degradedServer.listen();
+    const degradedClient = await connectMcpClient(degradedServer.getMcpUrl());
+    try {
+        const degradedStatus = await degradedClient.callTool("mcp_servers", {});
+        assert.notEqual(degradedStatus.isError, true, toolText(degradedStatus));
+        const degradedData = degradedStatus.structuredContent as {
+            importError?: string | null;
+            servers?: unknown[];
+        };
+        assert.match(degradedData.importError ?? "", /broken optional Codex MCP import/);
+        assert.deepEqual(degradedData.servers ?? [], []);
+        assert.match(toolText(degradedStatus), /core codex-mcp remains usable/i);
+        await degradedHub.reloadFromConfig({ mcpServers: {} });
+        assert.equal(degradedHub.getImportError(), undefined);
+    } finally {
+        await degradedClient.close();
+        await degradedServer.close();
+    }
+
     const hub = await DownstreamMcpHub.connectFromDefaultConfig();
     const server = createHttpServer(config, { hub });
     await server.listen();

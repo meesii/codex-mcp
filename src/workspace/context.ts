@@ -2,7 +2,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { GoalRecord, GoalStore, GoalSummary } from "../goals/store.js";
-import type { ProcessInfo, ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessInfo, ProcessSessionAccess } from "../lib/process/sessions.js";
 import {
     queryToSearchPattern,
     rankMatchesByFile,
@@ -48,7 +48,7 @@ export interface WorkspaceContextInput {
 
 export interface WorkspaceContextDependencies {
     project: ProjectContext;
-    processes: ProcessSessionManager;
+    processes: ProcessSessionAccess;
     workspace: WorkspaceRegistry;
     agents: AgentInstructionRegistry;
     skills: SkillRegistry;
@@ -177,7 +177,7 @@ export async function buildWorkspaceContext(
     let truncated = false;
 
     const absoluteTarget = project.resolvePath(input.path?.trim() || ".");
-    const targetPath = relative(project.root, absoluteTarget).replaceAll("\\", "/") || ".";
+    const targetPath = project.displayPath(absoluteTarget);
     const explicitIntent = input.intent?.trim();
     const intent = clipText(explicitIntent || DEFAULT_INTENT, MAX_INTENT_OUTPUT_CHARS);
 
@@ -495,7 +495,7 @@ function compactGoalSummary(goal: GoalSummary): WorkspaceContextResult["work"]["
 }
 
 function compactProcess(project: ProjectContext, info: ProcessInfo): WorkspaceContextResult["work"]["processes"][number] {
-    const relativeCwd = relative(project.root, info.cwd).replaceAll("\\", "/") || ".";
+    const relativeCwd = project.displayPath(info.cwd);
     return {
         processId: info.processId,
         ...(info.name ? { name: clipText(info.name, 100) } : {}),

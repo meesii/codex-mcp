@@ -3,13 +3,14 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { GoalStore } from "../goals/store.js";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import type { ProjectContext } from "../config/project.js";
+import { loadUserConfig, saveUserConfig } from "../config/user-config.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import { buildWorkspaceContext } from "../workspace/context.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool/log.js";
-import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
+import { readOnlyAnnotations, withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import {
     queryToSearchPattern,
@@ -160,13 +161,95 @@ const workspaceContextOutputSchema = {
 export function registerWorkspaceTools(
     server: McpServer,
     project: ProjectContext,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
     workspace: WorkspaceRegistry,
     agents: AgentInstructionRegistry,
     skills: SkillRegistry,
     goals: GoalStore,
     hub: DownstreamMcpHub,
 ): void {
+    registerTool(
+        server,
+        "workspace_roots",
+        withToolAuth({
+            title: "List workspace roots",
+            description: "List the primary workspace and additional trusted workspace roots.",
+            inputSchema: {},
+            outputSchema: {
+                primaryRoot: z.string(),
+                roots: z.array(z.object({ path: z.string(), primary: z.boolean() })),
+            },
+            annotations: readOnlyAnnotations,
+        }),
+        async () => okResult(`Listed ${project.roots.length} workspace root(s).`, {
+            primaryRoot: project.root,
+            roots: project.roots.map((path) => ({ path, primary: path === project.root })),
+        }),
+    );
+
+    registerTool(
+        server,
+        "workspace_add",
+        withToolAuth({
+            title: "Trust workspace root",
+            description:
+                "Add an existing directory as a trusted read/write/exec workspace and persist it. This broadens the trusted boundary, so use only when the user explicitly wants that directory treated as a workspace.",
+            inputSchema: {
+                path: z.string().min(1).describe("Absolute or home-relative directory to trust."),
+            },
+            outputSchema: {
+                path: z.string(),
+                roots: z.array(z.string()),
+            },
+            annotations: writeAnnotations,
+        }),
+        async ({ path }) => {
+            try {
+                const canonical = project.resolveWorkspaceRoot(path);
+                persistWorkspaceAdded(canonical, project);
+                project.addWorkspaceRoot(canonical);
+                workspace.invalidate();
+                return okResult(`Trusted workspace ${canonical}.`, {
+                    path: canonical,
+                    roots: [...project.roots],
+                });
+            } catch (error) {
+                return errorResult(error instanceof Error ? error.message : String(error));
+            }
+        },
+    );
+
+    registerTool(
+        server,
+        "workspace_remove",
+        withToolAuth({
+            title: "Remove workspace trust",
+            description:
+                "Remove an additional trusted workspace and persist the change. The primary workspace cannot be removed while the server is running.",
+            inputSchema: {
+                path: z.string().min(1).describe("Registered additional workspace path."),
+            },
+            outputSchema: {
+                path: z.string(),
+                roots: z.array(z.string()),
+            },
+            annotations: writeAnnotations,
+        }),
+        async ({ path }) => {
+            try {
+                const removed = project.requireAdditionalWorkspaceRoot(path);
+                persistWorkspaceRemoved(removed, project);
+                project.removeWorkspaceRoot(removed);
+                workspace.invalidate();
+                return okResult(`Removed workspace trust for ${removed}.`, {
+                    path: removed,
+                    roots: [...project.roots],
+                });
+            } catch (error) {
+                return errorResult(error instanceof Error ? error.message : String(error));
+            }
+        },
+    );
 
     registerTool(
         server,
@@ -174,7 +257,7 @@ export function registerWorkspaceTools(
         withToolAuth({
             title: "List workspace projects",
             description:
-                "Discover bounded Git repositories under project_root and return branch, dirty state, project kind, and CodeGraph availability.",
+                "Discover bounded Git repositories across all registered workspace roots and return branch, dirty state, project kind, and CodeGraph availability.",
             inputSchema: {
                 max_depth: z.number().int().min(0).max(6).optional(),
             },
@@ -199,7 +282,7 @@ export function registerWorkspaceTools(
         withToolAuth({
             title: "Search across workspace",
             description:
-                "Run a bounded ripgrep regex search across project_root or a project-relative subtree, returning structured file/line/column matches.",
+                "Run a bounded ripgrep regex search across the primary workspace by default, or a workspace-relative/absolute scope (including external read-only scopes), returning structured file/line/column matches.",
             inputSchema: {
                 pattern: z.string().min(1).max(4096),
                 path: z.string().optional(),
@@ -247,7 +330,7 @@ export function registerWorkspaceTools(
                     .string()
                     .max(2_000)
                     .optional()
-                    .describe("Project-relative project/file scope. Defaults to project_root."),
+                    .describe("Workspace-relative or absolute registered-workspace project/file scope. Defaults to project_root."),
                 intent: z
                     .string()
                     .min(1)
@@ -379,6 +462,34 @@ export function registerWorkspaceTools(
             }
         },
     );
+}
+
+function persistWorkspaceAdded(canonical: string, project: ProjectContext): void {
+    if (canonical === project.root) return;
+    const configured = loadUserConfig().workspaces ?? [];
+    const next = new Set<string>();
+    for (const item of configured) {
+        try {
+            const resolved = project.resolveExternalPath(item);
+            if (resolved !== project.root) next.add(resolved);
+        } catch {
+            next.add(item);
+        }
+    }
+    next.add(canonical);
+    saveUserConfig({ workspaces: [...next] });
+}
+
+function persistWorkspaceRemoved(removed: string, project: ProjectContext): void {
+    const configured = loadUserConfig().workspaces ?? [];
+    const next = configured.filter((item) => {
+        try {
+            return project.resolveExternalPath(item) !== removed;
+        } catch {
+            return item !== removed;
+        }
+    });
+    saveUserConfig({ workspaces: next });
 }
 
 /** @internal Rank context-pack matches by file-level token coverage and preserve diversity. */

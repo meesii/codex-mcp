@@ -7,6 +7,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ProjectContext } from "../config/project.js";
+import { isPathInsideRoot } from "../lib/fs/path-guard.js";
 
 const MAX_AGENT_FILE_CHARS = 50_000;
 const MAX_COMBINED_AGENT_CHARS = 100_000;
@@ -70,12 +71,15 @@ export class AgentInstructionRegistry {
 
         const resolved = this.project.resolvePath(inputPath || ".");
         const targetDirectory = existingDirectoryForPath(resolved);
-        const relationship = relative(this.project.root, targetDirectory);
+        const workspaceRoot = this.project.roots
+            .filter((root) => isPathInsideRoot(targetDirectory, root))
+            .sort((left, right) => right.length - left.length)[0] ?? this.project.root;
+        const relationship = relative(workspaceRoot, targetDirectory);
         const segments = relationship
             ? relationship.split(sep).filter(Boolean)
             : [];
 
-        let current = this.project.root;
+        let current = workspaceRoot;
         const projectCandidates = [join(current, "AGENTS.md")];
         for (const segment of segments.slice(0, MAX_SCOPED_FILES - 1)) {
             current = join(current, segment);
@@ -84,7 +88,7 @@ export class AgentInstructionRegistry {
 
         for (const candidate of projectCandidates) {
             if (remaining <= 0) break;
-            const file = this.readProjectInstructionFile(candidate, remaining);
+            const file = this.readProjectInstructionFile(candidate, workspaceRoot, remaining);
             if (!file) continue;
             files.push(file);
             remaining -= file.content.length;
@@ -94,6 +98,7 @@ export class AgentInstructionRegistry {
 
     private readProjectInstructionFile(
         pathValue: string,
+        workspaceRoot: string,
         remaining: number,
     ): AgentInstructionFile | undefined {
         if (!existsSync(pathValue)) return undefined;
@@ -103,8 +108,8 @@ export class AgentInstructionRegistry {
         } catch {
             return undefined;
         }
-        if (!isInside(this.project.root, canonical)) return undefined;
-        const display = relative(this.project.root, canonical).replaceAll("\\", "/") || "AGENTS.md";
+        if (!isPathInsideRoot(canonical, workspaceRoot)) return undefined;
+        const display = this.project.displayPath(canonical);
         return this.readInstructionFile(canonical, display, "project", remaining);
     }
 
@@ -141,14 +146,6 @@ function existingDirectoryForPath(pathValue: string): string {
     } catch {
         return dirname(candidate);
     }
-}
-
-function isInside(root: string, candidate: string): boolean {
-    const relationship = relative(root, candidate);
-    return (
-        relationship === "" ||
-        (relationship !== ".." && !relationship.startsWith(`..${sep}`))
-    );
 }
 
 function escapeAttribute(value: string): string {

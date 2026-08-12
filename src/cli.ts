@@ -29,14 +29,17 @@ import {
     printWarning,
 } from "./lib/util/terminal.js";
 import { SkillRegistry } from "./skills/registry.js";
-import { askSecret, canPromptInteractively } from "./tunnel/prompt.js";
+import { askSecret, askSelect, canPromptInteractively, withSpinner } from "./tunnel/prompt.js";
 import { CloudflaredSidecar } from "./tunnel/sidecar.js";
 import { verifyTunnelRoute } from "./tunnel/verify.js";
 import {
     ensureTunnelSetup,
+    isPublicSetupConfigured,
     runTunnelWizard,
     type TunnelSetupResult,
 } from "./tunnel/setup.js";
+import { verifySetupPublicRoute } from "./tunnel/setup-verify.js";
+import { withPublicSetupTransaction } from "./tunnel/setup-transaction.js";
 import { loadUserConfig } from "./config/user-config.js";
 import { runSelfUpdate } from "./doctor/update.js";
 
@@ -55,7 +58,7 @@ function printUsage(): void {
         "使用方法",
         [
             "codex-mcp                         启动当前项目",
-            "codex-mcp setup                   首次设置",
+            "codex-mcp setup                   设置 / 管理公网连接",
             "codex-mcp doctor                  检查安装和配置",
             "codex-mcp auth                    修改连接密码",
             "codex-mcp update                  更新到最新版本",
@@ -260,12 +263,12 @@ async function main(argv: string[]): Promise<void> {
     }
 
     if (flags.command === "tunnel") {
-        const result = await runTunnelWizard();
-        if (result.useCloudflared && result.tunnelId) {
-            printSuccess(`公网连接已设置：https://${result.domain}/mcp`);
-        } else {
-            printSuccess(`公网地址已保存：https://${result.domain}/mcp`);
-        }
+        const result = await withPublicSetupTransaction(async () => {
+            const candidate = await runTunnelWizard();
+            await verifySetupResult(candidate);
+            return candidate;
+        });
+        printSuccess(`公网连接已验证：https://${result.domain}/mcp`);
         printOutro("接下来进入项目目录，运行 codex-mcp 即可启动");
         return;
     }
@@ -282,14 +285,18 @@ async function runServe(flags: CliFlags): Promise<void> {
     let userConfig = loadUserConfig();
     const allowSidecar = !flags.local && !flags.noTunnel;
 
-    // First-time / incomplete: create ~/.codex-mcp/config.json → domain → cloudflared?
+    // First-time / incomplete: configure and verify the public route as one
+    // local durable-state transaction before starting the normal server.
     if (!flags.local && !userConfig.domain) {
-        userConfig = (
-            await ensureTunnelSetup({
+        const result = await withPublicSetupTransaction(async () => {
+            const candidate = await ensureTunnelSetup({
                 host: userConfig.host,
                 port: userConfig.port,
-            })
-        ).userConfig;
+            });
+            await verifySetupResult(candidate);
+            return candidate;
+        });
+        userConfig = result.userConfig;
     }
 
     if (!flags.local) {
@@ -333,6 +340,9 @@ async function runServe(flags: CliFlags): Promise<void> {
     }
 
     const hub = await DownstreamMcpHub.connectFromDefaultConfig();
+    if (hub.getImportError()) {
+        printWarning(`Codex MCP 配置导入失败；核心服务会继续启动：${hub.getImportError()}`);
+    }
     const skills = SkillRegistry.discoverDefault();
     const server = createHttpServer(config, {
         hub,
@@ -438,20 +448,117 @@ async function runServe(flags: CliFlags): Promise<void> {
     });
 }
 
-/** Run the guided first-time setup for public ChatGPT access. */
+/** Run first-time setup or manage an already configured installation. */
 async function runFirstTimeSetup(): Promise<void> {
     if (!canPromptInteractively()) {
         throw new Error("首次设置需要在可以输入内容的终端里运行");
     }
 
+    const current = loadUserConfig();
+    const passwordConfigured = await hasAdminPassword();
+    if (isPublicSetupConfigured(current) && passwordConfigured) {
+        await runSetupManager(current);
+        return;
+    }
+
     printIntro("设置 codex-mcp");
-    printInfo("首次使用会自动生成连接密码，然后设置公网连接。");
+    printInfo("先完成并验证公网连接，成功后再生成 ChatGPT 连接密码。");
 
-    await ensureGeneratedAdminPassword();
-    const result = await runTunnelWizard();
+    const { result, verification } = await withPublicSetupTransaction(async () => {
+        const candidate = await ensureTunnelSetup({
+            host: current.host,
+            port: current.port,
+        });
+        const verified = await verifySetupResult(candidate);
+        return { result: candidate, verification: verified };
+    });
+    const generatedPassword = await ensureGeneratedAdminPassword({ display: false });
+    printCompletedSetup(result, verification, generatedPassword);
+}
 
-    printSuccess(`ChatGPT 连接地址：https://${result.domain}/mcp`);
-    printInfo("接下来：进入你的项目目录，运行 codex-mcp。");
+async function runSetupManager(current: ReturnType<typeof loadUserConfig>): Promise<void> {
+    printIntro("codex-mcp setup");
+    printSummary("当前配置", [
+        { label: "公网地址", value: `https://${current.domain}/mcp` },
+        {
+            label: "公网方式",
+            value: current.useCloudflared === false ? "自定义 HTTPS" : "Cloudflare Tunnel",
+        },
+        ...(current.tunnelName ? [{ label: "Tunnel", value: current.tunnelName }] : []),
+        { label: "连接密码", value: "已设置" },
+    ]);
+
+    const action = await askSelect(
+        "请选择要执行的操作",
+        [
+            { value: "check", label: "检查当前配置", hint: "验证公网地址是否确实到达这台电脑" },
+            { value: "public", label: "修改公网连接", hint: "重新选择域名或 Cloudflare 配置" },
+            { value: "password", label: "修改连接密码" },
+            { value: "exit", label: "退出，不做修改" },
+        ],
+        "check",
+    );
+
+    if (action === "exit") {
+        printOutro("未修改配置");
+        return;
+    }
+    if (action === "password") {
+        await configureAdminPassword();
+        return;
+    }
+
+    const { result, verification } = await withPublicSetupTransaction(async () => {
+        const candidate =
+            action === "public"
+                ? await runTunnelWizard()
+                : await ensureTunnelSetup({ host: current.host, port: current.port });
+        const verified = await verifySetupResult(candidate);
+        return { result: candidate, verification: verified };
+    });
+    printCompletedSetup(result, verification);
+}
+
+async function verifySetupResult(
+    result: TunnelSetupResult,
+): Promise<Awaited<ReturnType<typeof verifySetupPublicRoute>>> {
+    const host = result.userConfig.host ?? "127.0.0.1";
+    const port = result.userConfig.port ?? 3920;
+    return withSpinner(
+        "正在验证公网连接是否确实到达这台电脑…",
+        "公网连接验证成功",
+        () => verifySetupPublicRoute(result, host, port),
+    );
+}
+
+function printCompletedSetup(
+    result: TunnelSetupResult,
+    verification: Awaited<ReturnType<typeof verifySetupPublicRoute>>,
+    generatedPassword?: string,
+): void {
+    const tunnelBits = [verification.tunnel?.protocol, verification.tunnel?.location].filter(
+        (value): value is string => Boolean(value),
+    );
+    const rows = [
+        { label: "公网地址", value: verification.publicMcpUrl },
+        {
+            label: "公网连接",
+            value: tunnelBits.length > 0 ? `已验证 · ${tunnelBits.join(" · ")}` : "已验证",
+        },
+    ];
+    if (result.useCloudflared && result.userConfig.tunnelName) {
+        rows.push({ label: "Tunnel", value: result.userConfig.tunnelName });
+    }
+    rows.push({
+        label: "连接密码",
+        value: generatedPassword ?? "已设置（保持不变）",
+    });
+
+    printSummary("Setup 完成", rows);
+    if (generatedPassword) {
+        printWarning("请保存上面的连接密码；电脑只保存密码哈希，忘记后需要重新设置。");
+    }
+    printInfo("下一步：进入你的项目目录，运行 codex-mcp。");
     printOutro("设置完成");
 }
 
@@ -516,19 +623,26 @@ async function configureAdminPassword(): Promise<void> {
 }
 
 /** Ensure first-time public access has a generated password without overwriting an existing one. */
-async function ensureGeneratedAdminPassword(): Promise<void> {
+async function ensureGeneratedAdminPassword(
+    options: { display?: boolean } = {},
+): Promise<string | undefined> {
     if (await hasAdminPassword()) {
-        printSuccess("连接密码已经存在，保持不变。");
-        printInfo("需要修改时运行：codex-mcp auth");
-        return;
+        if (options.display !== false) {
+            printSuccess("连接密码已经存在，保持不变。");
+            printInfo("需要修改时运行：codex-mcp auth");
+        }
+        return undefined;
     }
 
     const password = generateAdminPassword();
     await saveAndVerifyAdminPassword(password);
-    printSuccess("连接密码已自动生成。");
-    printWarning("请保存下面的密码，连接 ChatGPT 时需要输入：");
-    printNote("连接密码", password);
-    printInfo("电脑不会保存密码明文；忘记后可运行 `codex-mcp auth` 设置新密码。");
+    if (options.display !== false) {
+        printSuccess("连接密码已自动生成。");
+        printWarning("请保存下面的密码，连接 ChatGPT 时需要输入：");
+        printNote("连接密码", password);
+        printInfo("电脑不会保存密码明文；忘记后可运行 `codex-mcp auth` 设置新密码。");
+    }
+    return password;
 }
 
 async function saveAndVerifyAdminPassword(password: string): Promise<void> {

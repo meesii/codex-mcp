@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionManager } from "../lib/process/sessions.js";
+import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
@@ -8,7 +8,7 @@ import { truncateText } from "../lib/search/truncate.js";
 
 export function registerProcessKillTool(
     server: McpServer,
-    processes: ProcessSessionManager,
+    processes: ProcessSessionAccess,
 ): void {
     registerTool(
         server,

@@ -140,12 +140,25 @@ export class DownstreamMcpHub {
     private readonly configLifecycle = new AsyncMutex();
     private closed = false;
     private generation = 0;
+    private importError?: string;
 
     private constructor() {}
 
-    static async connectFromDefaultConfig(): Promise<DownstreamMcpHub> {
+    static async connectFromDefaultConfig(
+        options: {
+            loadConfig?: () => Promise<UserMcpConfig>;
+            onImportError?: (error: Error) => void;
+        } = {},
+    ): Promise<DownstreamMcpHub> {
         const hub = new DownstreamMcpHub();
-        await hub.reloadFromConfig(await loadMergedMcpConfig());
+        try {
+            const loadConfig = options.loadConfig ?? loadMergedMcpConfig;
+            await hub.reloadFromConfig(await loadConfig());
+        } catch (error) {
+            const normalized = error instanceof Error ? error : new Error(String(error));
+            hub.importError = clipImportError(normalized.message);
+            options.onImportError?.(normalized);
+        }
         return hub;
     }
 
@@ -157,8 +170,19 @@ export class DownstreamMcpHub {
         return this.generation;
     }
 
+    getImportError(): string | undefined {
+        return this.importError;
+    }
+
     async reloadFromDefaultConfig(): Promise<DownstreamReloadResult> {
-        return this.reloadFromConfig(await loadMergedMcpConfig());
+        try {
+            const result = await this.reloadFromConfig(await loadMergedMcpConfig());
+            this.importError = undefined;
+            return result;
+        } catch (error) {
+            this.importError = clipImportError(error instanceof Error ? error.message : String(error));
+            throw error;
+        }
     }
 
     async reloadFromConfig(config: UserMcpConfig): Promise<DownstreamReloadResult> {
@@ -206,6 +230,7 @@ export class DownstreamMcpHub {
             ]);
 
             this.generation += 1;
+            this.importError = undefined;
             const servers = this.listServers();
             return {
                 generation: this.generation,
@@ -791,6 +816,10 @@ function serializedBytes(value: unknown): number {
     } catch {
         throw new Error("downstream MCP returned a non-serializable result");
     }
+}
+
+function clipImportError(value: string): string {
+    return clipOneLine(value, 1_000);
 }
 
 function clipOneLine(value: string, maxChars: number): string {

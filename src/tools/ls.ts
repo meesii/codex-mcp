@@ -16,12 +16,12 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
         withToolAuth({
             title: "List directory",
             description:
-                "List directory entries inside the project root. Prefer this over bash ls/Get-ChildItem for simple listings. Entries are in structuredContent.entries.",
+                "List directory entries for workspace-relative or absolute paths. Reading outside registered workspaces does not require approval. Prefer this over bash ls/Get-ChildItem for simple listings.",
             inputSchema: {
                 path: z
                     .string()
                     .optional()
-                    .describe("Directory path relative to project root (default .)."),
+                    .describe("Workspace-relative or absolute directory path (default .)."),
             },
             outputSchema: {
                 path: z.string(),
@@ -37,7 +37,7 @@ export function registerLsTool(server: McpServer, project: ProjectContext): void
         }),
         async ({ path: dirPath }) => {
             try {
-                const absolutePath = project.resolvePath(dirPath ?? ".");
+                const absolutePath = project.resolveReadPath(dirPath ?? ".");
                 const info = await stat(absolutePath);
                 if (!info.isDirectory()) {
                     return errorResult(`Not a directory: ${dirPath ?? "."}`);

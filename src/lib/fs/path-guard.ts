@@ -3,7 +3,7 @@ import {
     readlinkSync,
     realpathSync,
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import { expandHomePath } from "../../config/loader.js";
 
 export class AccessDeniedError extends Error {
@@ -63,20 +63,18 @@ function canonicalizePotentialPathInner(
 
 export function assertAllowedPath(pathValue: string, allowedRoots: string[]): string {
     const resolvedPath = resolve(expandHomePath(pathValue));
+    const canonicalPath = canonicalizePotentialPath(resolvedPath);
 
     for (const root of allowedRoots) {
         const resolvedRoot = resolve(expandHomePath(root));
-        if (!isPathInsideRoot(resolvedPath, resolvedRoot)) continue;
-
         const canonicalRoot = realpathSync.native(resolvedRoot);
-        const canonicalPath = canonicalizePotentialPath(resolvedPath);
         const relationship = relative(canonicalRoot, canonicalPath);
         if (isRelativeInside(relationship)) {
             return canonicalPath;
         }
     }
 
-    throw new AccessDeniedError(`Path is outside project root: ${pathValue}`);
+    throw new AccessDeniedError(`Path is outside registered workspaces: ${pathValue}`);
 }
 
 export function resolveAllowedPath(
@@ -98,11 +96,17 @@ function entryExists(pathValue: string): boolean {
     }
 }
 
-function isRelativeInside(relationship: string): boolean {
+export function isPathRelationshipInside(relationship: string): boolean {
+    if (relationship === "") return true;
+    if (isAbsolute(relationship) || win32.isAbsolute(relationship)) return false;
     return (
-        relationship === "" ||
-        (!isAbsolute(relationship) &&
-            relationship !== ".." &&
-            !relationship.startsWith(`..${sep}`))
+        relationship !== ".." &&
+        !relationship.startsWith(`..${sep}`) &&
+        !relationship.startsWith("../") &&
+        !relationship.startsWith("..\\")
     );
+}
+
+function isRelativeInside(relationship: string): boolean {
+    return isPathRelationshipInside(relationship);
 }

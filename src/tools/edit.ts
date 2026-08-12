@@ -3,21 +3,26 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
 import { AccessDeniedError } from "../config/project.js";
+import type { PermissionManager } from "../permissions/manager.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import { buildMutationDiff } from "../lib/util/mutation-diff.js";
 
-export function registerEditTool(server: McpServer, project: ProjectContext): void {
+export function registerEditTool(
+    server: McpServer,
+    project: ProjectContext,
+    permissions: PermissionManager,
+): void {
     registerTool(
         server,
         "edit",
         withToolAuth({
             title: "Edit file",
             description:
-                "Apply a targeted code change by replacing exact old_string with new_string (our counterpart to Codex apply_patch for small edits). Prefer this over write for existing files. old_string must match exactly once; keep it as small as possible while unique. Do not use bash/sed to edit.",
+                "Apply a targeted code change by replacing exact old_string with new_string. Relative paths use the primary workspace; absolute paths and symlink targets outside registered workspaces trigger lightweight user approval. old_string must match exactly once.",
             inputSchema: {
-                path: z.string().describe("File path relative to the project root."),
+                path: z.string().describe("Workspace-relative or absolute file path."),
                 old_string: z
                     .string()
                     .min(1)
@@ -35,8 +40,14 @@ export function registerEditTool(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path: filePath, old_string: oldString, new_string: newString }) => {
             try {
+                const absolutePath = project.resolveExternalPath(filePath);
+                await permissions.authorize({
+                    capability: "write",
+                    targets: [absolutePath],
+                    scope: project.writePermissionScope(absolutePath),
+                    reason: `编辑文件 ${filePath}`,
+                });
                 return await project.lock.runExclusive(async () => {
-                    const absolutePath = project.resolvePath(filePath);
                     const current = await readFile(absolutePath, "utf8");
                     const occurrences = current.split(oldString).length - 1;
                     if (occurrences === 0) {

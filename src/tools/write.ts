@@ -4,21 +4,26 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
 import { AccessDeniedError } from "../config/project.js";
+import type { PermissionManager } from "../permissions/manager.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import { buildMutationDiff } from "../lib/util/mutation-diff.js";
 
-export function registerWriteTool(server: McpServer, project: ProjectContext): void {
+export function registerWriteTool(
+    server: McpServer,
+    project: ProjectContext,
+    permissions: PermissionManager,
+): void {
     registerTool(
         server,
         "write",
         withToolAuth({
             title: "Write file",
             description:
-                "Create or completely overwrite a file. Use for new files or full rewrites; prefer edit for small targeted changes to existing files. Do not use bash redirection/heredoc to write source.",
+                "Create or completely overwrite a file. Relative paths use the primary workspace; absolute paths and symlink targets outside registered workspaces trigger lightweight user approval. Use for new files or full rewrites; prefer edit for small targeted changes.",
             inputSchema: {
-                path: z.string().describe("File path relative to the project root."),
+                path: z.string().describe("Workspace-relative or absolute file path."),
                 content: z.string().describe("Full file contents to write."),
             },
             outputSchema: {
@@ -32,8 +37,14 @@ export function registerWriteTool(server: McpServer, project: ProjectContext): v
         }),
         async ({ path: filePath, content }) => {
             try {
+                const absolutePath = project.resolveExternalPath(filePath);
+                await permissions.authorize({
+                    capability: "write",
+                    targets: [absolutePath],
+                    scope: project.writePermissionScope(absolutePath),
+                    reason: `写入文件 ${filePath}`,
+                });
                 return await project.lock.runExclusive(async () => {
-                    const absolutePath = project.resolvePath(filePath);
                     const before = await readFile(absolutePath, "utf8").catch(
                         (error: NodeJS.ErrnoException) => {
                             if (error.code === "ENOENT") return null;

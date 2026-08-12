@@ -1,5 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -153,7 +153,7 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
         withToolAuth({
             title: "Search file contents",
             description:
-                "Structured ripgrep-style regex search. Returns file/line/column/text records instead of CLI-formatted strings, with include/exclude globs, context, result limits, and files-only mode.",
+                "Structured ripgrep-style regex search across workspace-relative or absolute paths, including directories outside registered workspaces without approval. Returns file/line/column/text records with include/exclude globs, context, and result limits.",
             inputSchema: {
                 pattern: z
                     .string()
@@ -210,7 +210,7 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
             files_only: filesOnly,
         }) => {
             try {
-                const scopedAbsolute = project.resolvePath(scopePath ?? ".");
+                const scopedAbsolute = project.resolveReadPath(scopePath ?? ".");
                 const info = await stat(scopedAbsolute).catch(() => null);
                 if (!info || (!info.isDirectory() && !info.isFile())) {
                     return errorResult(`Invalid path: ${scopePath ?? "."}`);
@@ -247,15 +247,16 @@ export function registerGrepTool(server: McpServer, project: ProjectContext): vo
                     );
                 }
 
+                const fallbackRoot = info.isFile() ? dirname(scopedAbsolute) : scopedAbsolute;
                 const fallback = await runFallbackRegexGrep(
-                    project.root,
+                    fallbackRoot,
                     scopedAbsolute,
                     pattern,
                     caseInsensitive === true,
                 );
                 const resultLimit = maxResults ?? MAX_RETURNED_MATCHES;
                 const allMatches = fallback.matches
-                    .map(parseFallbackMatch)
+                    .map((value) => parseFallbackMatch(value, project, fallbackRoot))
                     .filter((item): item is StructuredSearchMatch => item !== undefined);
                 const matches = allMatches.slice(0, resultLimit);
                 const files = [...new Set(matches.map((item) => item.path))];
@@ -285,11 +286,15 @@ function normalizePatterns(value: string | string[] | undefined): string[] {
     return Array.isArray(value) ? value : [value];
 }
 
-function parseFallbackMatch(value: string): StructuredSearchMatch | undefined {
+function parseFallbackMatch(
+    value: string,
+    project: ProjectContext,
+    root: string,
+): StructuredSearchMatch | undefined {
     const match = /^(.*?):(\d+):(.*)$/.exec(value);
     if (!match) return undefined;
     return {
-        path: match[1]!,
+        path: project.displayPath(resolve(root, match[1]!)),
         line: Number(match[2]),
         column: 1,
         text: match[3]!,
