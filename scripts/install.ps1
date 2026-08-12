@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Utf8Output = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $Utf8Output

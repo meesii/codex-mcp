@@ -600,6 +600,11 @@ async function main(): Promise<void> {
     await requireDnsOverwriteConfirmation("mcp.example.com", async () => true);
 
     const windowsInstaller = await readFile("scripts/install.ps1", "utf8");
+    assert.equal(
+        windowsInstaller.charCodeAt(0),
+        0xfeff,
+        "Windows PowerShell 5.1 -File requires a UTF-8 BOM for the non-ASCII installer text",
+    );
     assert.match(windowsInstaller, /npm install --global --prefix \$installRoot \$Package/);
     assert.match(windowsInstaller, /\.codex-mcp\\npm/);
     assert.doesNotMatch(
@@ -611,6 +616,11 @@ async function main(): Promise<void> {
     assert.match(unixInstaller, /npm install --global --prefix "\$INSTALL_ROOT" "\$PACKAGE"/);
     assert.match(unixInstaller, /\.codex-mcp\/npm\/bin/);
     const windowsUninstaller = await readFile("scripts/uninstall.ps1", "utf8");
+    assert.equal(
+        windowsUninstaller.charCodeAt(0),
+        0xfeff,
+        "Windows PowerShell 5.1 -File requires a UTF-8 BOM for the non-ASCII uninstaller text",
+    );
     assert.match(windowsUninstaller, /\.codex-mcp\\npm/);
     assert.doesNotMatch(windowsUninstaller, /Remove-Item[^\n]*\.codex-mcp["']/);
     const unixUninstaller = await readFile("scripts/uninstall.sh", "utf8");
