@@ -1,30 +1,40 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
-import type { GoalStore } from "../goals/store.js";
-import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import type { ProjectContext } from "../config/project.js";
 import { loadUserConfig, saveUserConfig } from "../config/user-config.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { CapabilityManager } from "../capabilities/manager.js";
 import { reloadCapabilities } from "../capabilities/runtime.js";
 import { buildWorkspaceContext } from "../workspace/context.js";
-import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool/log.js";
-import { readOnlyAnnotations, withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
+import {
+    readOnlyAnnotations,
+    stateWriteAnnotations,
+    withToolAuth,
+    writeAnnotations,
+} from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import {
     queryToSearchPattern,
     rankMatchesByFile,
     significantQueryTokens,
 } from "../lib/search/query-relevance.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
+import {
+    bindCurrentOwnerProject,
+    type ProjectToolDeps,
+} from "./projects.js";
 
 const CONTEXT_PACK_SEARCH_CANDIDATES = 80;
 const CONTEXT_PACK_MAX_MATCHES = 20;
 const CONTEXT_PACK_MAX_MATCHES_PER_FILE = 2;
 const CONTEXT_PACK_MAX_SKILLS = 5;
 const CONTEXT_PACK_MAX_MATCH_TEXT_CHARS = 800;
+const WORKSPACE_CONTROL_ACTIONS = ["roots", "add", "remove"] as const;
 
 const projectSchema = z.object({
     name: z.string(),
@@ -164,14 +174,11 @@ const workspaceContextOutputSchema = {
 /** Register bounded multi-repo discovery/search/context tools. */
 export function registerWorkspaceTools(
     server: McpServer,
-    project: ProjectContext,
-    processes: ProcessSessionAccess,
-    workspace: WorkspaceRegistry,
-    agents: AgentInstructionRegistry,
+    scope: ToolScopeProvider,
     skills: SkillRegistry,
-    goals: GoalStore,
     hub: DownstreamMcpHub,
     capabilities?: CapabilityManager,
+    projectTools?: ProjectToolDeps,
 ): void {
     registerTool(
         server,
@@ -186,10 +193,77 @@ export function registerWorkspaceTools(
             },
             annotations: readOnlyAnnotations,
         }),
-        async () => okResult(`Listed ${project.roots.length} workspace root(s).`, {
-            primaryRoot: project.root,
-            roots: project.roots.map((path) => ({ path, primary: path === project.root })),
+        async () => {
+            try {
+                const { project } = scope();
+                return okResult(`Listed ${project.roots.length} workspace root(s).`, {
+                    primaryRoot: project.root,
+                    roots: project.roots.map((path) => ({ path, primary: path === project.root })),
+                });
+            } catch (error) {
+                return projectErrorResult(error);
+            }
+        },
+    );
+
+    registerTool(
+        server,
+        "workspace_control",
+        withToolAuth({
+            title: "Manage trusted workspaces",
+            description:
+                "Stable low-frequency trusted-workspace gateway. roots lists current roots; add/remove persistently change the read/write/exec trust boundary and require explicit user intent. Persistent trust is deliberately excluded from workspace_projects compatibility binding.",
+            inputSchema: {
+                action: z.enum(WORKSPACE_CONTROL_ACTIONS),
+                path: z.string().min(1).optional(),
+            },
+            outputSchema: {
+                action: z.enum(WORKSPACE_CONTROL_ACTIONS),
+                path: z.string().nullable(),
+                primaryRoot: z.string(),
+                roots: z.array(z.object({ path: z.string(), primary: z.boolean() })),
+            },
+            annotations: writeAnnotations,
         }),
+        async ({ action, path }) => {
+            try {
+                const { project, workspace } = scope();
+                let changedPath: string | null = null;
+                if (action === "add") {
+                    if (!path) throw new Error("action=add 需要 path。");
+                    changedPath = project.resolveWorkspaceRoot(path);
+                    persistWorkspaceAdded(changedPath, project);
+                    project.addWorkspaceRoot(changedPath);
+                    workspace.invalidate();
+                } else if (action === "remove") {
+                    if (!path) throw new Error("action=remove 需要 path。");
+                    changedPath = project.requireAdditionalWorkspaceRoot(path);
+                    persistWorkspaceRemoved(changedPath, project);
+                    project.removeWorkspaceRoot(changedPath);
+                    workspace.invalidate();
+                } else if (path !== undefined) {
+                    throw new Error("path 仅适用于 action=add/remove。");
+                }
+                return okResult(
+                    action === "add"
+                        ? `Trusted workspace ${changedPath}.`
+                        : action === "remove"
+                          ? `Removed workspace trust for ${changedPath}.`
+                          : `Listed ${project.roots.length} workspace root(s).`,
+                    {
+                        action,
+                        path: changedPath,
+                        primaryRoot: project.root,
+                        roots: project.roots.map((root) => ({
+                            path: root,
+                            primary: root === project.root,
+                        })),
+                    },
+                );
+            } catch (error) {
+                return projectErrorResult(error);
+            }
+        },
     );
 
     registerTool(
@@ -210,6 +284,7 @@ export function registerWorkspaceTools(
         }),
         async ({ path }) => {
             try {
+                const { project, workspace } = scope();
                 const canonical = project.resolveWorkspaceRoot(path);
                 persistWorkspaceAdded(canonical, project);
                 project.addWorkspaceRoot(canonical);
@@ -222,7 +297,7 @@ export function registerWorkspaceTools(
                     roots: [...project.roots],
                 });
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -245,6 +320,7 @@ export function registerWorkspaceTools(
         }),
         async ({ path }) => {
             try {
+                const { project, workspace } = scope();
                 const removed = project.requireAdditionalWorkspaceRoot(path);
                 persistWorkspaceRemoved(removed, project);
                 project.removeWorkspaceRoot(removed);
@@ -257,7 +333,7 @@ export function registerWorkspaceTools(
                     roots: [...project.roots],
                 });
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -268,21 +344,75 @@ export function registerWorkspaceTools(
         withToolAuth({
             title: "List workspace projects",
             description:
-                "Discover bounded Git repositories across all registered workspace roots and return branch, dirty state, project kind, and CodeGraph availability.",
+                "Stable ChatGPT ABI: discover bounded Git repositories and, in daemon mode, optionally bind this conversation first with project_id or project_path when project_select is absent from a frozen host action snapshot. Supplying a selector changes only low-risk conversation binding state; it never grants external access or changes persistent workspace trust.",
             inputSchema: {
                 max_depth: z.number().int().min(0).max(6).optional(),
+                project_id: z
+                    .string()
+                    .min(1)
+                    .max(256)
+                    .optional()
+                    .describe("Compatibility selector: bind this conversation to a registered daemon project before listing its workspace projects."),
+                project_path: z
+                    .string()
+                    .max(2_000)
+                    .optional()
+                    .describe("Compatibility selector: absolute registered project path to bind before listing."),
+                force: z
+                    .boolean()
+                    .optional()
+                    .describe("Deliberate switch when already bound to another project."),
             },
             outputSchema: {
                 projects: z.array(projectSchema),
+                binding: z.object({
+                    projectId: z.string(),
+                    projectPath: z.string(),
+                }).nullable(),
             },
-            annotations: readOnlyAnnotations,
+            // The selector path writes conversation binding state. Old frozen
+            // snapshots may retain the historical read-only descriptor, so the
+            // operation remains explicit, non-destructive, and narrowly scoped.
+            annotations: stateWriteAnnotations,
         }),
-        async ({ max_depth: maxDepth }) => {
+        async ({
+            max_depth: maxDepth,
+            project_id: projectId,
+            project_path: projectPath,
+            force,
+        }) => {
             try {
+                let selectedProject: { id: string; path: string } | undefined;
+                if (projectId !== undefined || projectPath !== undefined) {
+                    if (!projectTools) {
+                        throw new Error("Project selection is available only in daemon mode.");
+                    }
+                    const selected = bindCurrentOwnerProject(projectTools, {
+                        projectId,
+                        path: projectPath,
+                        force,
+                    });
+                    selectedProject = {
+                        id: selected.project.id,
+                        path: selected.project.path,
+                    };
+                }
+                const { project, workspace } = scope();
+                const registered = selectedProject ?? projectTools?.registry.getByPath(project.root);
                 const projects = await workspace.listProjects(maxDepth ?? 3);
-                return okResult(`Discovered ${projects.length} Git project(s).`, { projects });
+                return okResult(
+                    registered
+                        ? `Bound to daemon project ${registered.id}; discovered ${projects.length} Git project(s).`
+                        : `Discovered ${projects.length} Git project(s).`,
+                    {
+                        projects,
+                        binding: registered
+                            ? { projectId: registered.id, projectPath: registered.path }
+                            : null,
+                    },
+                );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -313,6 +443,7 @@ export function registerWorkspaceTools(
             max_matches: maxMatches,
         }) => {
             try {
+                const { workspace } = scope();
                 const result = await workspace.search({
                     pattern,
                     ...(path ? { path } : {}),
@@ -324,7 +455,7 @@ export function registerWorkspaceTools(
                     result,
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -354,6 +485,7 @@ export function registerWorkspaceTools(
         }),
         async ({ path, intent }) => {
             try {
+                const { project, processes, workspace, agents, goals } = scope();
                 const result = await buildWorkspaceContext(
                     { project, processes, workspace, agents, skills, goals, hub },
                     { ...(path ? { path } : {}), ...(intent ? { intent } : {}) },
@@ -364,7 +496,7 @@ export function registerWorkspaceTools(
                     { ...result },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -411,6 +543,7 @@ export function registerWorkspaceTools(
         }),
         async ({ query, path }) => {
             try {
+                const { workspace, agents } = scope();
                 const searchResult = await workspace
                     .search({
                         pattern: queryToSearchPattern(query),
@@ -471,7 +604,7 @@ export function registerWorkspaceTools(
                     },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );

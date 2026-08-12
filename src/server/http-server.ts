@@ -23,10 +23,24 @@ import { WorkspaceRegistry } from "../workspace/registry.js";
 import type { PermissionGrantStore } from "../permissions/store.js";
 import { PermissionRuntime } from "../permissions/runtime.js";
 import type { CapabilityManager } from "../capabilities/manager.js";
+import {
+    BindingProjectScopeProvider,
+    type ToolScopeProvider,
+    type ToolScopeTryProvider,
+} from "./project-router.js";
+import type { ProjectRegistry } from "../projects/registry.js";
+import type { BindingStore } from "../projects/bindings.js";
+import type { ProjectRuntimeManager } from "../projects/runtime.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_INITIALIZES_PER_WINDOW = 60;
 const LOCAL_PROCESS_OWNER_ID = "local:noauth";
+const DAEMON_STARTED_AT = Date.now();
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
 
 export interface CreateHttpServerOptions {
     /** Shared downstream MCP hub; defaults to an empty hub. */
@@ -45,6 +59,20 @@ export interface CreateHttpServerOptions {
     allowedToolsResolver?: (clientId?: string) => ReadonlySet<string> | undefined;
     /** Optional permission persistence backend; defaults to ~/.codex-mcp/config.json. */
     permissionStore?: PermissionGrantStore;
+    /** Multi-project daemon mode: registers control routes and resolves project scope per tool call. */
+    daemon?: DaemonServerOptions;
+}
+
+export interface DaemonServerOptions {
+    registry: ProjectRegistry;
+    bindings: BindingStore;
+    runtimes: ProjectRuntimeManager;
+    /** Random loopback-only control token for /daemon/* routes. */
+    controlToken: string;
+    /** Reports whether the Cloudflare sidecar is currently running. */
+    tunnelStatus: () => { running: boolean };
+    /** Runs the daemon shutdown sequence (stop tunnel, close server, remove daemon state). */
+    onShutdown: () => Promise<void>;
 }
 
 export interface RunningHttpServer {
@@ -85,6 +113,7 @@ export function createHttpServer(
     config: ServerConfig,
     options: CreateHttpServerOptions = {},
 ): RunningHttpServer {
+    const daemonOptions = options.daemon;
     const hub = options.hub ?? DownstreamMcpHub.empty();
     const skills = options.skills ?? SkillRegistry.empty();
     const project = new ProjectContext(config.projectRoot, config.workspaceRoots ?? [config.projectRoot]);
@@ -134,22 +163,48 @@ export function createHttpServer(
                 processOwners,
                 processOwnerId,
             );
-            return createMcpServer(
+            if (daemonOptions) {
+                const provider = new BindingProjectScopeProvider(
+                    daemonOptions.registry,
+                    daemonOptions.bindings,
+                    daemonOptions.runtimes,
+                    processOwnerId,
+                );
+                const scope: ToolScopeProvider = () => provider.resolveProject();
+                const tryScope: ToolScopeTryProvider = () => provider.tryResolveProject();
+                return createMcpServer({
+                    config,
+                    scope,
+                    tryScope,
+                    hub,
+                    skills,
+                    capabilities: options.capabilities,
+                    uiSettings,
+                    allowedTools: allowedToolsResolver(authClientId),
+                    permissionStore: options.permissionStore,
+                    permissionRuntime,
+                    permissionOwnerId,
+                    projectTools: {
+                        registry: daemonOptions.registry,
+                        bindings: daemonOptions.bindings,
+                        runtimes: daemonOptions.runtimes,
+                        fallbackOwnerId: processOwnerId,
+                    },
+                });
+            }
+            return createMcpServer({
                 config,
-                project,
-                processes,
+                scope: () => ({ project, workspace, agents, goals, processes }),
+                tryScope: () => ({ project, workspace, agents, goals, processes }),
                 hub,
                 skills,
-                options.capabilities,
-                agents,
-                workspace,
-                goals,
+                capabilities: options.capabilities,
                 uiSettings,
-                allowedToolsResolver(authClientId),
-                options.permissionStore,
+                allowedTools: allowedToolsResolver(authClientId),
+                permissionStore: options.permissionStore,
                 permissionRuntime,
                 permissionOwnerId,
-            );
+            });
         },
         {
             legacy: "stateless",
@@ -213,6 +268,10 @@ export function createHttpServer(
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
         res.send(tunnelProbe.expectedBody);
     });
+
+    if (daemonOptions) {
+        registerDaemonControlRoutes(app, config, daemonOptions, () => boundPort);
+    }
 
     // Observe the complete /mcp surface before bearer auth/rate limiting so
     // rejected 401/429 requests are included in HTTP error metrics too.
@@ -327,10 +386,113 @@ export function createHttpServer(
             await processOwners.shutdown();
             permissionRuntime.clear();
             await hub.close();
+            if (daemonOptions) {
+                await daemonOptions.runtimes.shutdownAll();
+            }
             await closeNodeServer(httpServer);
             httpServer = undefined;
         },
     };
+}
+
+function registerDaemonControlRoutes(
+    app: ReturnType<typeof createMcpExpressApp>,
+    config: ServerConfig,
+    daemon: DaemonServerOptions,
+    boundPort: () => number,
+): void {
+    // Loopback-only + control token gate for every /daemon/* route.
+    app.use("/daemon", (req, res, next) => {
+        const remote = req.socket.remoteAddress ?? "";
+        if (!isLoopbackAddress(remote)) {
+            res.status(403).json({ error: "forbidden" });
+            return;
+        }
+        const token = req.header("x-codex-control-token");
+        if (token !== daemon.controlToken) {
+            res.status(401).json({ error: "unauthorized" });
+            return;
+        }
+        next();
+    });
+
+    app.get("/daemon/status", (_req, res) => {
+        const now = Date.now();
+        const projects = daemon.registry
+            .list()
+            .map((project) => ({
+                ...project,
+                boundSessions: daemon.bindings.countForProject(project.id),
+            }))
+            .sort((left, right) => left.name.localeCompare(right.name));
+        res.json({
+            ok: true,
+            version: PACKAGE_VERSION,
+            mode: config.local ? "local" : "public",
+            pid: process.pid,
+            startedAt: DAEMON_STARTED_AT,
+            uptimeMs: now - DAEMON_STARTED_AT,
+            localUrl: `http://${config.host}:${boundPort()}/mcp`,
+            ...(config.publicMcpUrl ? { publicMcpUrl: config.publicMcpUrl } : {}),
+            tunnel: { running: daemon.tunnelStatus().running },
+            projects,
+        });
+    });
+
+    app.post("/daemon/projects", async (req, res) => {
+        try {
+            const body = (req.body ?? {}) as { path?: unknown; name?: unknown };
+            if (typeof body.path !== "string" || !body.path.trim()) {
+                res.status(400).json({ error: "path is required" });
+                return;
+            }
+            const name = typeof body.name === "string" ? body.name : undefined;
+            const project = daemon.registry.register({ path: body.path, name });
+            logMcpEvent("daemon_project_registered", { project: project.id });
+            res.json({ ok: true, project, projects: daemon.registry.list() });
+        } catch (error) {
+            res.status(400).json({ error: errorMessage(error) });
+        }
+    });
+
+    app.delete("/daemon/projects/:id", async (req, res) => {
+        try {
+            const id = decodeURIComponent(req.params.id);
+            const byPath =
+                typeof req.query.path === "string" ? decodeURIComponent(req.query.path) : undefined;
+            const target = daemon.registry.getById(id) ?? (byPath ? daemon.registry.getByPath(byPath) : undefined);
+            if (!target) {
+                res.status(404).json({ error: `project not found: ${id}` });
+                return;
+            }
+            const removed = daemon.registry.deactivateById(target.id);
+            if (removed) {
+                const invalidated = daemon.bindings.invalidateProject(target.id);
+                await daemon.runtimes.remove(target.id);
+                logMcpEvent("daemon_project_deactivated", {
+                    project: target.id,
+                    bindingsInvalidated: invalidated,
+                });
+            }
+            res.json({ ok: true, removed: Boolean(removed), project: removed, projects: daemon.registry.list() });
+        } catch (error) {
+            res.status(400).json({ error: errorMessage(error) });
+        }
+    });
+
+    app.post("/daemon/shutdown", (_req, res) => {
+        res.json({ ok: true });
+        setImmediate(() => {
+            void daemon.onShutdown().catch((error: unknown) => {
+                logMcpEvent("daemon_shutdown_failed", { error: errorMessage(error) });
+            });
+        });
+    });
+}
+
+function isLoopbackAddress(remote: string): boolean {
+    const normalized = remote.replace(/^::ffff:/, "");
+    return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
 }
 
 function resolveProcessOwnerId(

@@ -1,18 +1,18 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { destructiveAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const DEFAULT_OUTPUT_CHARS = 12_000;
 const PROCESS_CAPTURE_CHARS = 200_000;
 
-export function registerWriteStdinTool(
-    server: McpServer,
-    processes: ProcessSessionAccess,
-): void {
+export function registerWriteStdinTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "write_stdin",
@@ -69,6 +69,7 @@ export function registerWriteStdinTool(
             max_output_chars: maxOutputChars,
         }) => {
             try {
+                const { processes } = scope();
                 const effectiveMode: OutputMode = outputMode ?? "summary";
                 const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
                 const snapshot = await processes.poll({
@@ -107,8 +108,7 @@ export function registerWriteStdinTool(
                 }
                 return okResult(text, structured);
             } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

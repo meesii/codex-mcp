@@ -1,10 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessInfo, ProcessSessionAccess } from "../lib/process/sessions.js";
+import type { ProcessInfo } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
 import { formatOutput, OUTPUT_MODES, type OutputMode } from "../lib/tool/output-mode.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const DEFAULT_OUTPUT_CHARS = 12_000;
 const PROCESS_CAPTURE_CHARS = 200_000;
@@ -23,10 +27,7 @@ const processInfoSchema = z.object({
     outputTruncated: z.boolean(),
 });
 
-export function registerProcessInspectTools(
-    server: McpServer,
-    processes: ProcessSessionAccess,
-): void {
+export function registerProcessInspectTools(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "process_list",
@@ -41,10 +42,15 @@ export function registerProcessInspectTools(
             annotations: readOnlyAnnotations,
         }),
         async () => {
-            const items = processes.list().map(publicProcessInfo);
-            return okResult(`Listed ${items.length} managed process(es).`, {
-                processes: items,
-            });
+            try {
+                const { processes } = scope();
+                const items = processes.list().map(publicProcessInfo);
+                return okResult(`Listed ${items.length} managed process(es).`, {
+                    processes: items,
+                });
+            } catch (error) {
+                return projectErrorResult(error);
+            }
         },
     );
 
@@ -63,13 +69,14 @@ export function registerProcessInspectTools(
         }),
         async ({ processId }) => {
             try {
+                const { processes } = scope();
                 const info = publicProcessInfo(processes.status(processId));
                 return okResult(
                     `Process #${processId} is ${info.running ? "running" : "stopped"}.`,
                     { ...info },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );
@@ -109,6 +116,7 @@ export function registerProcessInspectTools(
         }),
         async ({ processId, output_mode: outputMode, max_output_chars: maxOutputChars }) => {
             try {
+                const { processes } = scope();
                 const effectiveMode: OutputMode = outputMode ?? "summary";
                 const effectiveMaxChars = maxOutputChars ?? DEFAULT_OUTPUT_CHARS;
                 const snapshot = processes.peek(processId, PROCESS_CAPTURE_CHARS);
@@ -127,7 +135,7 @@ export function registerProcessInspectTools(
                     },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );

@@ -7,13 +7,16 @@ import type { ProjectContext } from "../config/project.js";
 import type { WorkspaceRegistry } from "../workspace/registry.js";
 import { registerTool } from "../lib/tool/log.js";
 import { openWorldAnnotations, withToolAuth } from "../lib/tool/meta.js";
-import { errorResult, okResult, resultText } from "../lib/tool/result.js";
+import { okResult, resultText } from "../lib/tool/result.js";
 import { queryToSearchPattern, rankMatchesByFile } from "../lib/search/query-relevance.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 export function registerCodeExploreTool(
     server: McpServer,
-    project: ProjectContext,
-    workspace: WorkspaceRegistry,
+    scope: ToolScopeProvider,
     hub: DownstreamMcpHub,
 ): void {
     registerTool(
@@ -47,6 +50,7 @@ export function registerCodeExploreTool(
         }),
         async ({ query, project_path: projectPath, max_files: maxFiles }) => {
             try {
+                const { project, workspace } = scope();
                 const selection = await selectCodegraphProject(project, workspace, query, projectPath);
                 const codegraph = hub.listServers().find(
                     (item) => item.name === "codegraph" && item.status === "ready",
@@ -111,7 +115,7 @@ export function registerCodeExploreTool(
                     },
                 );
             } catch (error) {
-                return errorResult(error instanceof Error ? error.message : String(error));
+                return projectErrorResult(error);
             }
         },
     );

@@ -1,11 +1,13 @@
 import { createReadStream } from "node:fs";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../config/project.js";
-import { AccessDeniedError } from "../config/project.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 const MAX_READ_CHARS = 80_000;
 const MAX_LINE_LIMIT = 10_000;
@@ -71,7 +73,7 @@ export async function readTextSlice(
     return { content: output, lineCount, truncated };
 }
 
-export function registerReadTool(server: McpServer, project: ProjectContext): void {
+export function registerReadTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "read",
@@ -106,6 +108,7 @@ export function registerReadTool(server: McpServer, project: ProjectContext): vo
         }),
         async ({ path: filePath, offset, limit }) => {
             try {
+                const { project } = scope();
                 const absolutePath = project.resolveReadPath(filePath);
                 const slice = await readTextSlice(absolutePath, offset ?? 1, limit);
                 return okResult(`Read ${filePath} (${slice.lineCount} lines).`, {
@@ -116,17 +119,13 @@ export function registerReadTool(server: McpServer, project: ProjectContext): vo
                     truncated: slice.truncated,
                 });
             } catch (error) {
-                const message =
-                    error instanceof AccessDeniedError || error instanceof Error
-                        ? error.message
-                        : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );
 }
 
-export function registerReadManyTool(server: McpServer, project: ProjectContext): void {
+export function registerReadManyTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "read_many",
@@ -162,57 +161,62 @@ export function registerReadManyTool(server: McpServer, project: ProjectContext)
             annotations: readOnlyAnnotations,
         }),
         async ({ files }) => {
-            let remainingChars = MAX_READ_MANY_TOTAL_CHARS;
-            let batchTruncated = false;
-            const results: Array<{
-                path: string;
-                content: string;
-                offset: number;
-                lineCount: number;
-                truncated: boolean;
-                error: string | null;
-            }> = [];
+            try {
+                const { project } = scope();
+                let remainingChars = MAX_READ_MANY_TOTAL_CHARS;
+                let batchTruncated = false;
+                const results: Array<{
+                    path: string;
+                    content: string;
+                    offset: number;
+                    lineCount: number;
+                    truncated: boolean;
+                    error: string | null;
+                }> = [];
 
-            for (const item of files) {
-                const effectiveOffset = item.offset ?? 1;
-                try {
-                    const absolutePath = project.resolveReadPath(item.path);
-                    const slice = await readTextSlice(absolutePath, effectiveOffset, item.limit);
-                    let content = slice.content;
-                    let truncated = slice.truncated;
-                    if (content.length > remainingChars) {
-                        content = content.slice(0, Math.max(0, remainingChars));
-                        truncated = true;
-                        batchTruncated = true;
+                for (const item of files) {
+                    const effectiveOffset = item.offset ?? 1;
+                    try {
+                        const absolutePath = project.resolveReadPath(item.path);
+                        const slice = await readTextSlice(absolutePath, effectiveOffset, item.limit);
+                        let content = slice.content;
+                        let truncated = slice.truncated;
+                        if (content.length > remainingChars) {
+                            content = content.slice(0, Math.max(0, remainingChars));
+                            truncated = true;
+                            batchTruncated = true;
+                        }
+                        remainingChars = Math.max(0, remainingChars - content.length);
+                        results.push({
+                            path: item.path,
+                            content,
+                            offset: effectiveOffset,
+                            lineCount: slice.lineCount,
+                            truncated,
+                            error: null,
+                        });
+                        if (remainingChars === 0) batchTruncated = true;
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        results.push({
+                            path: item.path,
+                            content: "",
+                            offset: effectiveOffset,
+                            lineCount: 0,
+                            truncated: false,
+                            error: message,
+                        });
                     }
-                    remainingChars = Math.max(0, remainingChars - content.length);
-                    results.push({
-                        path: item.path,
-                        content,
-                        offset: effectiveOffset,
-                        lineCount: slice.lineCount,
-                        truncated,
-                        error: null,
-                    });
-                    if (remainingChars === 0) batchTruncated = true;
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    results.push({
-                        path: item.path,
-                        content: "",
-                        offset: effectiveOffset,
-                        lineCount: 0,
-                        truncated: false,
-                        error: message,
-                    });
                 }
-            }
 
-            const errors = results.filter((item) => item.error !== null).length;
-            return okResult(
-                `Read ${results.length - errors}/${results.length} file(s)${batchTruncated ? " (truncated)" : ""}.`,
-                { files: results, truncated: batchTruncated },
-            );
+                const errors = results.filter((item) => item.error !== null).length;
+                return okResult(
+                    `Read ${results.length - errors}/${results.length} file(s)${batchTruncated ? " (truncated)" : ""}.`,
+                    { files: results, truncated: batchTruncated },
+                );
+            } catch (error) {
+                return projectErrorResult(error);
+            }
         },
     );
 }

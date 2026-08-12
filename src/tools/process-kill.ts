@@ -1,15 +1,15 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProcessSessionAccess } from "../lib/process/sessions.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
 import { truncateText } from "../lib/search/truncate.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
-export function registerProcessKillTool(
-    server: McpServer,
-    processes: ProcessSessionAccess,
-): void {
+export function registerProcessKillTool(server: McpServer, scope: ToolScopeProvider): void {
     registerTool(
         server,
         "process_kill",
@@ -37,6 +37,7 @@ export function registerProcessKillTool(
         }),
         async ({ processId }) => {
             try {
+                const { processes } = scope();
                 const snapshot = await processes.kill(processId);
                 const output = truncateText(snapshot.output);
                 const status = snapshot.running
@@ -54,8 +55,7 @@ export function registerProcessKillTool(
                     outputTruncated: snapshot.outputTruncated,
                 });
             } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

@@ -1,3 +1,11 @@
+export const PROJECT_TOOL_NAMES = [
+    "project_list",
+    "project_select",
+    "project_current",
+    "project_unbind",
+    "project_control",
+] as const;
+
 export const CORE_TOOL_NAMES = [
     "read",
     "read_many",
@@ -29,6 +37,7 @@ export const CORE_TOOL_NAMES = [
     "permission_list",
     "permission_grant",
     "permission_revoke",
+    "permission_control",
     "skills_list",
     "skill_read",
     "agents_for_path",
@@ -36,6 +45,7 @@ export const CORE_TOOL_NAMES = [
     "workspace_roots",
     "workspace_add",
     "workspace_remove",
+    "workspace_control",
     "workspace_projects",
     "workspace_search",
     "workspace_context",
@@ -59,8 +69,13 @@ export const GATEWAY_TOOL_NAMES = [
     "mcp_prompt_get",
 ] as const;
 
-export const TOOL_NAMES = [...CORE_TOOL_NAMES, ...GATEWAY_TOOL_NAMES] as const;
+export const TOOL_NAMES = [
+    ...PROJECT_TOOL_NAMES,
+    ...CORE_TOOL_NAMES,
+    ...GATEWAY_TOOL_NAMES,
+] as const;
 
+export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
 export type CoreToolName = (typeof CORE_TOOL_NAMES)[number];
 export type GatewayToolName = (typeof GATEWAY_TOOL_NAMES)[number];
 export type ToolName = (typeof TOOL_NAMES)[number];

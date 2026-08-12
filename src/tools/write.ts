@@ -2,17 +2,19 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../config/project.js";
-import { AccessDeniedError } from "../config/project.js";
 import type { PermissionManager } from "../permissions/manager.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
-import { errorResult, okResult } from "../lib/tool/result.js";
+import { okResult } from "../lib/tool/result.js";
 import { buildMutationDiff } from "../lib/util/mutation-diff.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 export function registerWriteTool(
     server: McpServer,
-    project: ProjectContext,
+    scope: ToolScopeProvider,
     permissions: PermissionManager,
 ): void {
     registerTool(
@@ -37,6 +39,7 @@ export function registerWriteTool(
         }),
         async ({ path: filePath, content }) => {
             try {
+                const { project } = scope();
                 const absolutePath = project.resolveExternalPath(filePath);
                 await permissions.authorize({
                     capability: "write",
@@ -64,11 +67,7 @@ export function registerWriteTool(
                     });
                 });
             } catch (error) {
-                const message =
-                    error instanceof AccessDeniedError || error instanceof Error
-                        ? error.message
-                        : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

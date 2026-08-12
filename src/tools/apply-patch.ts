@@ -3,13 +3,16 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { ProjectContext } from "../config/project.js";
-import { AccessDeniedError } from "../config/project.js";
 import type { PermissionManager } from "../permissions/manager.js";
 import { isPathInsideRoot } from "../lib/fs/path-guard.js";
 import { registerTool } from "../lib/tool/log.js";
 import { withToolAuth, writeAnnotations } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
 import { truncateText } from "../lib/search/truncate.js";
+import {
+    projectErrorResult,
+    type ToolScopeProvider,
+} from "../server/project-router.js";
 
 interface PatchHunk {
     oldStart: number;
@@ -41,7 +44,7 @@ const MAX_RESULT_DIFF_CHARS = 40_000;
 
 export function registerApplyPatchTool(
     server: McpServer,
-    project: ProjectContext,
+    scope: ToolScopeProvider,
     permissions: PermissionManager,
 ): void {
     registerTool(
@@ -75,6 +78,7 @@ export function registerApplyPatchTool(
         }),
         async ({ patch }) => {
             try {
+                const { project } = scope();
                 const parsed = parseUnifiedPatch(patch);
                 if (parsed.length > MAX_PATCH_FILES) {
                     return errorResult(`Patch touches ${parsed.length} files; maximum is ${MAX_PATCH_FILES}`);
@@ -116,11 +120,7 @@ export function registerApplyPatchTool(
                     );
                 });
             } catch (error) {
-                const message =
-                    error instanceof AccessDeniedError || error instanceof Error
-                        ? error.message
-                        : String(error);
-                return errorResult(message);
+                return projectErrorResult(error);
             }
         },
     );

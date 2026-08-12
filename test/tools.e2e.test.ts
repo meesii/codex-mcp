@@ -10,7 +10,11 @@ import {
     TOOL_CARD_URI,
 } from "../src/ui/constants.js";
 import { listGlobFiles } from "../src/tools/glob.js";
-import { TOOL_NAMES } from "../src/tools/names.js";
+import {
+    CORE_TOOL_NAMES,
+    GATEWAY_TOOL_NAMES,
+    TOOL_NAMES,
+} from "../src/tools/names.js";
 import { connectMcpClient, toolText } from "./helpers/mcp-client.js";
 import { startTestServer } from "./helpers/start-server.js";
 
@@ -33,10 +37,17 @@ async function main(): Promise<void> {
 
     try {
         const toolNames = await mcp.listToolNames();
+        // Single-project servers (non-daemon) register the core + gateway surface;
+        // the project binding tools are daemon-only.
+        const expectedToolNames = [...CORE_TOOL_NAMES, ...GATEWAY_TOOL_NAMES].sort();
         assert.deepEqual(
             toolNames,
-            [...TOOL_NAMES].sort(),
+            expectedToolNames,
             "listTools should expose the fixed tool surface so hot-loaded capabilities work in existing sessions",
+        );
+        assert.ok(
+            TOOL_NAMES.length >= expectedToolNames.length,
+            "TOOL_NAMES should include the daemon-only project tools as well",
         );
 
         // Public HTTP serving is deliberately stateless. A stale session id from a
@@ -221,6 +232,15 @@ async function main(): Promise<void> {
         const runtimeStatusToolDescriptor = listedTools.tools.find(
             (tool) => tool.name === "runtime_status",
         );
+        const workspaceProjectsDescriptor = listedTools.tools.find(
+            (tool) => tool.name === "workspace_projects",
+        );
+        const permissionControlDescriptor = listedTools.tools.find(
+            (tool) => tool.name === "permission_control",
+        );
+        const workspaceControlDescriptor = listedTools.tools.find(
+            (tool) => tool.name === "workspace_control",
+        );
         assert.equal(writeToolDescriptor?.annotations?.destructiveHint, true);
         assert.equal(bashToolDescriptor?.annotations?.destructiveHint, true);
         assert.equal(bashToolDescriptor?.annotations?.openWorldHint, true);
@@ -232,6 +252,12 @@ async function main(): Promise<void> {
         assert.equal(processKillToolDescriptor?.annotations?.openWorldHint, false);
         assert.equal(runtimeStatusToolDescriptor?.annotations?.readOnlyHint, true);
         assert.equal(runtimeStatusToolDescriptor?.annotations?.openWorldHint, false);
+        assert.equal(workspaceProjectsDescriptor?.annotations?.readOnlyHint, false);
+        assert.equal(workspaceProjectsDescriptor?.annotations?.destructiveHint, false);
+        assert.equal(permissionControlDescriptor?.annotations?.readOnlyHint, false);
+        assert.equal(permissionControlDescriptor?.annotations?.destructiveHint, true);
+        assert.equal(workspaceControlDescriptor?.annotations?.readOnlyHint, false);
+        assert.equal(workspaceControlDescriptor?.annotations?.destructiveHint, true);
 
         // UI defaults: ordinary tool cards are hidden, status cards stay on,
         // and the settings control plane is always reachable.
@@ -326,6 +352,15 @@ async function main(): Promise<void> {
             (settingsEnableTools.structuredContent as { toolListChangedRequested?: boolean })
                 .toolListChangedRequested,
             true,
+        );
+
+        const settingsRefresh = await mcp.callTool("settings_update", {});
+        assert.notEqual(settingsRefresh.isError, true, toolText(settingsRefresh));
+        assert.equal(
+            (settingsRefresh.structuredContent as { toolListChangedRequested?: boolean })
+                .toolListChangedRequested,
+            true,
+            "settings_update without a patch should request a fresh tools/list",
         );
 
         // tools/list is a fresh stateless request, so it must reflect persisted settings.

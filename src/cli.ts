@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { loadConfig } from "./config/loader.js";
+import { loadConfig, resolveProjectRoot, type ServerConfig } from "./config/loader.js";
 import { runDoctorChecks, type DoctorLevel } from "./doctor/index.js";
 import {
     generateAdminPassword,
@@ -11,6 +11,7 @@ import {
 import { DownstreamMcpHub } from "./downstream/hub.js";
 import { CapabilityManager } from "./capabilities/manager.js";
 import { CapabilityWatcher } from "./capabilities/runtime.js";
+import type { SkillRegistry } from "./skills/registry.js";
 import { resolveAllowedTools } from "./capabilities/policy.js";
 import { createHttpServer } from "./server/http-server.js";
 import { isToolLogEnabled } from "./lib/tool/log.js";
@@ -43,12 +44,51 @@ import { verifySetupPublicRoute } from "./tunnel/setup-verify.js";
 import { withPublicSetupTransaction } from "./tunnel/setup-transaction.js";
 import { loadUserConfig } from "./config/user-config.js";
 import { runSelfUpdate } from "./doctor/update.js";
+import { randomBytes } from "node:crypto";
+import {
+    cleanStaleDaemonState,
+    contactRunningDaemon,
+    DaemonControlClient,
+    isProcessAlive,
+    spawnDaemonProcess,
+    waitForDaemonStart,
+    withDaemonStartLock,
+    type DaemonContact,
+    type DaemonStatusPayload,
+} from "./daemon/control.js";
+import {
+    loadDaemonState,
+    removeDaemonState,
+    saveDaemonState,
+} from "./daemon/state.js";
+import {
+    canonicalProjectPath,
+    deriveProjectId,
+    detectProjectDisplayName,
+} from "./projects/identity.js";
+import { BindingStore } from "./projects/bindings.js";
+import { ProjectRegistry } from "./projects/registry.js";
+import { ProjectRuntimeManager } from "./projects/runtime.js";
+import { PACKAGE_VERSION } from "./server/version.js";
 
 interface CliFlags {
-    command: "serve" | "setup" | "doctor" | "tunnel" | "auth" | "update" | "version" | "help";
+    command:
+        | "serve"
+        | "setup"
+        | "doctor"
+        | "tunnel"
+        | "auth"
+        | "update"
+        | "version"
+        | "help"
+        | "status"
+        | "exit"
+        | "daemon";
     local: boolean;
     noTunnel: boolean;
     tunnelLogs: boolean;
+    foreground: boolean;
+    all: boolean;
     root?: string;
 }
 
@@ -58,16 +98,20 @@ function printUsage(): void {
     printNote(
         "使用方法",
         [
-            "codex-mcp                         启动当前项目",
+            "codex-mcp                         在后台守护进程中注册并启动当前项目",
+            "codex-mcp status                  查看守护进程、公网隧道和已注册项目",
+            "codex-mcp exit                    停止当前项目（守护进程保持运行）",
+            "codex-mcp exit -a                 停止所有项目并关闭守护进程",
             "codex-mcp setup                   设置 / 管理公网连接",
             "codex-mcp doctor                  检查安装和配置",
             "codex-mcp auth                    修改连接密码",
             "codex-mcp update                  更新到最新版本",
             "codex-mcp tunnel                  重新设置公网连接",
-            "codex-mcp --local                 只在本机启动，不开放公网",
+            "codex-mcp --local                 守护进程只在本机运行，不开放公网",
             "codex-mcp --root <目录>           指定项目目录",
             "codex-mcp --no-tunnel             不自动启动 Cloudflare Tunnel",
-            "codex-mcp --tunnel-logs           在终端显示 Tunnel 日志",
+            "codex-mcp --tunnel-logs           在守护进程日志中显示 Tunnel 日志",
+            "codex-mcp serve --foreground      以前台进程方式启动（调试用）",
             "codex-mcp --version               查看版本",
             "codex-mcp help                    查看帮助",
         ].join("\n"),
@@ -149,6 +193,8 @@ function parseArgv(argv: string[]): CliFlags {
     let local = false;
     let noTunnel = false;
     let tunnelLogs = false;
+    let foreground = false;
+    let all = false;
     let root: string | undefined;
     const positionals: string[] = [];
 
@@ -166,6 +212,14 @@ function parseArgv(argv: string[]): CliFlags {
             tunnelLogs = true;
             continue;
         }
+        if (arg === "--foreground" || arg === "-f") {
+            foreground = true;
+            continue;
+        }
+        if (arg === "--all" || arg === "-a") {
+            all = true;
+            continue;
+        }
         if (arg === "--root") {
             const value = argv[index + 1];
             if (!value || value.startsWith("-")) {
@@ -181,6 +235,8 @@ function parseArgv(argv: string[]): CliFlags {
                 local,
                 noTunnel,
                 tunnelLogs,
+                foreground,
+                all,
                 root,
             };
         }
@@ -190,6 +246,8 @@ function parseArgv(argv: string[]): CliFlags {
                 local,
                 noTunnel,
                 tunnelLogs,
+                foreground,
+                all,
                 root,
             };
         }
@@ -213,6 +271,12 @@ function parseArgv(argv: string[]): CliFlags {
         command = "update";
     } else if (positionals[0] === "version") {
         command = "version";
+    } else if (positionals[0] === "status") {
+        command = "status";
+    } else if (positionals[0] === "exit") {
+        command = "exit";
+    } else if (positionals[0] === "daemon") {
+        command = "daemon";
     } else if (positionals[0] === "serve" || positionals[0] === undefined) {
         command = "serve";
     } else {
@@ -223,7 +287,7 @@ function parseArgv(argv: string[]): CliFlags {
         throw new Error(`这里不需要这些内容：${positionals.slice(1).join(" ")}`);
     }
 
-    return { command, local, noTunnel, tunnelLogs, root };
+    return { command, local, noTunnel, tunnelLogs, foreground, all, root };
 }
 
 /**
@@ -274,35 +338,71 @@ async function main(argv: string[]): Promise<void> {
         return;
     }
 
+    if (flags.command === "status") {
+        await runStatus();
+        return;
+    }
+
+    if (flags.command === "exit") {
+        await runExit(flags);
+        return;
+    }
+
+    if (flags.command === "daemon") {
+        await runDaemonProcess(flags);
+        return;
+    }
+
     await runServe(flags);
 }
 
 /**
- * Start HTTP MCP and optionally the cloudflared sidecar.
- *
- * @param flags - Parsed CLI flags
+ * `codex-mcp` without a subcommand: ensure the daemon is running, register the
+ * current project, and print status. `--foreground` keeps the old direct serve
+ * behavior for debugging.
  */
 async function runServe(flags: CliFlags): Promise<void> {
-    let userConfig = loadUserConfig();
+    if (flags.foreground) {
+        await runForegroundServe(flags);
+        return;
+    }
+    await ensureDaemonAndRegister(flags);
+}
+
+interface StartedServices {
+    config: ServerConfig;
+    server: ReturnType<typeof createHttpServer>;
+    hub: DownstreamMcpHub;
+    skills: SkillRegistry;
+    capabilityWatcher: CapabilityWatcher;
+    sidecar?: CloudflaredSidecar;
+    tunnelReady?: { protocol?: string; location?: string };
+    logDirectory?: string;
+    userConfig: ReturnType<typeof loadUserConfig>;
+}
+
+interface DaemonStartContext {
+    registry: ProjectRegistry;
+    bindings: BindingStore;
+    runtimes: ProjectRuntimeManager;
+    controlToken: string;
+    onShutdown: () => Promise<void>;
+}
+
+interface StartServicesOptions {
+    flags: CliFlags;
+    userConfig: ReturnType<typeof loadUserConfig>;
+    daemon?: DaemonStartContext;
+    tunnelStatus: () => { running: boolean };
+}
+
+/**
+ * Start the HTTP MCP server plus the shared hub/skills/watcher, and optionally
+ * the Cloudflare sidecar. Used by both the foreground serve and the daemon.
+ */
+async function startServices(options: StartServicesOptions): Promise<StartedServices> {
+    const { flags, userConfig } = options;
     const allowSidecar = !flags.local && !flags.noTunnel;
-
-    // First-time / incomplete: configure and verify the public route as one
-    // local durable-state transaction before starting the normal server.
-    if (!flags.local && !userConfig.domain) {
-        const result = await withPublicSetupTransaction(async () => {
-            const candidate = await ensureTunnelSetup({
-                host: userConfig.host,
-                port: userConfig.port,
-            });
-            await verifySetupResult(candidate);
-            return candidate;
-        });
-        userConfig = result.userConfig;
-    }
-
-    if (!flags.local) {
-        await ensureAdminPasswordConfigured();
-    }
 
     const config = loadConfig({
         projectRoot: flags.root,
@@ -358,6 +458,18 @@ async function runServe(flags: CliFlags): Promise<void> {
         skills,
         capabilities,
         allowedToolsResolver: resolveAllowedTools,
+        ...(options.daemon
+            ? {
+                  daemon: {
+                      registry: options.daemon.registry,
+                      bindings: options.daemon.bindings,
+                      runtimes: options.daemon.runtimes,
+                      controlToken: options.daemon.controlToken,
+                      tunnelStatus: options.tunnelStatus,
+                      onShutdown: options.daemon.onShutdown,
+                  },
+              }
+            : {}),
     });
     await server.listen();
     const capabilityWatcher = new CapabilityWatcher(capabilities, hub, skills);
@@ -395,12 +507,46 @@ async function runServe(flags: CliFlags): Promise<void> {
         }
     }
 
+    return { config, server, hub, skills, capabilityWatcher, sidecar, tunnelReady, logDirectory, userConfig };
+}
+
+/**
+ * Foreground debug serve: the historical behavior where this process binds the
+ * server and stays in the terminal. Never writes daemon state.
+ */
+async function runForegroundServe(flags: CliFlags): Promise<void> {
+    let userConfig = loadUserConfig();
+
+    if (!flags.local && !userConfig.domain) {
+        const result = await withPublicSetupTransaction(async () => {
+            const candidate = await ensureTunnelSetup({
+                host: userConfig.host,
+                port: userConfig.port,
+            });
+            await verifySetupResult(candidate);
+            return candidate;
+        });
+        userConfig = result.userConfig;
+    }
+
+    if (!flags.local) {
+        await ensureAdminPasswordConfigured();
+    }
+
+    let tunnelRunning = false;
+    const services = await startServices({ flags, userConfig, tunnelStatus: () => ({ running: tunnelRunning }) });
+    tunnelRunning = services.sidecar !== undefined;
+    const { config, server, hub, skills, sidecar, tunnelReady, logDirectory } = services;
+
     const downstream = hub.listServers().map((item) =>
         item.status === "ready" ? item.name : `${item.name}!`,
     );
 
     printStartupBanner({
-        mcpUrl: publicUrl ?? server.getMcpUrl(),
+        mcpUrl:
+            config.allowedHosts[0] !== undefined
+                ? `https://${config.allowedHosts[0]}/mcp`
+                : server.getMcpUrl(),
         localUrl: server.getMcpUrl(),
         projectRoot: config.projectRoot,
         logDirectory,
@@ -409,7 +555,7 @@ async function runServe(flags: CliFlags): Promise<void> {
         skillCount: skills.list().length,
         tunnel: sidecar
             ? (tunnelReady ?? { protocol: undefined, location: undefined })
-            : wantSidecar
+            : config.allowedHosts[0] !== undefined && !flags.noTunnel
               ? "off"
               : undefined,
     });
@@ -428,7 +574,7 @@ async function runServe(flags: CliFlags): Promise<void> {
         writeRuntimeLog("info", "server_stopping");
         let exitCode = 0;
         try {
-            capabilityWatcher.close();
+            services.capabilityWatcher.close();
             if (sidecar) {
                 await sidecar.stop();
             }
@@ -456,6 +602,314 @@ async function runServe(flags: CliFlags): Promise<void> {
     process.once("SIGTERM", () => {
         void shutdown();
     });
+}
+
+/**
+ * Internal daemon entrypoint (spawned detached by the CLI). Owns the MCP
+ * server, the Cloudflare sidecar, and the durable daemon state.
+ */
+async function runDaemonProcess(flags: CliFlags): Promise<void> {
+    let userConfig = loadUserConfig();
+
+    if (!flags.local && !userConfig.domain) {
+        const result = await withPublicSetupTransaction(async () => {
+            const candidate = await ensureTunnelSetup({
+                host: userConfig.host,
+                port: userConfig.port,
+            });
+            await verifySetupResult(candidate);
+            return candidate;
+        });
+        userConfig = result.userConfig;
+    }
+
+    if (!flags.local) {
+        await ensureAdminPasswordConfigured();
+    }
+
+    const registry = new ProjectRegistry();
+    const bindings = new BindingStore();
+    const runtimes = new ProjectRuntimeManager();
+    const controlToken = randomBytes(32).toString("base64url");
+
+    let services: StartedServices | undefined;
+    let tunnelRunning = false;
+    let shuttingDown = false;
+
+    const shutdown = async (): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        writeRuntimeLog("info", "daemon_stopping");
+        let exitCode = 0;
+        try {
+            await removeDaemonState().catch(() => undefined);
+            services?.capabilityWatcher.close();
+            if (services?.sidecar) {
+                await services.sidecar.stop().catch(() => undefined);
+            }
+            if (services) {
+                await services.server.close();
+            }
+            writeRuntimeLog("info", "daemon_stopped");
+        } catch (error) {
+            exitCode = 1;
+            writeRuntimeLog("error", "daemon_stop_failed", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            try {
+                closeRuntimeLog();
+            } catch {
+                // best effort
+            }
+            process.exit(exitCode);
+        }
+    };
+
+    services = await startServices({
+        flags,
+        userConfig,
+        daemon: {
+            registry,
+            bindings,
+            runtimes,
+            controlToken,
+            onShutdown: shutdown,
+        },
+        tunnelStatus: () => ({ running: tunnelRunning }),
+    });
+    tunnelRunning = services.sidecar !== undefined;
+
+    await saveDaemonState({
+        pid: process.pid,
+        host: services.config.host,
+        port: services.config.port,
+        controlToken,
+        ...(services.config.publicMcpUrl ? { publicMcpUrl: services.config.publicMcpUrl } : {}),
+        startedAt: new Date().toISOString(),
+        version: PACKAGE_VERSION,
+        mode: flags.local ? "local" : "public",
+    });
+    writeRuntimeLog("info", "daemon_started", {
+        pid: process.pid,
+        mode: flags.local ? "local" : "public",
+        tunnel: services.sidecar !== undefined,
+    });
+
+    process.once("SIGINT", () => {
+        void shutdown();
+    });
+    process.once("SIGTERM", () => {
+        void shutdown();
+    });
+}
+
+/**
+ * `codex-mcp` default flow: ensure the daemon is running (starting it when
+ * needed), register the current project, and print status.
+ */
+async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
+    const projectRoot = resolveProjectRoot(flags.root);
+    const displayName = detectProjectDisplayName(projectRoot);
+    const daemon = await ensureDaemonRunning(flags);
+    const project = await daemon.client.registerProject({
+        path: projectRoot,
+        name: displayName,
+    });
+    const status = await daemon.client.status();
+    printRegistrationBanner(status, project);
+    writeRuntimeLog("info", "project_registered_cli", {
+        project: project.id,
+        daemonPid: status.pid,
+    });
+}
+
+/** Find or start the background daemon, running first-time setup when needed. */
+async function ensureDaemonRunning(flags: CliFlags): Promise<DaemonContact> {
+    const existing = await contactRunningDaemon();
+    if (existing) return existing;
+
+    cleanStaleDaemonState();
+
+    let userConfig = loadUserConfig();
+    if (!flags.local && !userConfig.domain) {
+        const result = await withPublicSetupTransaction(async () => {
+            const candidate = await ensureTunnelSetup({
+                host: userConfig.host,
+                port: userConfig.port,
+            });
+            await verifySetupResult(candidate);
+            return candidate;
+        });
+        userConfig = result.userConfig;
+    }
+
+    if (!flags.local) {
+        await ensureAdminPasswordConfigured();
+    }
+
+    const daemon = await withDaemonStartLock(async () => {
+        const again = await contactRunningDaemon();
+        if (again) return again;
+
+        const { pid } = spawnDaemonProcess({
+            local: flags.local,
+            noTunnel: flags.noTunnel,
+            tunnelLogs: flags.tunnelLogs,
+        });
+        printInfo(`守护进程正在启动（pid ${pid}）…`);
+        return await waitForDaemonStart(pid);
+    });
+    if (!daemon) {
+        throw new Error("守护进程启动失败，请查看 ~/.codex-mcp/logs 下的日志。");
+    }
+    writeRuntimeLog("info", "daemon_started_via_cli", { pid: daemon.state.pid });
+    return daemon;
+}
+
+/** Print the registration banner after `codex-mcp` registers a project. */
+function printRegistrationBanner(status: DaemonStatusPayload, project: { id: string; name: string; path: string }): void {
+    printIntro("codex-mcp");
+    printSummary("已就绪", [
+        { label: "守护进程", value: `pid ${status.pid} · 已运行 ${formatUptime(status.uptimeMs)}` },
+        { label: "本机地址", value: status.localUrl },
+        { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
+        { label: "公网连接", value: status.tunnel.running ? "已连接" : "未启动" },
+        { label: "当前项目", value: `${project.name}（${project.path}）` },
+        { label: "已注册项目", value: `${status.projects.length} 个` },
+    ]);
+    printInfo(`在 ChatGPT 中优先用 project_select 选择 ${project.id}；旧 action snapshot 可用 workspace_projects(project_id=\"${project.id}\")。`);
+    printOutro("如需停止当前项目：codex-mcp exit");
+}
+
+/** `codex-mcp status`: print daemon, tunnel, and project status. */
+async function runStatus(): Promise<void> {
+    const daemon = await contactRunningDaemon();
+    if (!daemon) {
+        cleanStaleDaemonState();
+        printIntro("codex-mcp status");
+        printWarning("守护进程没有在运行。");
+        printInfo("进入项目目录运行 codex-mcp 即可启动；查看帮助运行 codex-mcp help。");
+        printOutro("状态检查完成");
+        return;
+    }
+
+    const status = await daemon.client.status();
+    printIntro("codex-mcp status");
+    printSummary("守护进程", [
+        { label: "状态", value: `pid ${status.pid} · ${status.mode === "local" ? "本机" : "公网"}` },
+        { label: "运行时长", value: formatUptime(status.uptimeMs) },
+        { label: "本机地址", value: status.localUrl },
+        { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
+        { label: "公网连接", value: status.tunnel.running ? "已连接" : "未启动" },
+        { label: "版本", value: status.version },
+    ]);
+
+    const active = status.projects.filter((item) => item.active);
+    if (status.projects.length === 0) {
+        printInfo("还没有注册项目。进入项目目录运行 codex-mcp 注册第一个项目。");
+    } else {
+        printInfo("已注册项目：");
+        for (const item of status.projects) {
+            printInfo(
+                `- ${item.name}${item.active ? "" : "（已停用）"} ${item.path} · ${item.boundSessions} 个会话绑定`,
+            );
+        }
+        if (active.length === 0) {
+            printWarning("没有活动项目。进入项目目录运行 codex-mcp 即可重新注册。");
+        }
+    }
+
+    if (status.publicMcpUrl && status.tunnel.running) {
+        const reachable = await checkPublicHealthz(status.publicMcpUrl);
+        if (!reachable) {
+            printWarning(
+                `公网地址暂时无法验证（${status.publicMcpUrl}）。请运行 codex-mcp doctor 检查公网连接。`,
+            );
+        }
+    }
+    printOutro("状态检查完成");
+}
+
+/** `codex-mcp exit`: deactivate the current project; `exit -a` shuts the daemon down. */
+async function runExit(flags: CliFlags): Promise<void> {
+    if (flags.all) {
+        await runExitAll();
+        return;
+    }
+
+    const daemon = await contactRunningDaemon();
+    if (!daemon) {
+        cleanStaleDaemonState();
+        printWarning("守护进程没有在运行，无需退出项目。");
+        return;
+    }
+
+    const projectRoot = canonicalProjectPath(resolveProjectRoot(flags.root));
+    const displayName = detectProjectDisplayName(projectRoot);
+    const id = deriveProjectId(displayName, projectRoot);
+    const result = await daemon.client.deactivateProject(id, projectRoot);
+    if (result.removed && result.project) {
+        printSuccess(`已停止项目 ${result.project.name}（${result.project.path}）。`);
+        printInfo("守护进程和其他项目保持运行。");
+    } else {
+        printWarning("当前目录的项目没有注册在守护进程中。");
+        printInfo("运行 codex-mcp status 查看已注册项目。");
+    }
+}
+
+async function runExitAll(): Promise<void> {
+    const state = loadDaemonState();
+    if (!state || !isProcessAlive(state.pid)) {
+        cleanStaleDaemonState();
+        printWarning("守护进程没有在运行。");
+        return;
+    }
+    const client = new DaemonControlClient(state.port, state.controlToken);
+    printInfo("正在关闭守护进程（停止隧道、托管进程和 MCP 服务）…");
+    try {
+        await client.shutdown();
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        printWarning(`请求关闭失败：${detail}`);
+    }
+    const deadline = Date.now() + 20_000;
+    while (isProcessAlive(state.pid) && Date.now() < deadline) {
+        await sleep(200);
+    }
+    if (isProcessAlive(state.pid)) {
+        printWarning("守护进程仍在运行，请稍后重试或手动结束该进程。");
+        return;
+    }
+    printSuccess("守护进程已停止，公网隧道已关闭。");
+}
+
+function formatUptime(uptimeMs: number): string {
+    const seconds = Math.floor(uptimeMs / 1000);
+    if (seconds < 60) return `${seconds} 秒`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours} 小时 ${minutes % 60} 分`;
+}
+
+async function checkPublicHealthz(publicMcpUrl: string): Promise<boolean> {
+    try {
+        const url = publicMcpUrl.replace(/\/mcp\/?$/, "/healthz");
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8_000);
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!response.ok) return false;
+        const payload = (await response.json()) as { ok?: unknown };
+        return payload.ok === true;
+    } catch {
+        return false;
+    }
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Run first-time setup or manage an already configured installation. */
