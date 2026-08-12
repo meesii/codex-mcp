@@ -234,9 +234,9 @@ async function main(): Promise<void> {
             output_mode: "full",
         });
         assert.notEqual(result.isError, true, toolText(result));
-        assert.match(
+        assert.equal(
             String((result.structuredContent as { stdout?: string })?.stdout ?? ""),
-            new RegExp(escapeRegExp(execRoot)),
+            await realpath(execRoot),
         );
 
         const consumedExec = await execClient.callTool("bash", {
