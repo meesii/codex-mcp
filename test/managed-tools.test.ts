@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { zipSync, strToU8 } from "fflate";
 import { getManagedToolSpec } from "../src/managed-tools/manifest.js";
+import { extractZipFile } from "../src/managed-tools/unzip.js";
 
-function main(): void {
+async function main(): Promise<void> {
     const macArmRg = getManagedToolSpec("ripgrep", "darwin", "arm64");
     assert.equal(macArmRg.version, "15.2.0");
     assert.match(macArmRg.url, /aarch64-apple-darwin\.tar\.gz$/);
@@ -31,7 +36,31 @@ function main(): void {
         /暂不支持/,
     );
 
+    const tempRoot = await mkdtemp(join(tmpdir(), "codex-mcp-unzip-"));
+    const safeZip = join(tempRoot, "safe.zip");
+    await writeFile(
+        safeZip,
+        zipSync({
+            "ripgrep-win/rg.exe": strToU8("rg-bin"),
+        }),
+    );
+    const safeDir = join(tempRoot, "safe");
+    await extractZipFile(safeZip, safeDir);
+    assert.equal(await readFile(join(safeDir, "ripgrep-win", "rg.exe"), "utf8"), "rg-bin");
+
+    const slipZip = join(tempRoot, "slip.zip");
+    await writeFile(
+        slipZip,
+        zipSync({
+            "../evil.txt": strToU8("nope"),
+        }),
+    );
+    await assert.rejects(extractZipFile(slipZip, join(tempRoot, "slip")), /非法路径/);
+
     console.log("managed-tools.test.ts: ok");
 }
 
-main();
+void main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

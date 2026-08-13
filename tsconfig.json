@@ -10,8 +10,8 @@
         "skipLibCheck": true,
         "esModuleInterop": true,
         "forceConsistentCasingInFileNames": true,
-        "declaration": true,
-        "sourceMap": true,
+        "declaration": false,
+        "sourceMap": false,
         "resolveJsonModule": true
     },
     "include": ["src/**/*.ts"],

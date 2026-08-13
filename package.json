@@ -1,6 +1,6 @@
 {
     "name": "@meesii/codex-mcp",
-    "version": "0.7.1",
+    "version": "0.7.2",
     "description": "Lean local coding MCP server for ChatGPT with embedded OAuth and Streamable HTTP.",
     "type": "module",
     "main": "dist/cli.js",
@@ -21,7 +21,7 @@
         "dev": "tsx watch src/cli.ts",
         "dev:once": "tsx src/cli.ts",
         "dev:watch": "tsx watch src/cli.ts",
-        "build": "tsc -p tsconfig.json",
+        "build": "esbuild \"src/**/*.ts\" --outdir=dist --outbase=src --format=esm --platform=node --target=es2022 --minify",
         "prepack": "npm run build",
         "start": "node dist/cli.js",
         "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
@@ -52,7 +52,7 @@
         "@modelcontextprotocol/server": "^2.0.0",
         "@node-rs/argon2": "^2.0.2",
         "express": "^5.2.1",
-        "extract-zip": "^2.0.1",
+        "fflate": "^0.8.3",
         "http-proxy-agent": "^9.1.0",
         "https-proxy-agent": "^9.1.0",
         "jose": "^6.2.8",
@@ -68,6 +68,7 @@
         "@types/express": "^5.0.6",
         "@types/node": "^22.19.0",
         "@types/turndown": "^5.0.6",
+        "esbuild": "^0.28.2",
         "tsx": "^4.21.0",
         "typescript": "^5.9.3"
     }

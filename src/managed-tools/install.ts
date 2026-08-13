@@ -14,10 +14,10 @@ import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { get as httpsGet } from "node:https";
-import extractZip from "extract-zip";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import * as tar from "tar";
 import { getManagedToolSpec } from "./manifest.js";
+import { extractZipFile } from "./unzip.js";
 import {
     getManagedBinDir,
     getManagedToolPath,
@@ -60,7 +60,7 @@ export async function ensureManagedTool(
             const extractDir = join(tempRoot, "extract");
             await mkdir(extractDir, { recursive: true });
             if (spec.archive === "zip") {
-                await extractZip(assetPath, { dir: extractDir });
+                await extractZipFile(assetPath, extractDir);
             } else {
                 await tar.x({ file: assetPath, cwd: extractDir });
             }
