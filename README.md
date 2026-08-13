@@ -83,6 +83,14 @@ codex-mcp 可以自动创建和管理 Cloudflare Tunnel。
 
 ## 1. 安装
 
+推荐用 npm：
+
+```bash
+npm install -g @meesii/codex-mcp
+```
+
+也可以用安装脚本：
+
 ### macOS / Linux
 
 ```bash
@@ -822,6 +830,14 @@ codex-mcp
 ---
 
 # 卸载
+
+如果是用 npm 安装的：
+
+```bash
+npm uninstall -g @meesii/codex-mcp
+```
+
+如果是用安装脚本安装的：
 
 ### macOS / Linux
 

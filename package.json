@@ -1,6 +1,6 @@
 {
-    "name": "codex-mcp",
-    "version": "0.7.0",
+    "name": "@meesii/codex-mcp",
+    "version": "0.7.1",
     "description": "Lean local coding MCP server for ChatGPT with embedded OAuth and Streamable HTTP.",
     "type": "module",
     "main": "dist/cli.js",
@@ -42,6 +42,9 @@
     },
     "homepage": "https://github.com/meesii/codex-mcp#readme",
     "license": "MIT",
+    "publishConfig": {
+        "access": "public"
+    },
     "dependencies": {
         "@clack/prompts": "^1.7.0",
         "@modelcontextprotocol/express": "^2.0.0",

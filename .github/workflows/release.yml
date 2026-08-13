@@ -46,7 +46,14 @@ jobs:
         run: npm run build
 
       - name: Build install package
-        run: npm pack
+        run: |
+          node -e "
+            const { appendFileSync } = require('node:fs');
+            const { execSync } = require('node:child_process');
+            const data = JSON.parse(execSync('npm pack --json', { encoding: 'utf8' }));
+            const filename = (Array.isArray(data) ? data[0] : data).filename;
+            appendFileSync(process.env.GITHUB_ENV, 'PACK_FILE=' + filename + '\n');
+          "
 
       - name: Smoke test installer (macOS / Linux)
         if: runner.os != 'Windows'
@@ -56,22 +63,22 @@ jobs:
           TEST_HOME="$(mktemp -d)"
           HOME="$TEST_HOME" \
           SHELL=/bin/sh \
-          CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
+          CODEX_MCP_PACKAGE="$PWD/$PACK_FILE" \
           sh scripts/install.sh
           "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version
           HOME="$TEST_HOME" \
-          CODEX_MCP_PACKAGE="$PWD/codex-mcp-$VERSION.tgz" \
+          CODEX_MCP_PACKAGE="$PWD/$PACK_FILE" \
           "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" update
           test "$(HOME="$TEST_HOME" "$TEST_HOME/.codex-mcp/npm/bin/codex-mcp" --version)" = "$VERSION"
           test -x "$TEST_HOME/.codex-mcp/bin/rg"
           "$TEST_HOME/.codex-mcp/bin/rg" --version
 
-          TOOLS_CLI="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/managed-tools/cli.js"
+          TOOLS_CLI="$TEST_HOME/.codex-mcp/npm/lib/node_modules/@meesii/codex-mcp/dist/managed-tools/cli.js"
           HOME="$TEST_HOME" node "$TOOLS_CLI" cloudflared
           test -x "$TEST_HOME/.codex-mcp/bin/cloudflared"
           "$TEST_HOME/.codex-mcp/bin/cloudflared" --version
 
-          PASSWORD_MODULE="$TEST_HOME/.codex-mcp/npm/lib/node_modules/codex-mcp/dist/auth/password-store.js"
+          PASSWORD_MODULE="$TEST_HOME/.codex-mcp/npm/lib/node_modules/@meesii/codex-mcp/dist/auth/password-store.js"
           HOME="$TEST_HOME" node --input-type=module --eval '
             import { pathToFileURL } from "node:url";
             const store = await import(pathToFileURL(process.argv[1]).href);
@@ -95,7 +102,7 @@ jobs:
         shell: pwsh
         run: |
           $version = node -p "require('./package.json').version"
-          $package = Join-Path $PWD "codex-mcp-$version.tgz"
+          $package = Join-Path $PWD $env:PACK_FILE
           $testHome = Join-Path $env:RUNNER_TEMP "codex-mcp-install-home"
           $installRoot = Join-Path $testHome ".codex-mcp/npm"
           $managedBin = Join-Path $testHome ".codex-mcp/bin"
@@ -155,7 +162,7 @@ jobs:
           & $rgPath --version
           if ($LASTEXITCODE -ne 0) { throw "managed ripgrep smoke test failed" }
 
-          $toolsCli = Join-Path $installRoot "node_modules/codex-mcp/dist/managed-tools/cli.js"
+          $toolsCli = Join-Path $installRoot "node_modules/@meesii/codex-mcp/dist/managed-tools/cli.js"
           & node $toolsCli cloudflared
           if ($LASTEXITCODE -ne 0) { throw "managed cloudflared install smoke test failed" }
           $cloudflaredPath = Join-Path $managedBin "cloudflared.exe"
@@ -163,7 +170,7 @@ jobs:
           & $cloudflaredPath --version
           if ($LASTEXITCODE -ne 0) { throw "managed cloudflared smoke test failed" }
 
-          $passwordModule = Join-Path $installRoot "node_modules/codex-mcp/dist/auth/password-store.js"
+          $passwordModule = Join-Path $installRoot "node_modules/@meesii/codex-mcp/dist/auth/password-store.js"
           $setPasswordScript = 'import { pathToFileURL } from "node:url"; const store = await import(pathToFileURL(process.argv[1]).href); await store.setAdminPassword("release smoke password 123");'
           & node --input-type=module --eval $setPasswordScript $passwordModule
           if ($LASTEXITCODE -ne 0) { throw "password write smoke test failed" }
@@ -235,7 +242,7 @@ jobs:
         run: |
           mkdir -p release
           npm pack --pack-destination release
-          mv "release/codex-mcp-${GITHUB_REF_NAME#v}.tgz" release/codex-mcp.tgz
+          mv release/*.tgz release/codex-mcp.tgz
           cp scripts/install.sh release/install.sh
           cp scripts/install.ps1 release/install.ps1
           cp scripts/uninstall.sh release/uninstall.sh
@@ -258,3 +265,47 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "codex-mcp $GITHUB_REF_NAME"
+
+  publish-npm:
+    name: 发布到 npm
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Check version
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "package.json 版本是 $PACKAGE_VERSION，但 Git tag 是 $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION 已经在 npm 上，跳过发布"
+            exit 0
+          fi
+          npm publish --access public --provenance
