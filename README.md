@@ -918,7 +918,7 @@ npm run dev
 npm run dev:once -- --local
 ```
 
-发布版本要求 Node.js 22。日常 CI 在 Linux 上检查，发版时再验证 Linux 和 Windows 安装。
+发布版本要求 Node.js 22。日常 CI 在 Linux 上检查，发版时再验证 Linux、macOS 和 Windows。
 
 ---
 
