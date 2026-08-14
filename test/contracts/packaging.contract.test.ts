@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { REPO_ROOT } from "./harness.js";
 
 test("package contract: npm tarball contains the runnable CLI and both platform installers", () => {
-    const output = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    const npmCli = process.env.npm_execpath;
+    assert.ok(npmCli, "npm_execpath must be available when the contract suite runs via npm test");
+    const output = execFileSync(process.execPath, [npmCli, "pack", "--dry-run", "--json", "--ignore-scripts"], {
         cwd: REPO_ROOT,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],

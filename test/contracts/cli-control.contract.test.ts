@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
     createProject,
     createTestEnvironment,
@@ -70,7 +70,8 @@ test("CLI project/daemon contract: add, list, info, remove, restart and stop pre
         assert.match(list.stdout, /cli-control-a/);
         assert.match(list.stdout, /cli-control-b/);
 
-        const a = beforeRestart.projects.find((item) => item.path === projectA || item.path.endsWith(projectA.split("/").at(-1)!));
+        const projectABasename = basename(projectA);
+        const a = beforeRestart.projects.find((item) => item.path === projectA || basename(item.path) === projectABasename);
         assert.ok(a?.id);
         const info = await runCli(["project", "info", a.id], { home: env.home });
         assert.equal(info.code, 0, info.stderr);

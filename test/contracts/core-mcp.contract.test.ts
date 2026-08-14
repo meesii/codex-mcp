@@ -110,11 +110,16 @@ test("MCP contract: project file, search, Git and command tools produce external
         assert.equal(managed.running, true);
         assert.ok(managed.processId);
         const processId = managed.processId!;
-        await new Promise((resolveWait) => setTimeout(resolveWait, 300));
         const status = expectToolOk<{ running?: boolean }>(await mcp.call("process_status", { processId }));
         assert.equal(typeof status.running, "boolean");
-        const output = expectToolOk<{ output?: string }>(await mcp.call("process_output", { processId, output_mode: "full" }));
-        assert.match(output.output ?? "", /late-output/);
+        let observedOutput = "";
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+            const output = expectToolOk<{ output?: string }>(await mcp.call("process_output", { processId, output_mode: "full" }));
+            observedOutput = output.output ?? "";
+            if (/late-output/.test(observedOutput)) break;
+            await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+        }
+        assert.match(observedOutput, /late-output/);
         expectToolOk(await mcp.call("process_kill", { processId }));
 
         // Modify one tracked file as well; Git diff intentionally does not include

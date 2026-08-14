@@ -52,6 +52,7 @@
         "@modelcontextprotocol/sdk": "^1.30.0",
         "@modelcontextprotocol/server": "^2.0.0",
         "@node-rs/argon2": "^2.0.2",
+        "cross-spawn": "^7.0.6",
         "express": "^5.2.1",
         "fflate": "^0.8.3",
         "http-proxy-agent": "^9.1.0",

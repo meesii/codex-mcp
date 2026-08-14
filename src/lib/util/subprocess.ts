@@ -1,5 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn as nodeSpawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { terminateChildProcess } from "../process/tree.js";
+
+const require = createRequire(import.meta.url);
+const crossSpawn = require("cross-spawn") as typeof nodeSpawn;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
@@ -56,7 +60,7 @@ export async function runSubprocess(
     );
 
     return await new Promise<SubprocessResult>((resolve, reject) => {
-        const child = spawn(file, [...args], {
+        const child = crossSpawn(file, [...args], {
             ...(options.cwd ? { cwd: options.cwd } : {}),
             ...(options.env ? { env: options.env } : {}),
             stdio: ["ignore", "pipe", "pipe"],
