@@ -18,10 +18,13 @@
 
 ### CLI / daemon
 
-1. `--help` / `--version` 可独立运行。
-2. `codex-mcp --local` 注册当前项目；多个目录共享一个 daemon。
-3. `status` 只展示真实注册状态；`exit` 只停当前项目；`exit -a` 停整个 daemon。
-4. daemon 控制路由没有 control token 时必须拒绝。
+1. `--help` / `--version` 可独立运行；命令不支持的 flag 必须 fail closed，不能静默忽略。
+2. `codex-mcp --local` 仍是注册当前项目的快捷入口；`project add/list/remove/info` 提供显式多项目控制面。
+3. `stop` 只停止 daemon/runtime/Tunnel，不抹掉项目注册与 active 状态；`restart` 只重启正在运行的 daemon、保留其 local/public 模式并恢复已有活动项目，不得在已停止后猜测启动模式。旧 `exit` / `exit -a` 只作为兼容入口。
+4. `status --json` 必须稳定可解析；文本 status 必须区分 CLI 与 daemon 版本，并在 mismatch 时给出 `restart` 恢复路径。
+5. `logs` 只读取公开运行日志并支持有界 tail；`logs -f` 只跟随后续追加内容。
+6. 默认 `doctor` 是只读；`doctor --fix` 只执行白名单本机修复。
+7. daemon 控制路由没有 control token 时必须拒绝。
 
 ### MCP 文件 / 命令 / Git
 
@@ -84,3 +87,9 @@
 3. binding owner key 丢掉 OAuth/local namespace，只保留 `openai/session`。
 
 Mutation 后必须恢复生产代码，再跑完整套件。
+
+CLI 控制面变更还要额外做三类 sanity mutation：
+
+1. 错误允许 `status --foreground`，合同测试必须失败。
+2. 强制 `versionMismatch=false`，旧 daemon 的 status 合同必须失败。
+3. `project remove` 返回成功但不真正停用项目，持久化状态合同必须失败。

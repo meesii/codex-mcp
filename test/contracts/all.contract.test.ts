@@ -1,4 +1,5 @@
 import "./cli.contract.test.js";
+import "./cli-control.contract.test.js";
 import "./core-mcp.contract.test.js";
 import "./multi-project.contract.test.js";
 import "./workspace-permissions.contract.test.js";

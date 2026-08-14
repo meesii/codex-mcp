@@ -222,7 +222,8 @@ codex-mcp status
 - 本机 MCP 地址
 - 公网 MCP 地址
 - Cloudflare Tunnel 是否在线
-- 当前版本
+- 当前 CLI 版本和正在运行的 daemon 版本
+- 两者版本不一致时的 `codex-mcp restart` 提示
 - 已注册项目
 - 每个项目当前有多少会话绑定
 
@@ -297,7 +298,19 @@ codex-mcp
 查看所有项目：
 
 ```bash
-codex-mcp status
+codex-mcp project list
+```
+
+也可以显式注册指定目录：
+
+```bash
+codex-mcp project add /path/to/project
+```
+
+查看单个项目详情：
+
+```bash
+codex-mcp project info <项目 ID、项目名或目录>
 ```
 
 ---
@@ -324,35 +337,39 @@ ChatGPT 会选择对应项目，然后后面的文件读取、代码修改、命
 
 ## 停止一个项目
 
-进入项目目录运行：
+推荐使用：
 
 ```bash
-codex-mcp exit
+codex-mcp project remove <项目 ID、项目名或目录>
 ```
 
-这只会停用当前项目。
-
-后台服务、Cloudflare Tunnel 和其他项目仍然继续运行。
-
-重新启用时，再进入目录运行：
+如果当前终端就在项目目录，也可以省略目标：
 
 ```bash
-codex-mcp
+codex-mcp project remove
 ```
+
+旧的 `codex-mcp exit` 仍然保留，等价于停用当前项目。
+
+这只会停用目标项目；后台服务、Cloudflare Tunnel 和其他项目仍然继续运行。重新启用时，再运行 `codex-mcp` 或 `codex-mcp project add <目录>`。
 
 ---
 
-## 停止全部服务
+## 停止或重启后台服务
+
+停止：
 
 ```bash
-codex-mcp exit -a
+codex-mcp stop
 ```
 
-这会关闭：
+重启：
 
-- 所有项目运行时
-- codex-mcp 后台服务
-- Cloudflare Tunnel
+```bash
+codex-mcp restart
+```
+
+`stop` 会关闭所有项目运行时、codex-mcp 后台服务和 Cloudflare Tunnel，但**保留项目注册和 active 状态**。需要再次启动时，进入项目目录运行 `codex-mcp`（本机模式用 `codex-mcp --local`）。`restart` 只用于重启当前正在运行的后台服务，因此能可靠保留原来的本机/公网模式。旧的 `codex-mcp exit -a` 仍作为 `stop` 的兼容入口。
 
 ---
 
@@ -547,14 +564,24 @@ codex-mcp setup
 | 命令 | 作用 |
 |---|---|
 | `codex-mcp` | 注册 / 启动当前项目，并确保后台服务运行 |
-| `codex-mcp status` | 查看后台服务、Tunnel 和所有项目 |
-| `codex-mcp exit` | 停用当前项目 |
-| `codex-mcp exit -a` | 停止所有项目并关闭后台服务和 Tunnel |
+| `codex-mcp status` | 查看后台服务、CLI/daemon 版本、Tunnel 和所有项目 |
+| `codex-mcp status --json` | 输出稳定的机器可读状态 |
+| `codex-mcp restart` | 重启后台服务，保留项目注册状态 |
+| `codex-mcp stop` | 停止后台服务和 Tunnel，保留项目注册状态 |
+| `codex-mcp project list` | 查看已注册项目 |
+| `codex-mcp project add [目录]` | 注册项目，默认当前目录 |
+| `codex-mcp project remove [项目]` | 停用项目，默认当前目录 |
+| `codex-mcp project info [项目]` | 查看项目详情 |
+| `codex-mcp logs [--lines N]` | 查看最近运行日志 |
+| `codex-mcp logs -f` | 持续跟随运行日志 |
 | `codex-mcp setup` | 首次设置或管理现有配置 |
-| `codex-mcp doctor` | 检查安装、配置和依赖 |
+| `codex-mcp doctor` | 只读检查安装、配置和依赖 |
+| `codex-mcp doctor --fix` | 创建缺失本机目录、清理失效 daemon 状态等安全修复 |
 | `codex-mcp auth` | 修改 ChatGPT 连接密码 |
 | `codex-mcp update` | 更新到最新版本 |
-| `codex-mcp tunnel` | 重新配置公网连接 |
+| `codex-mcp tunnel` | 重新配置公网连接（兼容快捷入口） |
+| `codex-mcp exit` | 兼容入口：停用当前项目 |
+| `codex-mcp exit -a` | 兼容入口：停止后台服务 |
 | `codex-mcp --root <目录>` | 注册指定目录，而不是当前目录 |
 | `codex-mcp --local` | 仅本机模式，不开放公网 |
 | `codex-mcp --no-tunnel` | 不自动启动 Cloudflare Tunnel |
@@ -804,11 +831,13 @@ codex-mcp
 codex-mcp status
 ```
 
-停止全部：
+停止后台服务：
 
 ```bash
-codex-mcp exit -a
+codex-mcp stop
 ```
+
+旧的 `codex-mcp exit -a` 仍然兼容。
 
 如果你是开发调试，希望服务一直占用当前终端，可以使用：
 
@@ -826,14 +855,13 @@ codex-mcp update
 
 更新会保留你的配置和连接密码。
 
-更新后建议关闭旧后台服务并重新启动：
+更新后运行：
 
 ```bash
-codex-mcp exit -a
-codex-mcp
+codex-mcp restart
 ```
 
-这样可以确保正在运行的进程使用新版本。
+这样可以确保正在运行的 daemon 使用当前 CLI 版本。`codex-mcp status` 会同时显示 CLI 和 daemon 版本；如果两者不一致，会直接提示重启。
 
 ---
 

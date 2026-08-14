@@ -42,7 +42,7 @@ import {
 } from "./tunnel/setup.js";
 import { verifySetupPublicRoute } from "./tunnel/setup-verify.js";
 import { withPublicSetupTransaction } from "./tunnel/setup-transaction.js";
-import { loadUserConfig } from "./config/user-config.js";
+import { ensureUserConfigDirs, loadUserConfig } from "./config/user-config.js";
 import { runSelfUpdate } from "./doctor/update.js";
 import { randomBytes } from "node:crypto";
 import {
@@ -58,65 +58,59 @@ import {
 } from "./daemon/control.js";
 import {
     loadDaemonState,
+    loadProjectsFile,
     removeDaemonState,
     saveDaemonState,
+    saveProjectsFile,
+    type RegisteredProject,
 } from "./daemon/state.js";
 import {
     canonicalProjectPath,
-    deriveProjectId,
     detectProjectDisplayName,
 } from "./projects/identity.js";
 import { BindingStore } from "./projects/bindings.js";
 import { ProjectRegistry } from "./projects/registry.js";
 import { ProjectRuntimeManager } from "./projects/runtime.js";
 import { PACKAGE_VERSION } from "./server/version.js";
-
-interface CliFlags {
-    command:
-        | "serve"
-        | "setup"
-        | "doctor"
-        | "tunnel"
-        | "auth"
-        | "update"
-        | "version"
-        | "help"
-        | "status"
-        | "exit"
-        | "daemon";
-    local: boolean;
-    noTunnel: boolean;
-    tunnelLogs: boolean;
-    foreground: boolean;
-    all: boolean;
-    root?: string;
-}
+import { parseCliArgs, type CliFlags } from "./cli/args.js";
+import { followLogFile, readRecentLogLines } from "./cli/logs.js";
 
 /** Print CLI usage. */
 function printUsage(): void {
     printIntro("codex-mcp");
     printNote(
-        "使用方法",
+        "常用命令",
         [
-            "codex-mcp                         在后台守护进程中注册并启动当前项目",
-            "codex-mcp status                  查看守护进程、公网隧道和已注册项目",
-            "codex-mcp exit                    停止当前项目（守护进程保持运行）",
-            "codex-mcp exit -a                 停止所有项目并关闭守护进程",
+            "codex-mcp                         注册当前项目并确保后台服务运行",
+            "codex-mcp status                  查看服务、版本、Tunnel 和项目状态",
+            "codex-mcp restart                 重启后台服务并保留项目注册状态",
+            "codex-mcp stop                    停止后台服务",
+            "codex-mcp project list            查看已注册项目",
+            "codex-mcp project add [目录]      注册项目（默认当前目录）",
+            "codex-mcp project remove [项目]   停用项目（默认当前目录）",
+            "codex-mcp project info [项目]     查看项目详情",
+            "codex-mcp logs [--lines N]        查看最近运行日志",
+            "codex-mcp logs -f                 持续跟随运行日志",
             "codex-mcp setup                   设置 / 管理公网连接",
-            "codex-mcp doctor                  检查安装和配置",
+            "codex-mcp doctor [--fix]          检查配置；--fix 只做安全本机修复",
             "codex-mcp auth                    修改连接密码",
             "codex-mcp update                  更新到最新版本",
-            "codex-mcp tunnel                  重新设置公网连接",
-            "codex-mcp --local                 守护进程只在本机运行，不开放公网",
-            "codex-mcp --root <目录>           指定项目目录",
-            "codex-mcp --no-tunnel             不自动启动 Cloudflare Tunnel",
-            "codex-mcp --tunnel-logs           在守护进程日志中显示 Tunnel 日志",
-            "codex-mcp serve --foreground      以前台进程方式启动（调试用）",
-            "codex-mcp --version               查看版本",
-            "codex-mcp help                    查看帮助",
         ].join("\n"),
     );
-    printInfo("平时最常用：进入项目目录后直接运行 codex-mcp。");
+    printNote(
+        "其他",
+        [
+            "codex-mcp status --json           输出机器可读状态",
+            "codex-mcp --local                 注册当前项目并以本机模式启动",
+            "codex-mcp --root <目录>           指定默认 serve 的项目目录",
+            "codex-mcp serve --foreground      以前台方式启动（调试用）",
+            "codex-mcp tunnel                  setup 公网连接的兼容快捷入口",
+            "codex-mcp exit                    兼容入口：停用当前项目",
+            "codex-mcp exit -a                 兼容入口：停止后台服务",
+            "codex-mcp --version               查看版本",
+        ].join("\n"),
+    );
+    printInfo("多数情况下：进入项目目录运行 codex-mcp；排查问题先看 status 和 logs。");
     printOutro("首次使用：运行 codex-mcp setup");
 }
 
@@ -182,113 +176,6 @@ function printStartupBanner(input: {
     printInfo("按 Ctrl+C 停止服务");
 }
 
-/**
- * Parse argv into a command + flags.
- *
- * @param argv - Process arguments excluding node/executable
- * @returns Parsed flags
- */
-function parseArgv(argv: string[]): CliFlags {
-    let command: CliFlags["command"] = "serve";
-    let local = false;
-    let noTunnel = false;
-    let tunnelLogs = false;
-    let foreground = false;
-    let all = false;
-    let root: string | undefined;
-    const positionals: string[] = [];
-
-    for (let index = 0; index < argv.length; index += 1) {
-        const arg = argv[index]!;
-        if (arg === "--local") {
-            local = true;
-            continue;
-        }
-        if (arg === "--no-tunnel") {
-            noTunnel = true;
-            continue;
-        }
-        if (arg === "--tunnel-logs") {
-            tunnelLogs = true;
-            continue;
-        }
-        if (arg === "--foreground" || arg === "-f") {
-            foreground = true;
-            continue;
-        }
-        if (arg === "--all" || arg === "-a") {
-            all = true;
-            continue;
-        }
-        if (arg === "--root") {
-            const value = argv[index + 1];
-            if (!value || value.startsWith("-")) {
-                throw new Error("`--root` 后面需要填写项目目录");
-            }
-            root = value;
-            index += 1;
-            continue;
-        }
-        if (arg === "--help" || arg === "-h") {
-            return {
-                command: "help",
-                local,
-                noTunnel,
-                tunnelLogs,
-                foreground,
-                all,
-                root,
-            };
-        }
-        if (arg === "--version" || arg === "-v") {
-            return {
-                command: "version",
-                local,
-                noTunnel,
-                tunnelLogs,
-                foreground,
-                all,
-                root,
-            };
-        }
-        if (arg.startsWith("-")) {
-            throw new Error(`不认识这个选项：${arg}`);
-        }
-        positionals.push(arg);
-    }
-
-    if (positionals[0] === "help") {
-        command = "help";
-    } else if (positionals[0] === "setup") {
-        command = "setup";
-    } else if (positionals[0] === "doctor") {
-        command = "doctor";
-    } else if (positionals[0] === "tunnel") {
-        command = "tunnel";
-    } else if (positionals[0] === "auth") {
-        command = "auth";
-    } else if (positionals[0] === "update") {
-        command = "update";
-    } else if (positionals[0] === "version") {
-        command = "version";
-    } else if (positionals[0] === "status") {
-        command = "status";
-    } else if (positionals[0] === "exit") {
-        command = "exit";
-    } else if (positionals[0] === "daemon") {
-        command = "daemon";
-    } else if (positionals[0] === "serve" || positionals[0] === undefined) {
-        command = "serve";
-    } else {
-        throw new Error(`不认识这个命令：${positionals[0]}。运行 codex-mcp help 查看帮助`);
-    }
-
-    if (positionals.length > 1) {
-        throw new Error(`这里不需要这些内容：${positionals.slice(1).join(" ")}`);
-    }
-
-    return { command, local, noTunnel, tunnelLogs, foreground, all, root };
-}
 
 /**
  * CLI entrypoint.
@@ -296,7 +183,7 @@ function parseArgv(argv: string[]): CliFlags {
  * @param argv - Process arguments excluding node/executable
  */
 async function main(argv: string[]): Promise<void> {
-    const flags = parseArgv(argv);
+    const flags = parseCliArgs(argv);
     if (flags.command === "help") {
         printUsage();
         return;
@@ -308,7 +195,7 @@ async function main(argv: string[]): Promise<void> {
     }
 
     if (flags.command === "doctor") {
-        await printDoctorReport();
+        await printDoctorReport(flags.fix);
         return;
     }
 
@@ -339,7 +226,27 @@ async function main(argv: string[]): Promise<void> {
     }
 
     if (flags.command === "status") {
-        await runStatus();
+        await runStatus(flags);
+        return;
+    }
+
+    if (flags.command === "stop") {
+        await runStop();
+        return;
+    }
+
+    if (flags.command === "restart") {
+        await runRestart();
+        return;
+    }
+
+    if (flags.command === "logs") {
+        await runLogs(flags);
+        return;
+    }
+
+    if (flags.command === "project") {
+        await runProjectCommand(flags);
         return;
     }
 
@@ -725,7 +632,9 @@ async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
 }
 
 /** Find or start the background daemon, running first-time setup when needed. */
-async function ensureDaemonRunning(flags: CliFlags): Promise<DaemonContact> {
+async function ensureDaemonRunning(
+    flags: Pick<CliFlags, "local" | "noTunnel" | "tunnelLogs">,
+): Promise<DaemonContact> {
     const existing = await contactRunningDaemon();
     if (existing) return existing;
 
@@ -782,28 +691,73 @@ function printRegistrationBanner(status: DaemonStatusPayload, project: { id: str
     printOutro("如需停止当前项目：codex-mcp exit");
 }
 
-/** `codex-mcp status`: print daemon, tunnel, and project status. */
-async function runStatus(): Promise<void> {
+/** `codex-mcp status`: print daemon, tunnel, version and project status. */
+async function runStatus(flags: CliFlags): Promise<void> {
+    const cliVersion = getPackageVersion();
     const daemon = await contactRunningDaemon();
     if (!daemon) {
         cleanStaleDaemonState();
+        const projects = loadProjectsFile();
+        if (flags.json) {
+            console.log(JSON.stringify({
+                schemaVersion: 1,
+                running: false,
+                cliVersion,
+                daemonVersion: null,
+                versionMismatch: false,
+                daemon: null,
+                projects: projects.map((item) => ({ ...item, boundSessions: null })),
+            }, null, 2));
+            return;
+        }
         printIntro("codex-mcp status");
         printWarning("守护进程没有在运行。");
-        printInfo("进入项目目录运行 codex-mcp 即可启动；查看帮助运行 codex-mcp help。");
+        if (projects.length > 0) {
+            printInfo(`已保存 ${projects.length} 个项目注册记录；进入任一项目目录运行 codex-mcp 即可重新启动后台服务。`);
+        } else {
+            printInfo("进入项目目录运行 codex-mcp 即可启动；查看帮助运行 codex-mcp help。");
+        }
         printOutro("状态检查完成");
         return;
     }
 
     const status = await daemon.client.status();
+    const versionMismatch = cliVersion !== status.version;
+    if (flags.json) {
+        console.log(JSON.stringify({
+            schemaVersion: 1,
+            running: true,
+            cliVersion,
+            daemonVersion: status.version,
+            versionMismatch,
+            daemon: {
+                pid: status.pid,
+                mode: status.mode,
+                startedAt: status.startedAt,
+                uptimeMs: status.uptimeMs,
+                localUrl: status.localUrl,
+                publicMcpUrl: status.publicMcpUrl ?? null,
+                tunnelRunning: status.tunnel.running,
+            },
+            projects: status.projects,
+        }, null, 2));
+        return;
+    }
+
     printIntro("codex-mcp status");
     printSummary("守护进程", [
         { label: "状态", value: `pid ${status.pid} · ${status.mode === "local" ? "本机" : "公网"}` },
         { label: "运行时长", value: formatUptime(status.uptimeMs) },
+        { label: "CLI 版本", value: cliVersion },
+        { label: "Daemon 版本", value: status.version },
         { label: "本机地址", value: status.localUrl },
         { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
         { label: "公网连接", value: status.tunnel.running ? "已连接" : "未启动" },
-        { label: "版本", value: status.version },
     ]);
+
+    if (versionMismatch) {
+        printWarning(`CLI 是 ${cliVersion}，但正在运行的 daemon 是 ${status.version}。运行 codex-mcp restart 载入当前版本。`);
+    }
 
     const active = status.projects.filter((item) => item.active);
     if (status.projects.length === 0) {
@@ -831,34 +785,8 @@ async function runStatus(): Promise<void> {
     printOutro("状态检查完成");
 }
 
-/** `codex-mcp exit`: deactivate the current project; `exit -a` shuts the daemon down. */
-async function runExit(flags: CliFlags): Promise<void> {
-    if (flags.all) {
-        await runExitAll();
-        return;
-    }
-
-    const daemon = await contactRunningDaemon();
-    if (!daemon) {
-        cleanStaleDaemonState();
-        printWarning("守护进程没有在运行，无需退出项目。");
-        return;
-    }
-
-    const projectRoot = canonicalProjectPath(resolveProjectRoot(flags.root));
-    const displayName = detectProjectDisplayName(projectRoot);
-    const id = deriveProjectId(displayName, projectRoot);
-    const result = await daemon.client.deactivateProject(id, projectRoot);
-    if (result.removed && result.project) {
-        printSuccess(`已停止项目 ${result.project.name}（${result.project.path}）。`);
-        printInfo("守护进程和其他项目保持运行。");
-    } else {
-        printWarning("当前目录的项目没有注册在守护进程中。");
-        printInfo("运行 codex-mcp status 查看已注册项目。");
-    }
-}
-
-async function runExitAll(): Promise<void> {
+/** Stop the daemon without changing persisted project active state. */
+async function runStop(): Promise<void> {
     const state = loadDaemonState();
     if (!state || !isProcessAlive(state.pid)) {
         cleanStaleDaemonState();
@@ -866,7 +794,7 @@ async function runExitAll(): Promise<void> {
         return;
     }
     const client = new DaemonControlClient(state.port, state.controlToken);
-    printInfo("正在关闭守护进程（停止隧道、托管进程和 MCP 服务）…");
+    printInfo("正在停止后台服务（Tunnel、托管进程和 MCP 服务会一起关闭）…");
     try {
         await client.shutdown();
     } catch (error) {
@@ -878,10 +806,157 @@ async function runExitAll(): Promise<void> {
         await sleep(200);
     }
     if (isProcessAlive(state.pid)) {
-        printWarning("守护进程仍在运行，请稍后重试或手动结束该进程。");
+        throw new Error("守护进程仍在运行，请稍后重试或手动结束该进程。");
+    }
+    printSuccess("后台服务已停止；项目注册状态已保留。");
+}
+
+/** Restart a running daemon in the same local/public mode while preserving projects. */
+async function runRestart(): Promise<void> {
+    const existing = await contactRunningDaemon();
+    if (!existing) {
+        cleanStaleDaemonState();
+        throw new Error("守护进程没有在运行，无法重启。进入项目目录运行 `codex-mcp` 启动；只在本机使用时运行 `codex-mcp --local`。");
+    }
+    const previousMode = (await existing.client.status()).mode;
+    await runStop();
+    const daemon = await ensureDaemonRunning({
+        local: previousMode === "local",
+        noTunnel: false,
+        tunnelLogs: false,
+    });
+    const status = await daemon.client.status();
+    printSuccess(`后台服务已重启：pid ${status.pid} · ${status.version} · ${status.projects.filter((item) => item.active).length} 个活动项目。`);
+}
+
+async function runLogs(flags: CliFlags): Promise<void> {
+    const recent = readRecentLogLines(flags.lines);
+    if (!recent.text) {
+        if (flags.follow) {
+            throw new Error(`还没有运行日志：${recent.path}`);
+        }
+        printWarning(`还没有运行日志：${recent.path}`);
         return;
     }
-    printSuccess("守护进程已停止，公网隧道已关闭。");
+    process.stdout.write(`${recent.text}\n`);
+    if (flags.follow) {
+        await followLogFile(recent.path);
+    }
+}
+
+async function runProjectCommand(flags: CliFlags): Promise<void> {
+    const action = flags.projectAction ?? "list";
+    if (action === "add") {
+        const projectRoot = resolveProjectRoot(flags.target);
+        const daemon = await ensureDaemonRunning(flags);
+        const project = await daemon.client.registerProject({
+            path: projectRoot,
+            name: detectProjectDisplayName(projectRoot),
+        });
+        printSuccess(`已注册项目 ${project.name}（${project.path}）。`);
+        printInfo(`项目 ID：${project.id}`);
+        return;
+    }
+
+    const daemon = await contactRunningDaemon();
+    const status = daemon ? await daemon.client.status() : undefined;
+    const projects = status?.projects ?? loadProjectsFile();
+
+    if (action === "list") {
+        printProjectList(projects);
+        return;
+    }
+
+    const project = resolveProjectSelection(projects, flags.target);
+    if (!project) {
+        throw new Error(flags.target ? `没有找到项目：${flags.target}` : "当前目录没有注册为项目");
+    }
+
+    if (action === "info") {
+        const live = status?.projects.find((item) => item.id === project.id);
+        printIntro("codex-mcp project info");
+        printSummary("项目", [
+            { label: "名称", value: project.name },
+            { label: "ID", value: project.id },
+            { label: "目录", value: project.path },
+            { label: "状态", value: project.active ? "活动" : "已停用" },
+            { label: "会话绑定", value: live ? String(live.boundSessions) : "daemon 未运行" },
+            { label: "最后使用", value: project.lastSeenAt },
+        ]);
+        printOutro("项目详情");
+        return;
+    }
+
+    if (daemon) {
+        const result = await daemon.client.deactivateProject(project.id, project.path);
+        if (!result.removed) {
+            printWarning(`项目 ${project.name} 已经是停用状态。`);
+            return;
+        }
+    } else if (project.active) {
+        await saveProjectsFile(projects.map((item) => item.id === project.id ? { ...item, active: false } : item));
+    } else {
+        printWarning(`项目 ${project.name} 已经是停用状态。`);
+        return;
+    }
+    printSuccess(`已停用项目 ${project.name}（${project.path}）。`);
+}
+
+function printProjectList(projects: Array<RegisteredProject & { boundSessions?: number }>): void {
+    printIntro("codex-mcp project list");
+    if (projects.length === 0) {
+        printInfo("还没有注册项目。运行 `codex-mcp project add [目录]` 添加。");
+        printOutro("项目列表");
+        return;
+    }
+    for (const project of projects) {
+        const sessions = project.boundSessions === undefined ? "" : ` · ${project.boundSessions} 个会话绑定`;
+        printInfo(`- ${project.name}${project.active ? "" : "（已停用）"} · ${project.id} · ${project.path}${sessions}`);
+    }
+    printOutro(`${projects.length} 个项目`);
+}
+
+function resolveProjectSelection(
+    projects: RegisteredProject[],
+    target?: string,
+): RegisteredProject | undefined {
+    if (!target) {
+        let current: string;
+        try {
+            current = canonicalProjectPath(resolveProjectRoot(undefined));
+        } catch {
+            return undefined;
+        }
+        return projects.find((item) => item.path === current);
+    }
+    const byId = projects.find((item) => item.id === target);
+    if (byId) return byId;
+    const byName = projects.filter((item) => item.name === target);
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1) {
+        throw new Error(`项目名 ${target} 不唯一，请改用项目 ID 或完整目录。`);
+    }
+    try {
+        const path = canonicalProjectPath(target);
+        return projects.find((item) => item.path === path);
+    } catch {
+        return undefined;
+    }
+}
+
+/** `codex-mcp exit`: compatibility alias for project remove; `exit -a` aliases stop. */
+async function runExit(flags: CliFlags): Promise<void> {
+    if (flags.all) {
+        await runStop();
+        return;
+    }
+    await runProjectCommand({
+        ...flags,
+        command: "project",
+        projectAction: "remove",
+        ...(flags.root ? { target: flags.root } : {}),
+    });
+    printInfo("兼容提示：以后可使用 `codex-mcp project remove [项目]`。");
 }
 
 function formatUptime(uptimeMs: number): string {
@@ -1045,9 +1120,21 @@ function printCompletedSetup(
     printOutro("设置完成");
 }
 
-/** Print a readable, read-only installation/configuration report. */
-async function printDoctorReport(): Promise<void> {
+/** Print installation/configuration report; --fix only performs whitelisted local repairs. */
+async function printDoctorReport(fix: boolean): Promise<void> {
     printIntro("codex-mcp 检查");
+
+    if (fix) {
+        const state = loadDaemonState();
+        const removedStaleDaemon = Boolean(state && !isProcessAlive(state.pid));
+        ensureUserConfigDirs();
+        cleanStaleDaemonState();
+        printSuccess("已确保 ~/.codex-mcp 和日志目录存在。");
+        if (removedStaleDaemon) {
+            printSuccess("已清理失效的 daemon 状态文件。");
+        }
+        printInfo("--fix 不会修改 Cloudflare DNS、OAuth 身份、连接密码或项目文件。");
+    }
 
     const report = await runDoctorChecks();
     for (const check of report.checks) {
