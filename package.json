@@ -25,6 +25,7 @@
         "prepack": "npm run build",
         "start": "node dist/cli.js",
         "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+        "pretest": "npm run build",
         "test": "tsx --test --test-concurrency=1 test/contracts/all.contract.test.ts",
         "bench:perf": "tsx test/performance-benchmark.ts"
     },
