@@ -1,0 +1,12 @@
+import "./cli.contract.test.js";
+import "./core-mcp.contract.test.js";
+import "./multi-project.contract.test.js";
+import "./workspace-permissions.contract.test.js";
+import "./chatgpt-abi.contract.test.js";
+import "./oauth-security.contract.test.js";
+import "./oauth-private-key.contract.test.js";
+import "./project-context.contract.test.js";
+import "./downstream.contract.test.js";
+import "./capabilities.contract.test.js";
+import "./runtime.contract.test.js";
+import "./packaging.contract.test.js";
