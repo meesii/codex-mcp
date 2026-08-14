@@ -4,7 +4,7 @@ import type { ProjectContext } from "../config/project.js";
 import type { GoalStore } from "../goals/store.js";
 import { CurrentOwnerProcessSessions } from "../lib/process/current-owner.js";
 import type { ProcessSessionAccess } from "../lib/process/sessions.js";
-import { getToolInvocationContext } from "../lib/tool/context.js";
+import { currentToolOwnerId } from "../lib/tool/context.js";
 import { errorResult } from "../lib/tool/result.js";
 import type { RegisteredProject } from "../daemon/state.js";
 import type { BindingStore } from "../projects/bindings.js";
@@ -48,15 +48,12 @@ export class UnboundProjectError extends Error {
 }
 
 /**
- * Conversation owner key used for session bindings: ChatGPT `openai/session`
- * first, MCP transport session second, then the OAuth/local client fallback.
- * This is a routing key, not proof of user identity.
+ * Conversation owner key used for project bindings. Reuse the same namespaced
+ * owner identity as permissions and managed processes so an identical host
+ * session id cannot cross OAuth/local client boundaries.
  */
 export function currentBindingOwnerKey(fallbackOwnerId: string): string {
-    const context = getToolInvocationContext();
-    if (context?.openAiSessionId) return `openai-session:${context.openAiSessionId}`;
-    if (context?.transportSessionId) return `mcp-session:${context.transportSessionId}`;
-    return fallbackOwnerId;
+    return currentToolOwnerId(fallbackOwnerId);
 }
 
 /** Guidance text shown to ChatGPT when a project-level tool is called unbound. */
@@ -65,7 +62,7 @@ export function unboundProjectMessage(activeProjects: RegisteredProject[]): stri
         return [
             "这个会话还没有绑定项目，而且当前没有已注册的项目。请让用户先在项目目录里运行 codex-mcp 注册项目。",
             "注册后优先调用 project_select(project_id=...)。",
-            "如果 project_select 不在 ChatGPT 已批准的 action snapshot 中，使用稳定兼容入口 workspace_projects(project_id=...) 完成同一会话绑定。",
+            "如果 project_select 不在 ChatGPT 已批准的 action snapshot 中，只有当 workspace_projects 的已批准输入 schema 明确包含 project_id 时才能用它兼容绑定；否则必须 Refresh 或重新发布 MCP app actions。",
         ].join("\n");
     }
     const list = activeProjects
@@ -76,7 +73,7 @@ export function unboundProjectMessage(activeProjects: RegisteredProject[]): stri
         "请先向用户确认要用哪个项目，不要自动猜测：",
         list,
         "首选：project_select(project_id=\"<确认的项目 id>\")。",
-        "兼容旧 ChatGPT action snapshot：如果 project_select 不可见，调用 workspace_projects(project_id=\"<确认的项目 id>\")；该稳定 ABI 会先绑定会话，再列出项目内容。",
+        "兼容入口：如果 project_select 不可见，并且当前 host 已批准的 workspace_projects 输入 schema 明确包含 project_id，可调用 workspace_projects(project_id=\"<确认的项目 id>\")。如果旧快照里没有该参数，新增 optional 参数无法穿透冻结 schema；请 Refresh 或重新发布 MCP app actions。",
     ].join("\n");
 }
 

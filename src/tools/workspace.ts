@@ -231,16 +231,26 @@ export function registerWorkspaceTools(
                 let changedPath: string | null = null;
                 if (action === "add") {
                     if (!path) throw new Error("action=add 需要 path。");
-                    changedPath = project.resolveWorkspaceRoot(path);
-                    persistWorkspaceAdded(changedPath, project);
-                    project.addWorkspaceRoot(changedPath);
-                    workspace.invalidate();
+                    changedPath = await changeWorkspaceTrust(
+                        "add",
+                        path,
+                        { project, workspace },
+                        projectTools,
+                        capabilities,
+                        hub,
+                        skills,
+                    );
                 } else if (action === "remove") {
                     if (!path) throw new Error("action=remove 需要 path。");
-                    changedPath = project.requireAdditionalWorkspaceRoot(path);
-                    persistWorkspaceRemoved(changedPath, project);
-                    project.removeWorkspaceRoot(changedPath);
-                    workspace.invalidate();
+                    changedPath = await changeWorkspaceTrust(
+                        "remove",
+                        path,
+                        { project, workspace },
+                        projectTools,
+                        capabilities,
+                        hub,
+                        skills,
+                    );
                 } else if (path !== undefined) {
                     throw new Error("path 仅适用于 action=add/remove。");
                 }
@@ -285,13 +295,15 @@ export function registerWorkspaceTools(
         async ({ path }) => {
             try {
                 const { project, workspace } = scope();
-                const canonical = project.resolveWorkspaceRoot(path);
-                persistWorkspaceAdded(canonical, project);
-                project.addWorkspaceRoot(canonical);
-                workspace.invalidate();
-                if (capabilities?.getConfig().sync === "watch") {
-                    await reloadCapabilities(capabilities, hub, skills).catch(() => undefined);
-                }
+                const canonical = await changeWorkspaceTrust(
+                    "add",
+                    path,
+                    { project, workspace },
+                    projectTools,
+                    capabilities,
+                    hub,
+                    skills,
+                );
                 return okResult(`Trusted workspace ${canonical}.`, {
                     path: canonical,
                     roots: [...project.roots],
@@ -321,13 +333,15 @@ export function registerWorkspaceTools(
         async ({ path }) => {
             try {
                 const { project, workspace } = scope();
-                const removed = project.requireAdditionalWorkspaceRoot(path);
-                persistWorkspaceRemoved(removed, project);
-                project.removeWorkspaceRoot(removed);
-                workspace.invalidate();
-                if (capabilities?.getConfig().sync === "watch") {
-                    await reloadCapabilities(capabilities, hub, skills).catch(() => undefined);
-                }
+                const removed = await changeWorkspaceTrust(
+                    "remove",
+                    path,
+                    { project, workspace },
+                    projectTools,
+                    capabilities,
+                    hub,
+                    skills,
+                );
                 return okResult(`Removed workspace trust for ${removed}.`, {
                     path: removed,
                     roots: [...project.roots],
@@ -608,6 +622,38 @@ export function registerWorkspaceTools(
             }
         },
     );
+}
+
+async function changeWorkspaceTrust(
+    action: "add" | "remove",
+    path: string,
+    current: { project: ProjectContext; workspace: { invalidate(): void } },
+    projectTools: ProjectToolDeps | undefined,
+    capabilities: CapabilityManager | undefined,
+    hub: DownstreamMcpHub,
+    skills: SkillRegistry,
+): Promise<string> {
+    let changed: string;
+    if (projectTools) {
+        changed = action === "add"
+            ? projectTools.runtimes.addTrustedWorkspace(path)
+            : projectTools.runtimes.removeTrustedWorkspace(path);
+    } else if (action === "add") {
+        changed = current.project.resolveWorkspaceRoot(path);
+        persistWorkspaceAdded(changed, current.project);
+        current.project.addWorkspaceRoot(changed);
+        current.workspace.invalidate();
+    } else {
+        changed = current.project.requireAdditionalWorkspaceRoot(path);
+        persistWorkspaceRemoved(changed, current.project);
+        current.project.removeWorkspaceRoot(changed);
+        current.workspace.invalidate();
+    }
+
+    if (capabilities?.getConfig().sync === "watch") {
+        await reloadCapabilities(capabilities, hub, skills).catch(() => undefined);
+    }
+    return changed;
 }
 
 function persistWorkspaceAdded(canonical: string, project: ProjectContext): void {

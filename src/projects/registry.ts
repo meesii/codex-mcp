@@ -13,9 +13,10 @@ import { writeRuntimeLog } from "../lib/runtime-log.js";
 /**
  * In-memory registry of registered projects backed by `~/.codex-mcp/projects.json`.
  *
- * Project ids are deterministic (path + display name hash), so a CLI invocation
- * can derive the same id without a round trip. `register` matches on canonical
- * path first so a display-name change updates the entry instead of duplicating it.
+ * New project ids are deterministic, while an already-registered canonical path
+ * keeps its original id forever. Display-name/package-name changes are metadata
+ * updates only: changing them must not invalidate durable conversation bindings
+ * or leave an orphaned runtime under the previous id.
  */
 export class ProjectRegistry {
     private projects: RegisteredProject[];
@@ -57,10 +58,8 @@ export class ProjectRegistry {
 
         if (existing) {
             const name = input.name?.trim() || existing.name || detectProjectDisplayName(canonicalPath);
-            const id = deriveProjectId(name, canonicalPath);
             const updated: RegisteredProject = {
                 ...existing,
-                id,
                 name,
                 active: true,
                 lastSeenAt: now,

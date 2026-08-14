@@ -68,7 +68,7 @@ export function registerProjectTools(server: McpServer, deps: ProjectToolDeps): 
         withToolAuth({
             title: "List registered projects",
             description:
-                "List the projects registered with the codex-mcp daemon and whether this conversation is already bound to one. Ask the user which project to use, then prefer project_select; if that action is absent from a frozen ChatGPT snapshot, call workspace_projects(project_id=...) instead.",
+                "List the projects registered with the codex-mcp daemon and whether this conversation is already bound to one. Ask the user which project to use, then prefer project_select. If that action is absent, workspace_projects(project_id=...) is only usable when its host-approved input schema visibly exposes the selector; otherwise Refresh/re-publish the MCP app actions.",
             inputSchema: {},
             outputSchema: {
                 projects: z.array(projectSchema),
@@ -187,7 +187,7 @@ export function registerProjectTools(server: McpServer, deps: ProjectToolDeps): 
         withToolAuth({
             title: "Unbind conversation from project",
             description:
-                "Remove this conversation's project binding. The project stays active; prefer project_select to rebind, or use workspace_projects(project_id=...) when project_select is absent from a frozen ChatGPT snapshot.",
+                "Remove this conversation's project binding. The project stays active; prefer project_select to rebind. workspace_projects(project_id=...) is a compatibility path only when that selector exists in the host-approved schema; otherwise Refresh/re-publish the MCP app actions.",
             inputSchema: {},
             outputSchema: { binding: bindingSchema.nullable() },
             annotations: stateWriteAnnotations,
@@ -202,7 +202,7 @@ export function registerProjectTools(server: McpServer, deps: ProjectToolDeps): 
                 });
             }
             return okResult(
-                `Unbound this conversation from ${binding!.projectId}. Project tools are blocked until project_select or compatibility workspace_projects(project_id=...) binds a project again.`,
+                `Unbound this conversation from ${binding!.projectId}. Project tools are blocked until project_select binds a project again, or a host-approved workspace_projects schema with project_id/project_path is used as the compatibility path.`,
                 { binding: null },
             );
         },

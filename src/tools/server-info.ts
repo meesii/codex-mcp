@@ -59,6 +59,14 @@ export function registerServerInfoTool(
                     .max(512)
                     .optional()
                     .describe("Optional tool names currently visible in the host's approved action snapshot."),
+                host_tool_schemas: z
+                    .array(z.object({
+                        name: z.string().min(1).max(256),
+                        input_properties: z.array(z.string().min(1).max(256)).max(512),
+                    }))
+                    .max(512)
+                    .optional()
+                    .describe("Optional approved host input-schema property names. Required to prove an old workspace_projects snapshot exposes compatibility selectors."),
             },
             outputSchema: {
                 version: z.string(),
@@ -92,6 +100,8 @@ export function registerServerInfoTool(
                             compatibilityTool: z.string(),
                             selectorParameters: z.array(z.string()),
                             available: z.boolean(),
+                            hostAvailable: z.boolean().nullable(),
+                            staleSnapshotRecovery: z.string(),
                         }),
                         externalAuthorization: z.object({
                             preferred: z.string(),
@@ -115,9 +125,12 @@ export function registerServerInfoTool(
                         serverMissingStableTools: z.array(z.string()),
                         serverCoreWorkflowAvailable: z.boolean(),
                         hostToolsProvided: z.boolean(),
+                        hostToolSchemasProvided: z.boolean(),
                         hostToolCount: z.number().int().nullable(),
                         hostMissingStableTools: z.array(z.string()),
                         hostMissingServerTools: z.array(z.string()),
+                        hostIncompatibleToolSchemas: z.array(z.string()),
+                        hostProjectBindingAvailable: z.boolean().nullable(),
                         hostCoreWorkflowAvailable: z.boolean().nullable(),
                         hostActionSnapshotStale: z.boolean().nullable(),
                     }),
@@ -125,11 +138,18 @@ export function registerServerInfoTool(
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ host_tools: hostTools }) => {
+        async ({ host_tools: hostTools, host_tool_schemas: hostToolSchemas }) => {
             const diskToolsetHash = buildToolsetHash();
             const restartRecommended = diskToolsetHash !== STARTUP_TOOLSET_HASH;
             const current = scope();
-            const compatibility = checkChatGptCompatibility(serverTools, hostTools);
+            const compatibility = checkChatGptCompatibility(
+                serverTools,
+                hostTools,
+                hostToolSchemas?.map((item: { name: string; input_properties: string[] }) => ({
+                    name: item.name,
+                    inputProperties: item.input_properties,
+                })),
+            );
             return okResult(
                 restartRecommended
                     ? `codex-mcp ${PACKAGE_VERSION} · core tool source changed on disk; restart recommended.`
@@ -174,6 +194,8 @@ export function registerServerInfoTool(
                                 selectorParameters: ["project_id", "project_path", "force"],
                                 available:
                                     options.daemonMode && serverTools.includes("workspace_projects"),
+                                hostAvailable: compatibility.hostProjectBindingAvailable,
+                                staleSnapshotRecovery: "Refresh or re-publish the ChatGPT MCP app actions so project_select or a selector-capable workspace_projects schema is approved.",
                             },
                             externalAuthorization: {
                                 preferred: "MCP elicitation",

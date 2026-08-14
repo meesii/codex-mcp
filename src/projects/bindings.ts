@@ -5,12 +5,15 @@ import {
 } from "../daemon/state.js";
 import { writeRuntimeLog } from "../lib/runtime-log.js";
 
+const DEFAULT_BINDING_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1_000;
+
 /**
  * Durable map from conversation owner key to bound project id.
  *
- * Owner keys are `openai-session:<id>`, then `mcp-session:<id>`, then the
- * OAuth/local client fallback id. The key is a routing correlation value, not
- * an authorization secret; the OAuth/password boundary still protects /mcp.
+ * Owner keys reuse the permission/process namespace: `<oauth/local owner>|openai-session:<id>`,
+ * then `<oauth/local owner>|mcp-session:<id>`, then the OAuth/local fallback id.
+ * The key is a routing correlation value, not an authorization secret; the
+ * OAuth/password boundary still protects /mcp.
  */
 export class BindingStore {
     private bindings: SessionBinding[];
@@ -19,9 +22,12 @@ export class BindingStore {
     constructor(options: {
         bindings?: SessionBinding[];
         save?: (bindings: SessionBinding[]) => Promise<void>;
+        /** Disable startup GC only for deterministic tests/migrations. */
+        pruneOnLoad?: boolean;
     } = {}) {
-        this.bindings = (options.bindings ?? loadBindingsFile()).map((item) => ({ ...item }));
         this.save = options.save ?? saveBindingsFile;
+        this.bindings = (options.bindings ?? loadBindingsFile()).map((item) => ({ ...item }));
+        if (options.pruneOnLoad !== false) this.pruneStale();
     }
 
     resolve(ownerKey: string): SessionBinding | undefined {
@@ -78,6 +84,25 @@ export class BindingStore {
         if (removed > 0) {
             this.bindings = remaining;
             this.persist();
+        }
+        return removed;
+    }
+
+    /** Remove inactive conversation bindings so durable state remains bounded. */
+    pruneStale(maxAgeMs = DEFAULT_BINDING_MAX_AGE_MS, now = Date.now()): number {
+        if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
+            throw new Error("Binding max age must be a non-negative finite number");
+        }
+        const cutoff = now - maxAgeMs;
+        const remaining = this.bindings.filter((item) => {
+            const lastSeen = Date.parse(item.lastSeenAt);
+            return Number.isFinite(lastSeen) && lastSeen >= cutoff;
+        });
+        const removed = this.bindings.length - remaining.length;
+        if (removed > 0) {
+            this.bindings = remaining;
+            this.persist();
+            writeRuntimeLog("info", "stale_bindings_pruned", { removed, maxAgeMs });
         }
         return removed;
     }

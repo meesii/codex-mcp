@@ -273,7 +273,7 @@ export function buildMultiProjectInstructions(
     const environment = [
         "<environment_context>",
         "  <mode>codex-mcp multi-project daemon</mode>",
-        "  <binding>each ChatGPT conversation must bind to exactly one registered project before project-level tools can be used; prefer project_list + project_select, or use stable compatibility ABI workspace_projects(project_id=...) when those newer actions are absent from a frozen ChatGPT snapshot</binding>",
+        "  <binding>each ChatGPT conversation must bind to exactly one registered project before project-level tools can be used; prefer project_list + project_select. workspace_projects(project_id=...) is only a compatibility path when the host-approved workspace_projects input schema actually exposes that selector; otherwise Refresh/re-publish the MCP app actions</binding>",
         `  <shell>${shell}</shell>`,
         "  <paths>relative paths use the bound project root; absolute reads may be outside workspaces; outside-workspace writes/exec cwd require user approval</paths>",
         "</environment_context>",
@@ -354,7 +354,7 @@ export function buildMultiProjectInstructions(
         );
     } else if (allows("workspace_projects")) {
         limits.push(
-            "- Project binding compatibility: ask the user to choose from the projects in the unbound error, then call workspace_projects(project_id=...). This is the stable ABI for frozen ChatGPT action snapshots. Never guess a project; use force=true only after explicit confirmation to switch.",
+            "- Project binding compatibility: workspace_projects(project_id=...) is usable only when the host-approved workspace_projects schema visibly contains project_id/project_path. A frozen older schema without those selectors cannot receive newly-added optional parameters; Refresh/re-publish the MCP app actions instead. Never guess a project; use force=true only after explicit confirmation to switch.",
         );
     }
     if (["exec_command", "write_stdin", "process_kill"].every(allows)) {
@@ -404,7 +404,7 @@ export function buildMultiProjectInstructions(
     }
 
     const bodyParts = [
-        "Codex-MCP multi-project daemon: one local MCP server plus one public tunnel serving multiple registered local projects. Each ChatGPT conversation must bind to one project first; prefer project_list + project_select, with workspace_projects(project_id=...) as the stable fallback for frozen ChatGPT action snapshots.",
+        "Codex-MCP multi-project daemon: one local MCP server plus one public tunnel serving multiple registered local projects. Each ChatGPT conversation must bind to one project first; prefer project_list + project_select. workspace_projects(project_id=...) is only a compatibility fallback when that selector is present in the host-approved input schema; otherwise Refresh/re-publish the MCP app actions.",
     ];
     if (toolMap.length > 0) {
         bodyParts.push("", "Tool map (pick by goal):", ...toolMap);

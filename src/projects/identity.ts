@@ -39,9 +39,10 @@ export function detectProjectDisplayName(root: string): string {
 }
 
 /**
- * Deterministic project id derived from the normalized display name plus a
- * hash of the canonical absolute path. Ids are stable across daemon restarts
- * and CLI invocations, and unique even when display names collide.
+ * Deterministic candidate id for a project's first registration, derived from
+ * the normalized display name plus a hash of the canonical absolute path.
+ * ProjectRegistry preserves the assigned id for an existing canonical path, so
+ * later display/package-name changes do not rewrite durable identity.
  */
 export function deriveProjectId(displayName: string, canonicalPath: string): string {
     const slug =

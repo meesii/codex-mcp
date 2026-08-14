@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import {
     closeSync,
+    mkdirSync,
     openSync,
     readFileSync,
     statSync,
@@ -276,6 +277,7 @@ export async function withDaemonStartLock<T>(run: () => Promise<T>): Promise<T> 
 }
 
 function tryAcquireLock(): () => void {
+    mkdirSync(dirname(DAEMON_LOCK_PATH), { recursive: true });
     const handle = openSync(DAEMON_LOCK_PATH, "wx");
     try {
         writeSync(handle, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), null, "utf8");
