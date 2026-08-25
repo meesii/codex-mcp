@@ -1,17 +1,17 @@
-import {
-    chmod,
-    mkdir,
-    readFile,
-    rename,
-    unlink,
-    writeFile,
-} from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getUserConfigDir } from "../config/user-config.js";
+import { writePrivateFileAtomic } from "../lib/fs/atomic-file.js";
 import { PACKAGE_VERSION } from "../server/version.js";
 
 export type DaemonMode = "local" | "public";
+
+export interface RuntimeIntent {
+    local: boolean;
+    noTunnel: boolean;
+    tunnelLogs: boolean;
+}
 
 export interface DaemonState {
     pid: number;
@@ -24,6 +24,7 @@ export interface DaemonState {
     startedAt: string;
     version: string;
     mode: DaemonMode;
+    runtimeIntent: RuntimeIntent;
 }
 
 export interface RegisteredProject {
@@ -57,6 +58,7 @@ export interface NewDaemonStateInput {
     controlToken: string;
     publicMcpUrl?: string;
     mode: DaemonMode;
+    runtimeIntent: RuntimeIntent;
 }
 
 function daemonStatePath(): string {
@@ -97,10 +99,33 @@ export function loadDaemonState(): DaemonState | undefined {
             startedAt: typeof state.startedAt === "string" ? state.startedAt : new Date().toISOString(),
             version: typeof state.version === "string" ? state.version : PACKAGE_VERSION,
             mode: state.mode === "public" ? "public" : "local",
+            runtimeIntent: normalizeRuntimeIntent(state.runtimeIntent, state.mode),
         };
     } catch {
         return undefined;
     }
+}
+
+function normalizeRuntimeIntent(value: unknown, legacyMode: unknown): RuntimeIntent {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        const input = value as Record<string, unknown>;
+        if (
+            typeof input.local === "boolean" &&
+            typeof input.noTunnel === "boolean" &&
+            typeof input.tunnelLogs === "boolean"
+        ) {
+            return {
+                local: input.local,
+                noTunnel: input.noTunnel,
+                tunnelLogs: input.tunnelLogs,
+            };
+        }
+    }
+    return {
+        local: legacyMode !== "public",
+        noTunnel: false,
+        tunnelLogs: false,
+    };
 }
 
 export async function saveDaemonState(state: DaemonState): Promise<void> {
@@ -174,17 +199,8 @@ function atomicWriteJson(path: string, value: unknown): Promise<void> {
 }
 
 async function atomicWriteJsonNow(path: string, value: unknown): Promise<void> {
-    await mkdir(getUserConfigDir(), { recursive: true });
-    const tempPath = `${path}.tmp`;
     const payload = `${JSON.stringify(value, null, 4)}\n`;
-    await writeFile(tempPath, payload, "utf8");
-    try {
-        // User-only permissions on platforms that support them.
-        await chmod(tempPath, 0o600);
-    } catch {
-        // Windows chmod is a no-op for this purpose.
-    }
-    await rename(tempPath, path);
+    writePrivateFileAtomic(path, payload);
 }
 
 async function removeFileIfExists(path: string): Promise<void> {

@@ -1,8 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { expandHomePath } from "./loader.js";
+import { writePrivateFileAtomic } from "../lib/fs/atomic-file.js";
+import { normalizeTunnelId } from "../tunnel/id.js";
 
 export interface ClientCapabilitiesConfig {
     /** Tool patterns used when a client has no explicit override. Defaults to ["*"]. */
@@ -16,16 +18,6 @@ export interface UserUiConfig {
     tools?: boolean;
     /** Show the summary status card. Defaults to true. */
     status?: boolean;
-}
-
-export interface PermissionGrantConfig {
-    capability: "write" | "exec";
-    /** Canonical absolute directory scope. */
-    path: string;
-}
-
-export interface UserPermissionsConfig {
-    grants?: PermissionGrantConfig[];
 }
 
 export type CapabilitySourceId = "agents" | "codex" | "claude";
@@ -45,30 +37,45 @@ export interface UserCapabilitiesConfig {
     sources?: Partial<Record<CapabilitySourceId, CapabilitySourceConfig>>;
 }
 
+export interface ExternalPublicAccessConfig {
+    kind: "external";
+    domain: string;
+}
+
+export interface CloudflarePublicAccessConfig {
+    kind: "cloudflare";
+    domain: string;
+    cloudflaredBin: string;
+    tunnelName: string;
+    tunnelId: string;
+    /** Versioned generated YAML selected by the committed config. */
+    configRevision?: string;
+    /** Non-secret Cloudflare ownership metadata used for consistency checks. */
+    accountId?: string;
+    zoneId?: string;
+}
+
+export type PublicAccessConfig =
+    | ExternalPublicAccessConfig
+    | CloudflarePublicAccessConfig;
+
 export interface UserConfig {
     host?: string;
     port?: number;
-    /** Public hostname for ChatGPT / Host allow-list (e.g. mcp.example.com). */
-    domain?: string;
-    /** When true, `codex-mcp` starts a cloudflared sidecar. */
-    useCloudflared?: boolean;
-    /** Absolute path or command name for the cloudflared binary. */
-    cloudflaredBin?: string;
-    /** Cloudflare tunnel name (default codex-mcp). */
-    tunnelName?: string;
-    /** Cloudflare tunnel UUID. */
-    tunnelId?: string;
+    /** Tagged committed public entry. Legacy flat fields are migrated on read. */
+    publicAccess?: PublicAccessConfig;
     /** Optional per-client tool registration policy; omitted means full compatibility. */
     clientCapabilities?: ClientCapabilitiesConfig;
-    /** Additional trusted workspace roots. Primary root still comes from --root / cwd. */
-    workspaces?: string[];
-    /** Persistent grants for operations outside registered workspaces. */
-    permissions?: UserPermissionsConfig;
     /** External MCP / Skill sources consumed at runtime without copying them. */
     capabilities?: UserCapabilitiesConfig;
     /** ChatGPT-facing custom UI preferences. */
     ui?: UserUiConfig;
 }
+
+export type UserConfigPatch = Omit<UserConfig, "publicAccess"> & {
+    /** `null` explicitly removes the committed public entry. */
+    publicAccess?: PublicAccessConfig | null;
+};
 
 export function getUserConfigDir(): string {
     return join(homedir(), ".codex-mcp");
@@ -103,28 +110,20 @@ export function loadUserConfig(): UserConfig {
     }
 }
 
-export function saveUserConfig(patch: UserConfig): UserConfig {
+export function saveUserConfig(patch: UserConfigPatch): UserConfig {
     ensureUserConfigDirs();
     const merged: UserConfig = { ...loadUserConfig() };
     if (patch.host !== undefined) merged.host = patch.host;
     if (patch.port !== undefined) merged.port = patch.port;
-    if (patch.domain !== undefined) merged.domain = normalizeHostname(patch.domain);
-    if (patch.useCloudflared !== undefined) {
-        merged.useCloudflared = patch.useCloudflared;
+    if (Object.prototype.hasOwnProperty.call(patch, "publicAccess")) {
+        if (patch.publicAccess === null) {
+            delete merged.publicAccess;
+        } else if (patch.publicAccess !== undefined) {
+            merged.publicAccess = normalizePublicAccess(patch.publicAccess);
+        }
     }
-    if (patch.cloudflaredBin !== undefined) {
-        merged.cloudflaredBin = expandHomePath(patch.cloudflaredBin);
-    }
-    if (patch.tunnelName !== undefined) merged.tunnelName = patch.tunnelName;
-    if (patch.tunnelId !== undefined) merged.tunnelId = patch.tunnelId;
     if (patch.clientCapabilities !== undefined) {
         merged.clientCapabilities = normalizeClientCapabilities(patch.clientCapabilities);
-    }
-    if (patch.workspaces !== undefined) {
-        merged.workspaces = normalizeWorkspacePaths(patch.workspaces);
-    }
-    if (patch.permissions !== undefined) {
-        merged.permissions = normalizePermissionsConfig(patch.permissions);
     }
     if (patch.capabilities !== undefined) {
         merged.capabilities = normalizeCapabilitiesConfig(patch.capabilities);
@@ -132,7 +131,7 @@ export function saveUserConfig(patch: UserConfig): UserConfig {
     if (patch.ui !== undefined) {
         merged.ui = normalizeUserUiConfig({ ...(merged.ui ?? {}), ...patch.ui });
     }
-    writeFileSync(getUserConfigPath(), `${JSON.stringify(merged, null, 4)}\n`, "utf8");
+    writePrivateFileAtomic(getUserConfigPath(), `${JSON.stringify(merged, null, 4)}\n`);
     return merged;
 }
 
@@ -141,7 +140,7 @@ export function ensureStarterUserConfig(host: string, port: number): UserConfig 
     const path = getUserConfigPath();
     if (!existsSync(path)) {
         const starter: UserConfig = { host, port };
-        writeFileSync(path, `${JSON.stringify(starter, null, 4)}\n`, "utf8");
+        writePrivateFileAtomic(path, `${JSON.stringify(starter, null, 4)}\n`);
         return starter;
     }
     return loadUserConfig();
@@ -199,30 +198,13 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
             config.port = port;
         }
     }
-    if (typeof raw.domain === "string" && raw.domain.trim()) {
-        config.domain = normalizeHostname(raw.domain);
-    }
-    if (typeof raw.useCloudflared === "boolean") {
-        config.useCloudflared = raw.useCloudflared;
-    }
-    if (typeof raw.cloudflaredBin === "string" && raw.cloudflaredBin.trim()) {
-        config.cloudflaredBin = expandHomePath(raw.cloudflaredBin.trim());
-    }
-    if (typeof raw.tunnelName === "string" && raw.tunnelName.trim()) {
-        config.tunnelName = raw.tunnelName.trim();
-    }
-    if (typeof raw.tunnelId === "string" && raw.tunnelId.trim()) {
-        config.tunnelId = raw.tunnelId.trim();
-    }
+    config.publicAccess = normalizePublicAccessFromRaw(raw);
     if (raw.clientCapabilities !== undefined) {
         config.clientCapabilities = normalizeClientCapabilities(raw.clientCapabilities);
     }
-    if (raw.workspaces !== undefined) {
-        config.workspaces = normalizeWorkspacePaths(raw.workspaces);
-    }
-    if (raw.permissions !== undefined) {
-        config.permissions = normalizePermissionsConfig(raw.permissions);
-    }
+    // Legacy `workspaces` and `permissions` keys are intentionally ignored. Project
+    // scope is owned by ProjectRegistry/BindingStore/ProjectRuntime now; retaining a
+    // second configuration model would make old files appear authoritative when they are not.
     if (raw.capabilities !== undefined) {
         config.capabilities = normalizeCapabilitiesConfig(raw.capabilities);
     }
@@ -232,43 +214,66 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
     return config;
 }
 
-function normalizeWorkspacePaths(value: unknown): string[] {
-    if (!Array.isArray(value)) throw new Error("workspaces must be an array");
-    const paths = value.map((item, index) => {
-        if (typeof item !== "string" || !item.trim()) {
-            throw new Error(`workspaces[${index}] must be a non-empty path`);
+function normalizePublicAccessFromRaw(
+    raw: Record<string, unknown>,
+): PublicAccessConfig | undefined {
+    if (raw.publicAccess !== undefined) {
+        if (!raw.publicAccess || typeof raw.publicAccess !== "object" || Array.isArray(raw.publicAccess)) {
+            throw new Error("publicAccess must be an object");
         }
-        return resolve(expandHomePath(item.trim()));
-    });
-    return [...new Set(paths)];
-}
-
-function normalizePermissionsConfig(value: unknown): UserPermissionsConfig {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("permissions must be an object");
+        return normalizePublicAccess(raw.publicAccess as PublicAccessConfig);
     }
-    const raw = value as Record<string, unknown>;
-    const result: UserPermissionsConfig = {};
-    if (raw.grants !== undefined) {
-        if (!Array.isArray(raw.grants)) throw new Error("permissions.grants must be an array");
-        result.grants = raw.grants.map((item, index) => {
-            if (!item || typeof item !== "object" || Array.isArray(item)) {
-                throw new Error(`permissions.grants[${index}] must be an object`);
-            }
-            const grant = item as Record<string, unknown>;
-            if (grant.capability !== "write" && grant.capability !== "exec") {
-                throw new Error(`permissions.grants[${index}].capability is invalid`);
-            }
-            if (typeof grant.path !== "string" || !grant.path.trim()) {
-                throw new Error(`permissions.grants[${index}].path must be a non-empty path`);
-            }
-            return {
-                capability: grant.capability,
-                path: resolve(expandHomePath(grant.path.trim())),
-            };
+
+    // Read-only compatibility with v0.9.0 and earlier. Any later save writes
+    // only the tagged shape and naturally removes these legacy flat fields.
+    const domain = typeof raw.domain === "string" && raw.domain.trim()
+        ? normalizeHostname(raw.domain)
+        : undefined;
+    if (!domain) return undefined;
+    if (raw.useCloudflared === false) return { kind: "external", domain };
+    if (
+        typeof raw.cloudflaredBin === "string" && raw.cloudflaredBin.trim() &&
+        typeof raw.tunnelName === "string" && raw.tunnelName.trim() &&
+        typeof raw.tunnelId === "string" && raw.tunnelId.trim()
+    ) {
+        return normalizePublicAccess({
+            kind: "cloudflare",
+            domain,
+            cloudflaredBin: raw.cloudflaredBin,
+            tunnelName: raw.tunnelName,
+            tunnelId: raw.tunnelId,
         });
     }
-    return result;
+    return undefined;
+}
+
+function normalizePublicAccess(input: PublicAccessConfig): PublicAccessConfig {
+    if (input.kind === "external") {
+        return { kind: "external", domain: normalizeHostname(input.domain) };
+    }
+    if (input.kind !== "cloudflare") {
+        throw new Error("publicAccess.kind must be external or cloudflare");
+    }
+    const cloudflaredBin = expandHomePath(requireNonEmpty(input.cloudflaredBin, "publicAccess.cloudflaredBin"));
+    const tunnelName = requireNonEmpty(input.tunnelName, "publicAccess.tunnelName");
+    const tunnelId = normalizeTunnelId(input.tunnelId, "publicAccess.tunnelId");
+    return {
+        kind: "cloudflare",
+        domain: normalizeHostname(input.domain),
+        cloudflaredBin,
+        tunnelName,
+        tunnelId,
+        ...(input.configRevision ? { configRevision: requireNonEmpty(input.configRevision, "publicAccess.configRevision") } : {}),
+        ...(input.accountId ? { accountId: requireNonEmpty(input.accountId, "publicAccess.accountId") } : {}),
+        ...(input.zoneId ? { zoneId: requireNonEmpty(input.zoneId, "publicAccess.zoneId") } : {}),
+    };
+}
+
+function requireNonEmpty(value: unknown, name: string): string {
+    if (typeof value !== "string" || !value.trim()) {
+        throw new Error(`${name} must be a non-empty string`);
+    }
+    return value.trim();
 }
 
 function normalizeCapabilitiesConfig(value: unknown): UserCapabilitiesConfig {

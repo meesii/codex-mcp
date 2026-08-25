@@ -6,6 +6,10 @@ export interface CapabilityContext {
     homeDirectory: string;
     primaryWorkspace: string;
     workspaceRoots: string[];
+    /** Whether this manager should expose user-scoped capability sources. */
+    includeUserScope: boolean;
+    /** Whether this manager should expose project/workspace-scoped capability sources. */
+    includeProjectScope: boolean;
 }
 
 export interface CapabilityWatchTarget {

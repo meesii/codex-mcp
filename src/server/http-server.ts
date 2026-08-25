@@ -16,7 +16,8 @@ import { runtimeTelemetry } from "../lib/util/telemetry.js";
 import { createMcpServer } from "./mcp-server.js";
 import { ProjectContext } from "../config/project.js";
 import { SkillRegistry } from "../skills/registry.js";
-import { UiSettingsStore } from "../ui/settings.js";
+import { uiPreferencesFromUserConfig, type UiPreferences } from "../ui/preferences.js";
+import { loadUserConfig } from "../config/user-config.js";
 import type { CapabilityManager } from "../capabilities/manager.js";
 import {
     BindingProjectScopeProvider,
@@ -26,6 +27,8 @@ import {
 import type { ProjectRegistry } from "../projects/registry.js";
 import type { BindingStore } from "../projects/bindings.js";
 import type { ProjectRuntimeManager } from "../projects/runtime.js";
+import type { RuntimeIntent } from "../daemon/state.js";
+import type { TunnelObservedStatus } from "../daemon/control.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { RoundChangeStore } from "../lib/tool/round-changes.js";
 
@@ -33,6 +36,7 @@ const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_INITIALIZES_PER_WINDOW = 60;
 const LOCAL_PROCESS_OWNER_ID = "local:noauth";
 const DAEMON_STARTED_AT = Date.now();
+const DAEMON_STARTED_AT_ISO = new Date(DAEMON_STARTED_AT).toISOString();
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -45,8 +49,8 @@ export interface CreateHttpServerOptions {
     skills?: SkillRegistry;
     /** External capability source manager used by reload/status tools. */
     capabilities?: CapabilityManager;
-    /** Optional UI settings store; defaults to ~/.codex-mcp/config.json persistence. */
-    uiSettings?: UiSettingsStore;
+    /** Optional static UI preferences; defaults to ~/.codex-mcp/config.json. */
+    uiPreferences?: UiPreferences;
     /** Optional per-client tool policy resolver; omitted means all tools. */
     allowedToolsResolver?: (clientId?: string) => ReadonlySet<string> | undefined;
     /** Multi-project daemon mode: registers control routes and resolves project scope per tool call. */
@@ -59,8 +63,9 @@ export interface DaemonServerOptions {
     runtimes: ProjectRuntimeManager;
     /** Random loopback-only control token for /daemon/* routes. */
     controlToken: string;
-    /** Reports whether the Cloudflare sidecar is currently running. */
-    tunnelStatus: () => { running: boolean };
+    runtimeIntent: RuntimeIntent;
+    /** Reports the observed Cloudflare sidecar lifecycle. */
+    tunnelStatus: () => TunnelObservedStatus;
     /** Runs the daemon shutdown sequence (stop tunnel, close server, remove daemon state). */
     onShutdown: () => Promise<void>;
 }
@@ -71,7 +76,7 @@ export interface RunningHttpServer {
     hub: DownstreamMcpHub;
     skills: SkillRegistry;
     capabilities?: CapabilityManager;
-    uiSettings: UiSettingsStore;
+    uiPreferences: UiPreferences;
     listen: () => Promise<NodeHttpServer>;
     close: () => Promise<void>;
     /** Bound URL after listen, e.g. http://127.0.0.1:3920/mcp */
@@ -105,7 +110,7 @@ export function createHttpServer(
     const hub = options.hub ?? DownstreamMcpHub.empty();
     const skills = options.skills ?? SkillRegistry.empty();
     const project = new ProjectContext(config.projectRoot);
-    const uiSettings = options.uiSettings ?? new UiSettingsStore();
+    const uiPreferences = options.uiPreferences ?? uiPreferencesFromUserConfig(loadUserConfig());
     const allowedToolsResolver = options.allowedToolsResolver ?? (() => undefined);
     const publicHttpHostnames =
         config.allowedHosts.length > 0
@@ -151,14 +156,29 @@ export function createHttpServer(
                 );
                 const scope: ToolScopeProvider = () => provider.resolveProject();
                 const tryScope: ToolScopeTryProvider = () => provider.tryResolveProject();
+                const capabilityScope = async () => {
+                    const runtime = provider.tryResolveRuntime();
+                    if (!runtime) {
+                        // Global user capabilities remain useful before a conversation chooses a project.
+                        return { hub, skills };
+                    }
+                    const projectCapabilities = await daemonOptions.runtimes.getCapabilities(
+                        runtime.id,
+                        runtime.project.root,
+                    );
+                    // A bound project gets one complete capability view. This preserves the
+                    // original user/project/override precedence without cross-project leakage.
+                    return { hub: projectCapabilities.hub, skills: projectCapabilities.skills };
+                };
                 return createMcpServer({
                     config,
                     scope,
                     tryScope,
                     hub,
                     skills,
-                    uiSettings,
+                    uiPreferences,
                     allowedTools: allowedToolsResolver(authClientId),
+                    capabilityScope,
                     projectTools: {
                         registry: daemonOptions.registry,
                         bindings: daemonOptions.bindings,
@@ -173,7 +193,7 @@ export function createHttpServer(
                 tryScope: () => ({ project, processes, roundChanges: roundChanges.forOwner(processOwnerId) }),
                 hub,
                 skills,
-                uiSettings,
+                uiPreferences,
                 allowedTools: allowedToolsResolver(authClientId),
             });
         },
@@ -194,6 +214,7 @@ export function createHttpServer(
     let httpServer: NodeHttpServer | undefined;
     let boundPort = config.port;
     let oauthRuntimePromise: Promise<OAuthRuntime> | undefined;
+    const localMcpUrl = (): string => `http://${urlHost(config.host)}:${boundPort}/mcp`;
     const instanceId = randomBytes(18).toString("base64url");
     const tunnelProbe = {
         path: `/.well-known/codex-mcp-tunnel-check/${randomBytes(24).toString("base64url")}`,
@@ -207,7 +228,7 @@ export function createHttpServer(
     const getOAuthRuntime = (): Promise<OAuthRuntime> => {
         if (!oauthRuntimePromise) {
             const resourceUrl = new URL(
-                config.publicMcpUrl ?? `http://${config.host}:${boundPort}/mcp`,
+                config.publicMcpUrl ?? localMcpUrl(),
             );
             oauthRuntimePromise = createOAuthRuntime(resourceUrl);
         }
@@ -320,8 +341,8 @@ export function createHttpServer(
         hub,
         skills,
         ...(options.capabilities ? { capabilities: options.capabilities } : {}),
-        uiSettings,
-        getMcpUrl: () => `http://${config.host}:${boundPort}/mcp`,
+        uiPreferences,
+        getMcpUrl: localMcpUrl,
         getTunnelProbe: () => ({ ...tunnelProbe }),
         listen: async () => {
             if (config.oauthRequired && !(await hasAdminPassword())) {
@@ -330,14 +351,20 @@ export function createHttpServer(
                 );
             }
             const listening = await new Promise<NodeHttpServer>((resolve, reject) => {
-                httpServer = app.listen(config.port, config.host, () => {
+                // Express 5 reports listen failures through the callback argument.
+                // Resolving unconditionally would publish daemon state for a server
+                // that never owned the port, leaving the parent to wait until timeout.
+                httpServer = app.listen(config.port, config.host, (error?: Error) => {
+                    if (error) {
+                        reject(error);
+                        return;
+                    }
                     const address = httpServer?.address();
                     if (address && typeof address === "object") {
                         boundPort = address.port;
                     }
                     resolve(httpServer!);
                 });
-                httpServer.on("error", reject);
             });
             if (config.oauthRequired) {
                 try {
@@ -398,11 +425,12 @@ function registerDaemonControlRoutes(
             version: PACKAGE_VERSION,
             mode: config.local ? "local" : "public",
             pid: process.pid,
-            startedAt: DAEMON_STARTED_AT,
+            startedAt: DAEMON_STARTED_AT_ISO,
             uptimeMs: now - DAEMON_STARTED_AT,
-            localUrl: `http://${config.host}:${boundPort()}/mcp`,
+            localUrl: `http://${urlHost(config.host)}:${boundPort()}/mcp`,
             ...(config.publicMcpUrl ? { publicMcpUrl: config.publicMcpUrl } : {}),
-            tunnel: { running: daemon.tunnelStatus().running },
+            runtimeIntent: daemon.runtimeIntent,
+            tunnel: daemon.tunnelStatus(),
             projects,
         });
     });
@@ -456,6 +484,10 @@ function registerDaemonControlRoutes(
             });
         });
     });
+}
+
+function urlHost(host: string): string {
+    return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 function isLoopbackAddress(remote: string): boolean {

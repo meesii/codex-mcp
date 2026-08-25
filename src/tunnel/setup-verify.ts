@@ -18,6 +18,15 @@ export interface SetupPublicVerificationResult {
     tunnel?: { protocol?: string; location?: string };
 }
 
+export interface SetupPublicVerificationOptions {
+    /** Runs only after the local origin and candidate connector are ready. */
+    beforePublicVerify?: () => Promise<void>;
+    totalTimeoutMs?: number;
+    signal?: AbortSignal;
+}
+
+export type SetupPortState = "available" | "codex-mcp" | "occupied";
+
 class SetupPortInUseError extends Error {}
 
 /**
@@ -32,6 +41,7 @@ export async function verifySetupPublicRoute(
     route: SetupPublicRoute,
     host: string,
     port: number,
+    options: SetupPublicVerificationOptions = {},
 ): Promise<SetupPublicVerificationResult> {
     const probe: TunnelProbe = {
         path: `/.well-known/codex-mcp-tunnel-check/${randomBytes(24).toString("base64url")}`,
@@ -42,14 +52,7 @@ export async function verifySetupPublicRoute(
     let sidecar: CloudflaredSidecar | undefined;
 
     try {
-        try {
-            await listenProbeServer(server, listenHost, port);
-        } catch (error) {
-            if (error instanceof SetupPortInUseError) {
-                return await verifyRunningCodexMcp(route.domain, listenHost, port);
-            }
-            throw error;
-        }
+        await listenProbeServer(server, listenHost, port);
 
         let tunnel: SetupPublicVerificationResult["tunnel"];
         if (route.useCloudflared) {
@@ -64,8 +67,12 @@ export async function verifySetupPublicRoute(
             tunnel = await sidecar.start();
         }
 
+        await options.beforePublicVerify?.();
         const publicMcpUrl = `https://${route.domain}/mcp`;
-        await verifyTunnelRoute(publicMcpUrl, probe);
+        await verifyTunnelRoute(publicMcpUrl, probe, {
+            totalTimeoutMs: options.totalTimeoutMs ?? 300_000,
+            signal: options.signal,
+        });
         return { publicMcpUrl, tunnel };
     } finally {
         await sidecar?.stop().catch(() => undefined);
@@ -73,16 +80,21 @@ export async function verifySetupPublicRoute(
     }
 }
 
-async function verifyRunningCodexMcp(
+export async function verifyRunningPublicRoute(
     domain: string,
     host: string,
     port: number,
+    options: { totalTimeoutMs?: number } = {},
 ): Promise<SetupPublicVerificationResult> {
-    const localHealthUrl = `http://${formatHost(host)}:${port}/healthz`;
+    const totalTimeoutMs = options.totalTimeoutMs ?? 120_000;
+    if (!Number.isSafeInteger(totalTimeoutMs) || totalTimeoutMs < 1_000) {
+        throw new Error("totalTimeoutMs must be an integer greater than or equal to 1000");
+    }
+    const localHealthUrl = `http://${formatHost(localServiceHost(host))}:${port}/healthz`;
     const publicHealthUrl = `https://${domain}/healthz`;
     const [localHealth, publicHealth] = await Promise.all([
-        readHealthInstance(localHealthUrl, true),
-        readHealthInstance(publicHealthUrl, false),
+        readHealthInstance(localHealthUrl, true, totalTimeoutMs),
+        readHealthInstance(publicHealthUrl, false, totalTimeoutMs),
     ]);
     if (localHealth !== publicHealth) {
         throw new Error(
@@ -92,12 +104,58 @@ async function verifyRunningCodexMcp(
     return { publicMcpUrl: `https://${domain}/mcp` };
 }
 
-async function readHealthInstance(url: string, allowPrivate: boolean): Promise<string> {
+/** Fail before any Cloudflare mutation if setup cannot own the local port. */
+export async function assertSetupPortAvailable(
+    host: string,
+    port: number,
+): Promise<void> {
+    const state = await inspectSetupPort(host, port);
+    if (state === "available") return;
+    if (state === "codex-mcp") {
+        throw new Error(
+            `本机端口 ${port} 上有 codex-mcp 在运行，但缺少可用的 daemon 状态，无法安全停止。` +
+            "请先结束这个旧进程，再重新运行 setup；尚未修改 Cloudflare。",
+        );
+    }
+    throw new Error(`本机端口 ${port} 已被其它程序占用；尚未修改 Cloudflare`);
+}
+
+/** Read-only classification used to recognize a supported foreground instance. */
+export async function inspectSetupPort(
+    host: string,
+    port: number,
+): Promise<SetupPortState> {
+    const listenHost = localServiceHost(host);
+    const server = createServer((_req, res) => {
+        res.statusCode = 503;
+        res.end();
+    });
+    try {
+        await listenProbeServer(server, listenHost, port);
+        return "available";
+    } catch (error) {
+        if (!(error instanceof SetupPortInUseError)) throw error;
+        try {
+            await readHealthInstance(`http://${formatHost(listenHost)}:${port}/healthz`, true, 5_000);
+            return "codex-mcp";
+        } catch {
+            return "occupied";
+        }
+    } finally {
+        await closeProbeServer(server);
+    }
+}
+
+async function readHealthInstance(
+    url: string,
+    allowPrivate: boolean,
+    timeoutMs: number,
+): Promise<string> {
     const response = await safeHttpGet(url, {
         allowPrivate,
         httpsOnly: !allowPrivate,
         maxBytes: 4 * 1024,
-        timeoutMs: 5_000,
+        timeoutMs,
         maxRedirects: 0,
         headers: { Accept: "application/json" },
     });

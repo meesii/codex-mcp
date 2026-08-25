@@ -26,14 +26,14 @@ export const claudeCapabilityProvider: CapabilityProvider = {
     supportsMcp: true,
     supportsSkills: true,
     async detect(context) {
-        const globalConfig = existsSync(join(context.homeDirectory, ".claude.json"));
-        const personalSkills = existsSync(join(context.homeDirectory, ".claude", "skills"));
-        const projectMcp = context.workspaceRoots.some((root) => existsSync(join(root, ".mcp.json")));
-        const projectSkills = context.workspaceRoots.some((root) => existsSync(join(root, ".claude", "skills")));
+        const globalConfig = context.includeUserScope && existsSync(join(context.homeDirectory, ".claude.json"));
+        const personalSkills = context.includeUserScope && existsSync(join(context.homeDirectory, ".claude", "skills"));
+        const projectMcp = context.includeProjectScope && context.workspaceRoots.some((root) => existsSync(join(root, ".mcp.json")));
+        const projectSkills = context.includeProjectScope && context.workspaceRoots.some((root) => existsSync(join(root, ".claude", "skills")));
         let command = false;
         try {
             const result = await runSubprocess("claude", ["--version"], {
-                timeoutMs: 5_000,
+                timeoutMs: 30_000,
                 maxStdoutBytes: 16 * 1024,
                 maxStderrBytes: 16 * 1024,
                 maxTotalBytes: 32 * 1024,
@@ -57,14 +57,16 @@ export const claudeCapabilityProvider: CapabilityProvider = {
         return loadClaudeMcpConfig(context);
     },
     skillRoots(context) {
-        const roots: SkillRoot[] = [
-            {
+        const roots: SkillRoot[] = [];
+        if (context.includeUserScope) {
+            roots.push({
                 path: join(context.homeDirectory, ".claude", "skills"),
                 source: "claude" as const,
                 scope: "user" as const,
                 respectModelInvocation: true,
-            },
-        ];
+            });
+        }
+        if (!context.includeProjectScope) return roots;
         context.workspaceRoots.forEach((workspaceRoot, index) => {
             roots.push({
                 path: join(workspaceRoot, ".claude", "skills"),
@@ -79,20 +81,24 @@ export const claudeCapabilityProvider: CapabilityProvider = {
     },
     watchTargets(context) {
         return [
-            {
-                key: "claude-user-config",
-                directory: context.homeDirectory,
-                fileName: ".claude.json",
-                recursiveWhenExact: false,
-                kind: "mcp",
-            },
-            {
-                key: "claude-user-skills",
-                directory: join(context.homeDirectory, ".claude", "skills"),
-                recursiveWhenExact: true,
-                kind: "skills",
-            },
-            ...context.workspaceRoots.flatMap((workspaceRoot, index) => [
+            ...(context.includeUserScope
+                ? [
+                      {
+                          key: "claude-user-config",
+                          directory: context.homeDirectory,
+                          fileName: ".claude.json",
+                          recursiveWhenExact: false,
+                          kind: "mcp" as const,
+                      },
+                      {
+                          key: "claude-user-skills",
+                          directory: join(context.homeDirectory, ".claude", "skills"),
+                          recursiveWhenExact: true,
+                          kind: "skills" as const,
+                      },
+                  ]
+                : []),
+            ...(context.includeProjectScope ? context.workspaceRoots.flatMap((workspaceRoot, index) => [
                 {
                     key: `claude-project-mcp:${index}`,
                     directory: workspaceRoot,
@@ -106,7 +112,7 @@ export const claudeCapabilityProvider: CapabilityProvider = {
                     recursiveWhenExact: true,
                     kind: "skills" as const,
                 },
-            ]),
+            ]) : []),
         ];
     },
 };
@@ -116,12 +122,18 @@ export function loadClaudeMcpConfig(context: CapabilityContext): CapabilityProvi
     const claudeJsonPath = join(context.homeDirectory, ".claude.json");
     const claudeJson = readJsonObject(claudeJsonPath) as ClaudeJsonRoot | undefined;
 
-    const userSet = normalizeClaudeServerContainer(claudeJson?.mcpServers, {
-        label: `${claudeJsonPath} user scope`,
-        cwd: context.primaryWorkspace,
-    });
+    const userSet = context.includeUserScope
+        ? normalizeClaudeServerContainer(claudeJson?.mcpServers, {
+              label: `${claudeJsonPath} user scope`,
+              cwd: context.primaryWorkspace,
+          })
+        : { servers: {}, warnings: [] };
     warnings.push(...userSet.warnings);
     const merged: Record<string, McpServerConfig> = { ...userSet.servers };
+
+    if (!context.includeProjectScope) {
+        return { config: { mcpServers: merged }, ...(warnings.length > 0 ? { warnings } : {}) };
+    }
 
     context.workspaceRoots.forEach((workspaceRoot, workspaceIndex) => {
         const projectPath = join(workspaceRoot, ".mcp.json");

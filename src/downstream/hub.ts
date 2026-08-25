@@ -118,7 +118,7 @@ interface TransportState {
     stderrTail: () => string;
 }
 
-const DOWNSTREAM_CONNECT_TIMEOUT_MS = 15_000;
+const DOWNSTREAM_CONNECT_TIMEOUT_MS = 60_000;
 const DOWNSTREAM_STDIO_MAX_MESSAGE_BYTES = 6 * 1024 * 1024;
 const DOWNSTREAM_STDERR_TAIL_CHARS = 64 * 1024;
 const DOWNSTREAM_MAX_PAGES = 50;
@@ -456,7 +456,7 @@ export class DownstreamMcpHub {
     private async openAndPublish(slot: ServerSlot): Promise<void> {
         this.assertSlotActive(slot);
         try {
-            const connection = await openConnection(slot.name, slot.config);
+            const connection = await openConnection(slot.config);
             if (!this.isSlotActive(slot)) {
                 await closeConnection(connection);
                 throw new Error(`downstream MCP "${slot.name}" configuration changed while connecting`);
@@ -548,7 +548,7 @@ function readyInfo(name: string, client: Client): DownstreamServerInfo {
     };
 }
 
-async function openConnection(name: string, config: McpServerConfig): Promise<DownstreamConnection> {
+async function openConnection(config: McpServerConfig): Promise<DownstreamConnection> {
     const client = new Client({ name: "codex-mcp", version: "0.1.0" });
     const state = createTransportState(config);
     const connection: DownstreamConnection = {

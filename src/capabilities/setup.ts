@@ -3,6 +3,7 @@ import { CapabilityManager } from "./manager.js";
 import { resolveCapabilitiesConfig } from "./config.js";
 import type { CapabilitySourceDetection } from "./provider.js";
 import {
+    loadUserConfig,
     saveUserConfig,
     type CapabilitySourceConfig,
     type CapabilitySourceId,
@@ -25,6 +26,7 @@ export async function configureCapabilitySources(
     const manager = new CapabilityManager(resolve(primaryWorkspace));
     const detections = await manager.detectSources();
     const detected = detections.filter((item) => item.detected);
+    const currentConfig = loadUserConfig().capabilities;
 
     printSummary(
         "外部能力",
@@ -54,9 +56,11 @@ export async function configureCapabilitySources(
 
     if (action === "keep") return { detections, changed: false };
 
-    const sources: Partial<Record<CapabilitySourceId, CapabilitySourceConfig>> = {};
+    const sources: Partial<Record<CapabilitySourceId, CapabilitySourceConfig>> = {
+        ...(currentConfig?.sources ?? {}),
+    };
     if (action === "all") {
-        for (const item of detections) {
+        for (const item of detected) {
             sources[item.source] = detectedSourceDefaults(item);
         }
     } else if (action === "off") {
@@ -64,14 +68,18 @@ export async function configureCapabilitySources(
             sources[source] = sourceDefaults(source, false);
         }
     } else {
-        for (const item of detections) {
-            sources[item.source] = item.detected
-                ? await configureOneSource(item.source, item.label)
-                : sourceDefaults(item.source, false);
+        for (const item of detected) {
+            sources[item.source] = await configureOneSource(item.source, item.label);
         }
     }
 
-    const anyEnabled = Object.values(sources).some((item) => item?.enabled === true);
+    // Detection only describes this machine/current workspace. Not seeing a source
+    // here must not silently disable a source the user enabled for another project.
+    const resolvedNext = resolveCapabilitiesConfig({
+        ...currentConfig,
+        sources,
+    });
+    const anyEnabled = SOURCE_PRIORITY.some((source) => resolvedNext.sources[source].enabled);
     const sync = anyEnabled
         ? await askSelect(
               "外部能力变化时如何同步？",
@@ -85,7 +93,7 @@ export async function configureCapabilitySources(
 
     const config: UserCapabilitiesConfig = {
         sync: sync as "watch" | "startup",
-        priority: [...SOURCE_PRIORITY],
+        priority: currentConfig?.priority ?? [...SOURCE_PRIORITY],
         sources,
     };
     saveUserConfig({ capabilities: config });

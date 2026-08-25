@@ -48,8 +48,8 @@ export function registerProjectTools(server: McpServer, deps: ProjectToolDeps): 
     }), async ({ action, project_id: projectId, project_path: projectPath, force }) => {
         try {
             const ownerKey = currentBindingOwnerKey(fallbackOwnerId);
-            if (action === "select") bindProject(deps, projectId, projectPath, force);
-            else if (action === "unbind") bindings.unbind(ownerKey);
+            if (action === "select") await bindProject(deps, projectId, projectPath, force);
+            else if (action === "unbind") await unbindProject(deps, ownerKey);
             else if (projectId !== undefined || projectPath !== undefined || force !== undefined) {
                 throw new Error("project_id、project_path 和 force 仅适用于 action=select。");
             }
@@ -70,7 +70,7 @@ export function registerProjectTools(server: McpServer, deps: ProjectToolDeps): 
     });
 }
 
-function bindProject(deps: ProjectToolDeps, projectId?: string, projectPath?: string, force?: boolean): void {
+async function bindProject(deps: ProjectToolDeps, projectId?: string, projectPath?: string, force?: boolean): Promise<void> {
     const hasId = Boolean(projectId?.trim());
     const hasPath = Boolean(projectPath?.trim());
     if (hasId === hasPath) throw new Error("action=select 需要且只需要 project_id 或 project_path。");
@@ -81,8 +81,17 @@ function bindProject(deps: ProjectToolDeps, projectId?: string, projectPath?: st
     if (existing && existing.projectId !== selected.id && force !== true) {
         throw new Error("这个会话已经绑定其他项目；用户确认切换后请传 force=true。");
     }
+    if (existing && existing.projectId !== selected.id) {
+        await deps.runtimes.shutdownOwner(existing.projectId, ownerKey);
+    }
     deps.runtimes.get(selected.id, selected.path);
     deps.bindings.bind(ownerKey, selected.id);
+}
+
+async function unbindProject(deps: ProjectToolDeps, ownerKey: string): Promise<void> {
+    const existing = deps.bindings.resolve(ownerKey);
+    if (existing) await deps.runtimes.shutdownOwner(existing.projectId, ownerKey);
+    deps.bindings.unbind(ownerKey);
 }
 
 function selectByPath(registry: ProjectRegistry, path: string): RegisteredProject | undefined {

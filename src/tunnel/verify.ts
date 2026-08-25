@@ -1,7 +1,6 @@
 import { safeHttpGet } from "../lib/http/safe-http.js";
 
-const DEFAULT_ATTEMPTS = 10;
-const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_TOTAL_TIMEOUT_MS = 300_000;
 const MAX_BODY_BYTES = 512;
 
 export interface TunnelProbe {
@@ -12,9 +11,11 @@ export interface TunnelProbe {
 export interface VerifyTunnelRouteOptions {
     /** Tests only: permit a loopback HTTP public URL. */
     allowPrivate?: boolean;
-    attempts?: number;
-    requestTimeoutMs?: number;
+    /** One deadline for all DNS/edge/request attempts. */
+    totalTimeoutMs?: number;
     retryDelayMs?: number;
+    /** Optional cancellation signal used by interactive setup. */
+    signal?: AbortSignal;
 }
 
 /**
@@ -42,23 +43,25 @@ export async function verifyTunnelRoute(
     }
 
     const target = new URL(probe.path, mcpUrl);
-    const attempts = clampPositiveInteger(options.attempts ?? DEFAULT_ATTEMPTS, 1, 30, "attempts");
-    const requestTimeoutMs = clampPositiveInteger(
-        options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-        250,
-        30_000,
-        "requestTimeoutMs",
+    const totalTimeoutMs = positiveSafeInteger(
+        options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS,
+        1_000,
+        "totalTimeoutMs",
     );
-    const retryDelayMs = clampPositiveInteger(options.retryDelayMs ?? 500, 0, 5_000, "retryDelayMs");
+    const retryDelayMs = positiveSafeInteger(options.retryDelayMs ?? 500, 0, "retryDelayMs");
+    const deadline = Date.now() + totalTimeoutMs;
     let lastDetail = "没有收到响应";
 
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    while (Date.now() < deadline) {
+        throwIfAborted(options.signal);
+        const remainingMs = deadline - Date.now();
         try {
             const response = await safeHttpGet(target, {
                 httpsOnly: !options.allowPrivate,
                 allowPrivate: options.allowPrivate,
                 maxBytes: MAX_BODY_BYTES,
-                timeoutMs: requestTimeoutMs,
+                timeoutMs: remainingMs,
+                signal: options.signal,
                 maxRedirects: 0,
                 headers: { Accept: "text/plain" },
             });
@@ -66,11 +69,13 @@ export async function verifyTunnelRoute(
             if (response.status === 200 && body === probe.expectedBody) return;
             lastDetail = `HTTP ${response.status}，但返回的不是当前 codex-mcp 实例`;
         } catch (error) {
+            throwIfAborted(options.signal);
             lastDetail = error instanceof Error ? error.message : "未知网络错误";
         }
 
-        if (attempt < attempts && retryDelayMs > 0) {
-            await delay(retryDelayMs);
+        const delayMs = Math.min(retryDelayMs, Math.max(0, deadline - Date.now()));
+        if (delayMs > 0) {
+            await delay(delayMs, options.signal);
         }
     }
 
@@ -94,18 +99,37 @@ function isTlsHandshakeFailure(detail: string): boolean {
     );
 }
 
-function clampPositiveInteger(
+function positiveSafeInteger(
     value: number,
     min: number,
-    max: number,
     name: string,
 ): number {
-    if (!Number.isSafeInteger(value) || value < min || value > max) {
-        throw new Error(`${name} must be an integer between ${min} and ${max}`);
+    if (!Number.isSafeInteger(value) || value < min) {
+        throw new Error(`${name} must be an integer greater than or equal to ${min}`);
     }
     return value;
 }
 
-async function delay(ms: number): Promise<void> {
-    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        const onAbort = (): void => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            reject(cancellationError(signal));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) throw cancellationError(signal);
+}
+
+function cancellationError(signal?: AbortSignal): Error {
+    return signal?.reason instanceof Error ? signal.reason : new Error("已取消公网配置");
 }

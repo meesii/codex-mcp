@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { SkillRegistry } from "../skills/registry.js";
+import type { CapabilityToolScopeProvider } from "../capabilities/tool-scope.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult } from "../lib/tool/result.js";
@@ -13,7 +13,7 @@ const skillInfoSchema = z.object({
     workspaceRoot: z.string().optional(),
 });
 
-export function registerSkillTools(server: McpServer, skills: SkillRegistry): void {
+export function registerSkillTools(server: McpServer, capabilityScope: CapabilityToolScopeProvider): void {
     registerTool(
         server,
         "skills_list",
@@ -28,9 +28,14 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
             annotations: readOnlyAnnotations,
         }),
         async () => {
-            const listed = skills.list();
-            const text = listed.length ? listed.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") : "No skills enabled.";
-            return okResult(text, { text, count: listed.length, skills: listed });
+            try {
+                const { skills } = await capabilityScope();
+                const listed = skills.list();
+                const text = listed.length ? listed.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") : "No skills enabled.";
+                return okResult(text, { text, count: listed.length, skills: listed });
+            } catch (error) {
+                return errorResult(error instanceof Error ? error.message : String(error));
+            }
         },
     );
 
@@ -54,6 +59,7 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
         }),
         async ({ name }) => {
             try {
+                const { skills } = await capabilityScope();
                 const info = skills.list().find((skill) => skill.name === name);
                 if (!info) return errorResult(`Unknown skill: ${name}`);
                 const result = skills.read(name);

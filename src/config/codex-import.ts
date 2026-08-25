@@ -8,7 +8,7 @@ import {
 } from "./user-mcp.js";
 
 const CODEX_MCP_LIST_MAX_BYTES = 8 * 1024 * 1024;
-const CODEX_MCP_LIST_TIMEOUT_MS = 15_000;
+const CODEX_MCP_LIST_TIMEOUT_MS = 60_000;
 
 export async function loadMergedMcpConfig(): Promise<UserMcpConfig> {
     return mergeMcpConfigs(await loadCodexMcpConfig(), loadUserMcpOverrides());

@@ -17,7 +17,7 @@ async function main(argv: string[]): Promise<void> {
     } else if (command === "bootstrap") {
         tools = ["ripgrep"];
         try {
-            if (loadUserConfig().useCloudflared === true) {
+            if (loadUserConfig().publicAccess?.kind === "cloudflare") {
                 tools.push("cloudflared");
             }
         } catch {

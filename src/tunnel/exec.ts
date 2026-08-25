@@ -35,7 +35,7 @@ export async function runCloudflared(
     args: string[],
     options: { timeoutMs?: number; allowFailure?: boolean } = {},
 ): Promise<CloudflaredRunResult> {
-    const timeoutMs = options.timeoutMs ?? 120_000;
+    const timeoutMs = options.timeoutMs ?? 300_000;
     const result = await new Promise<CloudflaredRunResult>((resolve, reject) => {
         const child = spawn(bin, args, {
             stdio: ["ignore", "pipe", "pipe"],
@@ -99,12 +99,13 @@ export async function runCloudflared(
 export async function runCloudflaredInherit(
     bin: string,
     args: string[],
+    options: { managedHome?: string } = {},
 ): Promise<number> {
     return await new Promise<number>((resolve, reject) => {
         const child = spawn(bin, args, {
             stdio: "inherit",
             windowsHide: false,
-            env: cloudflaredChildEnv(),
+            env: cloudflaredChildEnv(process.env, options.managedHome),
         });
         child.on("error", reject);
         child.on("close", (code) => resolve(code ?? 1));

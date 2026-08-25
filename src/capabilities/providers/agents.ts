@@ -8,7 +8,7 @@ export const agentsCapabilityProvider: CapabilityProvider = {
     supportsMcp: false,
     supportsSkills: true,
     async detect(context) {
-        const skills = existsSync(join(context.homeDirectory, ".agents", "skills"));
+        const skills = context.includeUserScope && existsSync(join(context.homeDirectory, ".agents", "skills"));
         return {
             source: "agents",
             label: "Agent Skills",
@@ -19,6 +19,7 @@ export const agentsCapabilityProvider: CapabilityProvider = {
         };
     },
     skillRoots(context) {
+        if (!context.includeUserScope) return [];
         return [
             {
                 path: join(context.homeDirectory, ".agents", "skills"),
@@ -28,6 +29,7 @@ export const agentsCapabilityProvider: CapabilityProvider = {
         ];
     },
     watchTargets(context) {
+        if (!context.includeUserScope) return [];
         return [
             {
                 key: "agents-skills",

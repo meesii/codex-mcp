@@ -1,6 +1,8 @@
 # Review 问题清单与修复追踪
 
-本文件是 2026-08-07 全量 review 的最终问题台账。`fixed` 表示已有代码修复，并具备自动测试、focused executable check 或发布级验证证据。
+> 历史快照（2026-08-07）：表格中的测试文件和通过记录描述当时的验收证据。项目后来按维护决策删除了测试套件，因此这些引用不是当前发布的自动回归保证；当前实现仍需以源码 review、typecheck、build 和隔离 smoke 重新验证。
+
+本文件是 2026-08-07 全量 review 的最终问题台账。本次仅同步仍在演进的 Tunnel 条目，不把历史 `fixed` 状态当作当前版本的完整审计结论。
 
 | ID | 严重度 | 问题 | 状态 | 修复 / 证据 |
 | --- | --- | --- | --- | --- |
@@ -8,8 +10,8 @@
 | R-002 | Critical | destructive/openWorld annotations 低报风险 | **fixed** | write/edit destructive=true；bash/exec/write_stdin destructive=true/openWorld=true；process_kill destructive=true/openWorld=false；mcp_tools readOnly=true/openWorld=true；mcp_call destructive=true/openWorld=true。E2E 验证 annotations。security scheme 由 server config 中央注入：公网 OAuth2，本地 noauth。 |
 | R-003 | Critical | symlink 绕过 project root | **fixed** | `path-guard` 改 canonical containment；existing/new target 都 canonicalize，含 dangling symlink 与 cycle 防护。`tools.e2e` 验证 read/write/edit/ls directory link escape；`security-regressions` 真实创建指向 root 外、目标尚不存在的 dangling symlink，验证 MCP `write` 拒绝且外部目标未创建。 |
 | R-004 | High | 覆盖全局 `~/.cloudflared/config.yml` | **fixed** | 改为 `~/.codex-mcp/cloudflared.yml`；`security-regressions` 验证路径。 |
-| R-005 | High | credentials 丢失自动 delete 远端 tunnel | **fixed** | `requireTunnelDeleteConfirmation()` 默认 false；未显式批准直接拒绝。`security-regressions` fake confirmer 验证 deny/allow。 |
-| R-006 | High | DNS 冲突自动 overwrite | **fixed** | `requireDnsOverwriteConfirmation()` 默认 false；未显式批准拒绝 `--overwrite-dns`。`security-regressions` 验证 deny/allow。 |
+| R-005 | High | credentials 丢失自动 delete 远端 tunnel | **fixed** | 同名 Tunnel 缺少本机凭据时不再删除远端资源，改为创建带唯一后缀的 candidate；只清理本次新建且未被 DNS 引用的 candidate。 |
+| R-006 | High | DNS 冲突自动 overwrite | **fixed** | 冲突仍需显式确认；切换前保存精确记录，connector ready 后才通过 API cutover，并对失败执行带并发保护的补偿和读取校验。 |
 | R-007 | High | `--local` 可监听 `0.0.0.0` | **fixed** | `loadConfig(local=true)` 无条件 host=`127.0.0.1`。`security-regressions` 输入用户 host `0.0.0.0` 验证结果。 |
 | R-008 | High | session/process 无资源配额 | **fixed** | MCP max sessions=32、initialize 60/15m/client；ProcessSessionManager max running=8。`security-regressions` 验证第 33 个 MCP session 与超额 process 被拒绝。 |
 | R-009 | High | edit replacement `$&/$'/$$` 非 literal | **fixed** | `replace(old, () => newString)`；`tools.e2e` 用 `$& $$ $'` 验证字面写入。 |
@@ -50,7 +52,7 @@
 | R-039 | Medium | ripgrep/Node regex fallback/cloudflared helper 可能被 pathological regex、无响应子进程或超量输出拖挂 | **fixed** | ripgrep probe/search 增加 wall-clock timeout、output budget、TERM→KILL；Node fallback regex 放进 Worker 并设 5s 上限；cloudflared short commands/sidecar 复用 process-tree TERM→KILL。`security-regressions` 验证忽略 TERM 的 rg/cloudflared 与 `(a+)+$` fallback ReDoS 都在有限时间返回。 |
 | R-040 | Medium | MCP Apps tool card 会显示完整 shell command / URL query，可能把 bearer token、signed URL 等敏感值暴露到 UI | **fixed** | shell command 在 UI summary/args 中只显示字符长度并标记 hidden；URL 去除 username/password/query/fragment 后再显示。`security-regressions` 使用 `Authorization: Bearer super-secret-token` 与 `?access_token=...` 精确断言 UI 数据不含 secret。 |
 | R-041 | Medium | Cloudflare 本地缓存 tunnelId 可能与当前 tunnelName 不一致；文本 list fallback 使用子串匹配；单引号 YAML credentials path 不完整 round-trip | **fixed** | `ensureTunnelCreated()` 仅在 saved id 与远端同名 tunnel id 一致时复用；文本 fallback 改 exact-name 匹配；YAML 单引号读取反解 `''`。`security-regressions` 验证 `codex-mcp-prod` 不误匹配 `codex-mcp`，并验证含 apostrophe 的 credentials path 完整 round-trip。 |
-| R-042 | Low | 坏的 downstream MCP initialize 可使用 SDK 默认 60s timeout，拖慢整个 codex-mcp 启动/重连 | **fixed** | Downstream initialize/reconnect 显式 `timeout=maxTotalTimeout=15s`；失败 server 继续保留为 `status=error`，其它 downstream 并行连接不受影响。 |
+| R-042 | Low | 坏的 downstream MCP initialize 可使用 SDK 默认 60s timeout，拖慢整个 codex-mcp 启动/重连 | **fixed** | Downstream initialize/reconnect 显式 `timeout=maxTotalTimeout=60s`；失败 server 继续保留为 `status=error`，其它 downstream 并行连接不受影响。 |
 | R-043 | Low | `summary` 描述要求 `done=false` 提供 `next`，handler 却允许缺失，导致“继续工作”没有下一步 invariant | **fixed** | `done=false && !next` 返回 MCP error；`tools.e2e` 增加缺 `next` regression。 |
 | R-044 | High | 真实 ChatGPT CIMD 使用 `token_endpoint_auth_method=private_key_jwt`，旧实现仅接受 `none`，导致 `/authorize` 返回 `invalid_client`；SDK 1.30 服务端 token/revoke middleware 本身也不会验证 private-key assertion | **fixed** | CIMD 新增标准 `private_key_jwt`：仅 RS256，`jwks`/`jwks_uri` 公钥验证，`iss=sub=client_id`，必需 `exp/jti`、可选 `iat`；audience 最终按 R-052 对齐正式 RFC/OpenID 规则；自定义 `/token`/`/revoke` client-auth handler 完整验证 assertion，DCR 仍保持 public-only。`private-key-jwt.test.ts` 覆盖 code exchange / refresh / revoke / replay / missing-jti / wrong-aud；真实 ChatGPT CIMD+JWKS 现场 fetch/parse 成功。 |
 | R-045 | High | macOS 浏览器通过系统 HTTPS proxy 可访问 ChatGPT，但 `safeHttpGet` 直连 Node DNS/HTTPS；在本机 DNS 被污染/直连受阻时 CIMD/JWKS 抓取超时并被折叠成 `invalid_client` | **fixed** | safe HTTP 支持标准 `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`，macOS 自动读取静态 Secure Web Proxy；HTTPS 代理模式先经独立 DoH 验证目标 A/AAAA 都是全球可路由地址，再把 proxy CONNECT 固定到已验证公网 IP，同时以原 hostname 执行 Host/TLS SNI/证书校验；bounded keep-alive proxy agent + 仅连接 reset/timeout 等传输故障的有限 IP 故障转移。redirect/size/timeout policy 保持逐跳执行，HTTP URL 不走该代理路径。真实 ChatGPT CIMD/JWKS 通过最终实现稳定返回 200。 |

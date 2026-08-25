@@ -10,11 +10,20 @@ export const codexCapabilityProvider: CapabilityProvider = {
     supportsMcp: true,
     supportsSkills: true,
     async detect(context) {
-        const skills = existsSync(join(context.homeDirectory, ".codex", "skills"));
+        const skills = context.includeUserScope && existsSync(join(context.homeDirectory, ".codex", "skills"));
         let command = false;
+        if (!context.includeUserScope) {
+            return {
+                source: "codex",
+                label: "Codex",
+                detected: false,
+                mcp: false,
+                skills: false,
+            };
+        }
         try {
             const result = await runSubprocess("codex", ["--version"], {
-                timeoutMs: 5_000,
+                timeoutMs: 30_000,
                 maxStdoutBytes: 16 * 1024,
                 maxStderrBytes: 16 * 1024,
                 maxTotalBytes: 32 * 1024,
@@ -32,10 +41,12 @@ export const codexCapabilityProvider: CapabilityProvider = {
             detail: command ? "Codex CLI" : skills ? "Codex skills" : undefined,
         };
     },
-    async loadMcp() {
+    async loadMcp(context) {
+        if (!context.includeUserScope) return { config: { mcpServers: {} } };
         return { config: await loadCodexMcpConfig() };
     },
     skillRoots(context) {
+        if (!context.includeUserScope) return [];
         return [
             {
                 path: join(context.homeDirectory, ".codex", "skills"),
@@ -45,6 +56,7 @@ export const codexCapabilityProvider: CapabilityProvider = {
         ];
     },
     watchTargets(context) {
+        if (!context.includeUserScope) return [];
         return [
             {
                 key: "codex-config",

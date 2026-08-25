@@ -133,7 +133,7 @@ E2E 同时验证错误 PKCE verifier、三种缺 `resource` 请求拒绝、raw s
 - 不自动注入远端 instructions/title/description/name
 - `mcp_tools` 返回当前 catalog，不承诺 immutable
 - `listTools` connection closed 自动 reconnect + retry
-- downstream initialize/reconnect 显式 15s total timeout；坏 server 标为 `status=error`，不拖住其它并行 downstream
+- downstream initialize/reconnect 默认 60s total timeout；坏 server 标为 `status=error`，不拖住其它并行 downstream；显式导入的用户 timeout 仍优先
 - `mcp_call` 保留完整 MCP content，包括 image 等非 text 内容
 
 ### 8. Tool metadata / UI

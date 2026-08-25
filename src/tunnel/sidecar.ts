@@ -7,7 +7,7 @@ import { ensureUserConfigDirs, getUserLogDir } from "../config/user-config.js";
 import { cloudflaredChildEnv } from "./exec.js";
 import { getCloudflaredConfigPath } from "./yml.js";
 
-const DEFAULT_READY_TIMEOUT_MS = 45_000;
+const DEFAULT_READY_TIMEOUT_MS = 180_000;
 const MAX_DIAGNOSTIC_LOG_CHARS = 16_000;
 
 export function cloudflaredRunArgs(configPath: string, tunnelId: string): string[] {
@@ -15,8 +15,6 @@ export function cloudflaredRunArgs(configPath: string, tunnelId: string): string
         "tunnel",
         "--config",
         configPath,
-        "--protocol",
-        "http2",
         "--edge-ip-version",
         "4",
         "run",
@@ -43,10 +41,10 @@ export function tunnelReadinessTimeoutMessage(
             logText,
         );
     if (tcp7844Failure) {
-        return `${prefix} 无法连接 Cloudflare 的 TCP 7844 端口。请检查防火墙或网络限制。日志：${logPath}`;
+        return `${prefix} Cloudflare 已回退到 HTTP/2，但 TCP 7844 仍不可达。请检查防火墙或网络限制；自动模式也会优先尝试 QUIC/UDP 7844。日志：${logPath}`;
     }
 
-    return `${prefix} 请检查网络是否允许访问 Cloudflare TCP 7844。日志：${logPath}`;
+    return `${prefix} 请检查网络是否允许访问 Cloudflare UDP 或 TCP 7844。日志：${logPath}`;
 }
 
 export interface TunnelSidecarOptions {
@@ -57,6 +55,9 @@ export interface TunnelSidecarOptions {
     mirrorLogs?: boolean;
     /** Max wait for edge registration (ms). */
     readyTimeoutMs?: number;
+    /** Daemon mode only: restart a connector that exits after becoming ready. */
+    maxRestarts?: number;
+    onStateChange?: (status: TunnelSidecarStatus) => void;
 }
 
 export interface TunnelReadyInfo {
@@ -64,6 +65,15 @@ export interface TunnelReadyInfo {
     location?: string;
     /** Transport used for the first connection (e.g. http2). */
     protocol?: string;
+}
+
+export type TunnelSidecarState = "off" | "starting" | "connected" | "degraded" | "exited";
+
+export interface TunnelSidecarStatus {
+    running: boolean;
+    state: TunnelSidecarState;
+    restartCount: number;
+    detail?: string;
 }
 
 /**
@@ -77,7 +87,6 @@ export class CloudflaredSidecar {
     private child: ChildProcess | undefined;
     private logStream: WriteStream | undefined;
     private readonly logPath: string;
-    private exitCode: number | null = null;
     private readonly mirrorLogs: boolean;
     private readonly readyTimeoutMs: number;
     private readySeen = false;
@@ -85,8 +94,11 @@ export class CloudflaredSidecar {
     private diagnosticTail = "";
     private readyResolve: ((info: TunnelReadyInfo) => void) | undefined;
     private readyReject: ((error: Error) => void) | undefined;
+    private connectorReady = false;
+    private stopping = false;
+    private restartCount = 0;
+    private restartTimer: ReturnType<typeof setTimeout> | undefined;
 
-    
     constructor(private readonly options: TunnelSidecarOptions) {
         ensureUserConfigDirs();
         mkdirSync(getUserLogDir(), { recursive: true });
@@ -98,19 +110,27 @@ export class CloudflaredSidecar {
                 : DEFAULT_READY_TIMEOUT_MS;
     }
 
-    
     getLogPath(): string {
         return this.logPath;
     }
 
-    
     async start(): Promise<TunnelReadyInfo> {
+        this.stopping = false;
+        this.restartCount = 0;
+        return await this.startOnce();
+    }
+
+    private async startOnce(): Promise<TunnelReadyInfo> {
         if (this.child) {
             throw new Error("Cloudflare Tunnel 已经在运行");
         }
+        this.emitState("starting", false);
 
         const configPath = this.options.configPath ?? getCloudflaredConfigPath();
         this.logStream = createWriteStream(this.logPath, { flags: "a" });
+        this.logStream.on("error", () => {
+            this.logStream = undefined;
+        });
         this.writeLog(
             `\n---- ${new Date().toISOString()} start tunnel ${this.options.tunnelId} ----\n`,
         );
@@ -130,8 +150,8 @@ export class CloudflaredSidecar {
             },
         );
         this.child = child;
-        this.exitCode = null;
         this.readySeen = false;
+        this.connectorReady = false;
         this.logLineCarry = "";
         this.diagnosticTail = "";
 
@@ -148,15 +168,18 @@ export class CloudflaredSidecar {
             );
         });
         child.on("close", (code) => {
-            this.exitCode = code;
             this.writeLog(`---- exited code=${code ?? "null"} ----\n`);
             this.child = undefined;
-            if (!this.readySeen) {
+            this.logStream?.end();
+            this.logStream = undefined;
+            if (!this.connectorReady) {
                 this.failReady(
                     new Error(
                         `cloudflared 在公网连接准备好之前退出了（代码 ${code}）。日志：${this.logPath}`,
                     ),
                 );
+            } else if (!this.stopping) {
+                this.scheduleRestart(`cloudflared 退出（代码 ${code ?? "null"}）`);
             }
         });
 
@@ -178,9 +201,13 @@ export class CloudflaredSidecar {
 
         try {
             const info = await Promise.race([readyPromise, timeoutPromise]);
+            this.emitState("connected", true);
             return info;
         } catch (error) {
-            await this.stop();
+            await this.terminateCurrent();
+            if (!this.stopping) {
+                this.emitState("exited", false, error instanceof Error ? error.message : String(error));
+            }
             throw error;
         } finally {
             if (timer) clearTimeout(timer);
@@ -193,23 +220,13 @@ export class CloudflaredSidecar {
      * Stop the sidecar process if it is still running.
      */
     async stop(): Promise<void> {
-        const child = this.child;
-        if (!child?.pid) {
-            this.logStream?.end();
-            this.logStream = undefined;
-            return;
-        }
-
-        try {
-            await terminateChildProcess(child, 2_000, 1_000);
-        } finally {
-            this.child = undefined;
-            this.logStream?.end();
-            this.logStream = undefined;
-        }
+        this.stopping = true;
+        if (this.restartTimer) clearTimeout(this.restartTimer);
+        this.restartTimer = undefined;
+        await this.terminateCurrent();
+        this.emitState("off", false);
     }
 
-    
     private onLogChunk(text: string): void {
         this.writeLog(text);
         this.diagnosticTail = (this.diagnosticTail + text).slice(-MAX_DIAGNOSTIC_LOG_CHARS);
@@ -226,12 +243,12 @@ export class CloudflaredSidecar {
         this.noteReadyLine(this.logLineCarry);
     }
 
-    
     private noteReadyLine(line: string): void {
         if (this.readySeen) return;
         if (!line.includes("Registered tunnel connection")) return;
 
         this.readySeen = true;
+        this.connectorReady = true;
         const info: TunnelReadyInfo = {
             location: /(?:^|\s)location=(\S+)/.exec(line)?.[1],
             protocol: /(?:^|\s)protocol=(\S+)/.exec(line)?.[1],
@@ -241,7 +258,6 @@ export class CloudflaredSidecar {
         this.readyReject = undefined;
     }
 
-    
     private failReady(error: Error): void {
         if (this.readySeen) return;
         this.readySeen = true;
@@ -250,7 +266,6 @@ export class CloudflaredSidecar {
         this.readyReject = undefined;
     }
 
-    
     private writeLog(text: string): void {
         this.logStream?.write(text);
         if (this.mirrorLogs) {
@@ -261,5 +276,54 @@ export class CloudflaredSidecar {
                 }
             }
         }
+    }
+
+    private async terminateCurrent(): Promise<void> {
+        const child = this.child;
+        try {
+            if (child?.pid) {
+                await terminateChildProcess(child, 2_000, 1_000);
+            }
+        } finally {
+            // Spawn failures can produce a ChildProcess without a pid. Clear it
+            // as well so a later bounded restart is not rejected as duplicate.
+            this.child = undefined;
+            this.logStream?.end();
+            this.logStream = undefined;
+        }
+    }
+
+    private scheduleRestart(detail: string): void {
+        const maxRestarts = Math.max(0, this.options.maxRestarts ?? 0);
+        if (this.stopping) return;
+        if (this.restartCount >= maxRestarts) {
+            this.emitState("exited", false, detail);
+            return;
+        }
+        this.restartCount += 1;
+        const delayMs = Math.min(30_000, 1_000 * 2 ** (this.restartCount - 1));
+        this.emitState("degraded", false, `${detail}，${delayMs}ms 后尝试恢复`);
+        this.restartTimer = setTimeout(() => {
+            this.restartTimer = undefined;
+            if (this.stopping) return;
+            void this.startOnce().catch((error) => {
+                if (this.stopping) return;
+                this.scheduleRestart(error instanceof Error ? error.message : String(error));
+            });
+        }, delayMs);
+        this.restartTimer.unref();
+    }
+
+    private emitState(
+        state: TunnelSidecarState,
+        running: boolean,
+        detail?: string,
+    ): void {
+        this.options.onStateChange?.({
+            running,
+            state,
+            restartCount: this.restartCount,
+            ...(detail ? { detail } : {}),
+        });
     }
 }

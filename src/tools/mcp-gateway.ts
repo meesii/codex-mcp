@@ -1,11 +1,12 @@
 import { z } from "zod";
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
-import type { DownstreamMcpHub, DownstreamServerInfo } from "../downstream/hub.js";
+import type { CapabilityToolScopeProvider } from "../capabilities/tool-scope.js";
+import type { DownstreamServerInfo } from "../downstream/hub.js";
 import { registerTool } from "../lib/tool/log.js";
 import { openWorldAnnotations, proxyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { errorResult, okResult, resultText } from "../lib/tool/result.js";
 
-export function registerMcpGatewayTools(server: McpServer, hub: DownstreamMcpHub): void {
+export function registerMcpGatewayTools(server: McpServer, capabilityScope: CapabilityToolScopeProvider): void {
     registerTool(server, "mcp_tools", withToolAuth({
         title: "Discover downstream MCP tools",
         description: "List enabled downstream MCP servers and their available tools. Pass server to inspect one server in detail.",
@@ -18,37 +19,42 @@ export function registerMcpGatewayTools(server: McpServer, hub: DownstreamMcpHub
         },
         annotations: openWorldAnnotations,
     }), async ({ server: serverName }) => {
-        const known = hub.listServers();
-        const targets = serverName ? known.filter((item) => item.name === serverName) : known;
-        if (serverName && targets.length === 0) return errorResult(`Unknown downstream MCP: ${serverName}`);
-        if (targets.length === 0) return okResult("No downstream MCP enabled.", { text: "No downstream MCP enabled.", servers: [], tools: {} });
+        try {
+            const { hub } = await capabilityScope();
+            const known = hub.listServers();
+            const targets = serverName ? known.filter((item) => item.name === serverName) : known;
+            if (serverName && targets.length === 0) return errorResult(`Unknown downstream MCP: ${serverName}`);
+            if (targets.length === 0) return okResult("No downstream MCP enabled.", { text: "No downstream MCP enabled.", servers: [], tools: {} });
 
-        const grouped: Record<string, unknown> = {};
-        const rendered: string[] = [];
-        const servers: DownstreamServerInfo[] = [];
-        for (const target of targets) {
-            let info = target;
-            if (info.status !== "ready") {
-                try { info = await hub.reconnectServer(info.name); } catch { /* report the current error below */ }
+            const grouped: Record<string, unknown> = {};
+            const rendered: string[] = [];
+            const servers: DownstreamServerInfo[] = [];
+            for (const target of targets) {
+                let info = target;
+                if (info.status !== "ready") {
+                    try { info = await hub.reconnectServer(info.name); } catch { /* report the current error below */ }
+                }
+                const status = hub.listServers().find((item) => item.name === info.name) ?? info;
+                servers.push(status);
+                if (status.status !== "ready") {
+                    grouped[status.name] = [];
+                    rendered.push(`=== ${status.name} [error] ===`, `  ${status.error ?? "not connected"}`);
+                    continue;
+                }
+                try {
+                    const listed = await hub.listTools(status.name);
+                    grouped[status.name] = listed.items;
+                    rendered.push(`=== ${status.name} [ready] ${listed.items.length} tools ===`, ...listed.items.map((tool) => `  ${tool.name}: ${tool.description.slice(0, 160)}`));
+                } catch (error) {
+                    grouped[status.name] = [];
+                    rendered.push(`=== ${status.name} [error] ===`, `  ${String(error)}`);
+                }
             }
-            const status = hub.listServers().find((item) => item.name === info.name) ?? info;
-            servers.push(status);
-            if (status.status !== "ready") {
-                grouped[status.name] = [];
-                rendered.push(`=== ${status.name} [error] ===`, `  ${status.error ?? "not connected"}`);
-                continue;
-            }
-            try {
-                const listed = await hub.listTools(status.name);
-                grouped[status.name] = listed.items;
-                rendered.push(`=== ${status.name} [ready] ${listed.items.length} tools ===`, ...listed.items.map((tool) => `  ${tool.name}: ${tool.description.slice(0, 160)}`));
-            } catch (error) {
-                grouped[status.name] = [];
-                rendered.push(`=== ${status.name} [error] ===`, `  ${String(error)}`);
-            }
+            const text = rendered.join("\n");
+            return okResult(text, { text, servers, tools: grouped });
+        } catch (error) {
+            return errorResult(error instanceof Error ? error.message : String(error));
         }
-        const text = rendered.join("\n");
-        return okResult(text, { text, servers, tools: grouped });
     });
 
     registerTool(server, "mcp_call", withToolAuth({
@@ -64,13 +70,14 @@ export function registerMcpGatewayTools(server: McpServer, hub: DownstreamMcpHub
         },
         annotations: proxyAnnotations,
     }), async ({ server: serverName, tool, arguments: args }) => {
-        const current = hub.listServers().find((item) => item.name === serverName);
-        if (!current) return errorResult(`Unknown downstream MCP: ${serverName}`);
-        if (current.status !== "ready") {
-            try { await hub.reconnectServer(serverName); }
-            catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
-        }
         try {
+            const { hub } = await capabilityScope();
+            const current = hub.listServers().find((item) => item.name === serverName);
+            if (!current) return errorResult(`Unknown downstream MCP: ${serverName}`);
+            if (current.status !== "ready") {
+                try { await hub.reconnectServer(serverName); }
+                catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
+            }
             return decorateDownstream(await hub.callTool(serverName, tool, args ?? {}));
         } catch (error) {
             return errorResult(error instanceof Error ? error.message : String(error));

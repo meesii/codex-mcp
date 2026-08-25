@@ -1,7 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { expandHomePath } from "../config/loader.js";
-import { getUserConfigDir } from "../config/user-config.js";
+import { getUserConfigDir, type CloudflarePublicAccessConfig } from "../config/user-config.js";
+import { writePrivateFileAtomic } from "../lib/fs/atomic-file.js";
+import { normalizeTunnelId } from "./id.js";
 
 export interface CloudflaredYml {
     tunnelId: string;
@@ -19,6 +22,25 @@ export function getCloudflaredManagementConfigPath(): string {
     return join(getUserConfigDir(), "cloudflared-management.yml");
 }
 
+export function getCloudflaredRevisionDir(): string {
+    return join(getUserConfigDir(), "tunnel-configs");
+}
+
+export function getCloudflaredRevisionPath(revision: string): string {
+    if (!/^[a-zA-Z0-9_-]{8,80}$/.test(revision)) {
+        throw new Error("Tunnel 配置 revision 格式不正确");
+    }
+    return join(getCloudflaredRevisionDir(), `${revision}.yml`);
+}
+
+export function resolveCloudflaredRuntimeConfigPath(
+    access: CloudflarePublicAccessConfig,
+): string {
+    return access.configRevision
+        ? getCloudflaredRevisionPath(access.configRevision)
+        : getCloudflaredConfigPath();
+}
+
 export function getManagedCloudflareDir(): string {
     return join(getUserConfigDir(), "cloudflare");
 }
@@ -32,12 +54,12 @@ export function ensureCloudflaredManagementConfig(): string {
     mkdirSync(dirname(filePath), { recursive: true });
     // Always pass an explicit config to cloudflared management commands so an
     // unrelated ~/.cloudflared/config.yml from an older Tunnel setup cannot leak in.
-    writeFileSync(filePath, "no-autoupdate: true\n", "utf8");
+    writePrivateFileAtomic(filePath, "no-autoupdate: true\n");
     return filePath;
 }
 
 export function getCredentialsPath(tunnelId: string): string {
-    return join(getManagedCloudflaredStateDir(), `${tunnelId}.json`);
+    return join(getManagedCloudflaredStateDir(), `${normalizeTunnelId(tunnelId)}.json`);
 }
 
 export function readCloudflaredYml(
@@ -69,7 +91,7 @@ export function readCloudflaredYml(
     }
 
     return {
-        tunnelId: tunnelId.trim(),
+        tunnelId: normalizeTunnelId(tunnelId),
         credentialsFile: expandHomePath(credentialsFile.trim()),
         hostname: hostname.trim().toLowerCase(),
         serviceUrl: serviceUrl.trim(),
@@ -88,13 +110,12 @@ export function writeCloudflaredYml(
 ): void {
     mkdirSync(dirname(filePath), { recursive: true });
     const credentials = quoteYamlScalar(input.credentialsFile);
-    // Prefer HTTP/2 over IPv4: some dual-stack networks advertise IPv6 first
-    // while outbound IPv6 TCP/7844 is unusable, causing cloudflared auto mode
-    // to time out even though IPv4 TCP/7844 works.
+    // Keep the IPv4 workaround for broken dual-stack networks, but leave the
+    // transport protocol on cloudflared's default auto mode so it can try QUIC
+    // and fall back to HTTP/2 when needed.
     const body = [
         `tunnel: ${input.tunnelId}`,
         `credentials-file: ${credentials}`,
-        "protocol: http2",
         "edge-ip-version: 4",
         "",
         "ingress:",
@@ -103,7 +124,23 @@ export function writeCloudflaredYml(
         "  - service: http_status:404",
         "",
     ].join("\n");
-    writeFileSync(filePath, body, "utf8");
+    writePrivateFileAtomic(filePath, body);
+}
+
+export function writeCloudflaredRevision(input: {
+    tunnelId: string;
+    credentialsFile: string;
+    hostname: string;
+    serviceUrl: string;
+}): { revision: string; path: string } {
+    const revision = randomUUID().replace(/-/g, "");
+    const path = getCloudflaredRevisionPath(revision);
+    writeCloudflaredYml(input, path);
+    return { revision, path };
+}
+
+export function removeCloudflaredRevision(revision: string): void {
+    rmSync(getCloudflaredRevisionPath(revision), { force: true });
 }
 
 function matchLine(text: string, pattern: RegExp): string | undefined {

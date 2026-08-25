@@ -1,15 +1,10 @@
-import {
-    chmodSync,
-    copyFileSync,
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    rmSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { expandHomePath } from "../config/loader.js";
 import { normalizeHostname } from "../config/user-config.js";
 import { safeHttpGet } from "../lib/http/safe-http.js";
+import { copyPrivateFileAtomic } from "../lib/fs/atomic-file.js";
+import { normalizeTunnelId } from "./id.js";
 import {
     getCredentialsPath,
     getManagedCloudflareDir,
@@ -28,8 +23,14 @@ export interface CloudflareOriginToken {
     zoneID: string;
 }
 
+export interface CloudflareTunnelCredentialIdentity {
+    accountId: string;
+    tunnelId: string;
+}
+
 export interface CloudflareZoneDiscovery {
     zones: string[];
+    zoneIds: Record<string, string>;
     /** False when account-wide listing failed and we could only resolve the selected login zone. */
     complete: boolean;
 }
@@ -62,11 +63,10 @@ export function hasManagedCloudflareLogin(): boolean {
     }
 }
 
-export function clearManagedCloudflareLogin(): boolean {
-    const certPath = getCloudflareOriginCertPath();
-    const existed = existsSync(certPath);
-    rmSync(certPath, { force: true });
-    return existed;
+export function readManagedCloudflareOriginToken(
+    certPath: string = getCloudflareOriginCertPath(),
+): CloudflareOriginToken {
+    return parseCloudflareOriginToken(readFileSync(certPath, "utf8"));
 }
 
 export function getLegacyCloudflareOriginCertPath(): string {
@@ -74,7 +74,32 @@ export function getLegacyCloudflareOriginCertPath(): string {
 }
 
 export function getLegacyTunnelCredentialsPath(tunnelId: string): string {
-    return expandHomePath(`~/.cloudflared/${tunnelId}.json`);
+    return expandHomePath(`~/.cloudflared/${normalizeTunnelId(tunnelId)}.json`);
+}
+
+/** Parse only non-secret identity fields while proving the credential is runnable. */
+export function readTunnelCredentialIdentity(
+    path: string,
+): CloudflareTunnelCredentialIdentity {
+    let value: unknown;
+    try {
+        value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    } catch (error) {
+        throw new Error(`Tunnel 凭据无法解析：${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Tunnel 凭据格式不正确");
+    }
+    const record = value as Record<string, unknown>;
+    const accountId = typeof record.AccountTag === "string" ? record.AccountTag.trim() : "";
+    const tunnelSecret = typeof record.TunnelSecret === "string" ? record.TunnelSecret.trim() : "";
+    if (!accountId || !tunnelSecret) {
+        throw new Error("Tunnel 凭据缺少 AccountTag 或 TunnelSecret");
+    }
+    return {
+        accountId,
+        tunnelId: normalizeTunnelId(record.TunnelID, "Tunnel 凭据中的 TunnelID"),
+    };
 }
 
 export interface CloudflareStateMigrationResult {
@@ -91,10 +116,17 @@ export function migrateLegacyCloudflareState(
     };
     if (!tunnelId) return result;
 
+    let normalizedTunnelId: string;
+    try {
+        normalizedTunnelId = normalizeTunnelId(tunnelId);
+    } catch {
+        return result;
+    }
+
     const managedCertPath = getCloudflareOriginCertPath();
     const legacyCertPath = getLegacyCloudflareOriginCertPath();
-    const legacyCredentialsPath = getLegacyTunnelCredentialsPath(tunnelId);
-    const managedCredentialsPath = getCredentialsPath(tunnelId);
+    const legacyCredentialsPath = getLegacyTunnelCredentialsPath(normalizedTunnelId);
+    const managedCredentialsPath = getCredentialsPath(normalizedTunnelId);
 
     const certSource = existsSync(managedCertPath)
         ? managedCertPath
@@ -104,24 +136,15 @@ export function migrateLegacyCloudflareState(
     if (!certSource || !existsSync(legacyCredentialsPath)) return result;
 
     let accountID: string;
-    let credentials: { AccountTag?: unknown; TunnelID?: unknown };
+    let credentials: CloudflareTunnelCredentialIdentity;
     try {
         accountID = parseCloudflareOriginToken(readFileSync(certSource, "utf8")).accountID;
-        credentials = JSON.parse(readFileSync(legacyCredentialsPath, "utf8")) as {
-            AccountTag?: unknown;
-            TunnelID?: unknown;
-        };
+        credentials = readTunnelCredentialIdentity(legacyCredentialsPath);
     } catch {
         return result;
     }
 
-    if (credentials.AccountTag !== accountID) return result;
-    if (
-        typeof credentials.TunnelID === "string" &&
-        credentials.TunnelID.toLowerCase() !== tunnelId.toLowerCase()
-    ) {
-        return result;
-    }
+    if (credentials.accountId !== accountID || credentials.tunnelId !== normalizedTunnelId) return result;
 
     mkdirSync(getManagedCloudflareDir(), { recursive: true });
     if (!existsSync(managedCertPath) && certSource === legacyCertPath) {
@@ -136,11 +159,7 @@ export function migrateLegacyCloudflareState(
 }
 
 function copyPrivateFile(source: string, destination: string): void {
-    mkdirSync(dirname(destination), { recursive: true });
-    copyFileSync(source, destination);
-    if (process.platform !== "win32") {
-        chmodSync(destination, 0o600);
-    }
+    copyPrivateFileAtomic(source, destination);
 }
 
 export function parseCloudflareOriginToken(pem: string): CloudflareOriginToken {
@@ -174,14 +193,22 @@ export async function discoverCloudflareZones(
 ): Promise<CloudflareZoneDiscovery> {
     const token = parseCloudflareOriginToken(readFileSync(certPath, "utf8"));
     try {
-        const zones = await listAccountZones(token);
-        if (zones.length > 0) {
-            return { zones, complete: true };
+        const records = await listAccountZones(token);
+        if (records.length > 0) {
+            return {
+                zones: records.map((record) => record.name),
+                zoneIds: Object.fromEntries(records.map((record) => [record.name, record.id])),
+                complete: true,
+            };
         }
     } catch (listError) {
         try {
             const selected = await getSelectedZone(token);
-            return { zones: selected ? [selected] : [], complete: false };
+            return {
+                zones: selected ? [selected.name] : [],
+                zoneIds: selected ? { [selected.name]: selected.id } : {},
+                complete: false,
+            };
         } catch {
             throw new Error(
                 `无法读取 Cloudflare 域名：${listError instanceof Error ? listError.message : String(listError)}`,
@@ -190,11 +217,17 @@ export async function discoverCloudflareZones(
     }
 
     const selected = await getSelectedZone(token);
-    return { zones: selected ? [selected] : [], complete: false };
+    return {
+        zones: selected ? [selected.name] : [],
+        zoneIds: selected ? { [selected.name]: selected.id } : {},
+        complete: false,
+    };
 }
 
-async function listAccountZones(token: CloudflareOriginToken): Promise<string[]> {
-    const zones = new Set<string>();
+async function listAccountZones(
+    token: CloudflareOriginToken,
+): Promise<Array<{ id: string; name: string }>> {
+    const zones = new Map<string, string>();
     for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
         const url = new URL(`${CLOUDFLARE_API_BASE}/zones`);
         url.searchParams.set("account.id", token.accountID);
@@ -206,7 +239,9 @@ async function listAccountZones(token: CloudflareOriginToken): Promise<string[]>
         const payload = await cloudflareGet<CloudflareZone[]>(url, token.apiToken);
         for (const zone of payload.result ?? []) {
             const name = normalizeZoneName(zone.name);
-            if (name) zones.add(name);
+            if (name && typeof zone.id === "string" && zone.id.trim()) {
+                zones.set(name, zone.id.trim());
+            }
         }
 
         const totalPages = payload.result_info?.total_pages;
@@ -217,16 +252,24 @@ async function listAccountZones(token: CloudflareOriginToken): Promise<string[]>
             break;
         }
     }
-    return [...zones].sort((left, right) => left.localeCompare(right));
+    return [...zones.entries()]
+        .map(([name, id]) => ({ id, name }))
+        .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function getSelectedZone(token: CloudflareOriginToken): Promise<string | undefined> {
+async function getSelectedZone(
+    token: CloudflareOriginToken,
+): Promise<{ id: string; name: string } | undefined> {
     const zoneId = encodeURIComponent(token.zoneID);
     const payload = await cloudflareGet<CloudflareZone>(
         new URL(`${CLOUDFLARE_API_BASE}/zones/${zoneId}`),
         token.apiToken,
     );
-    return normalizeZoneName(payload.result?.name);
+    const name = normalizeZoneName(payload.result?.name);
+    const id = typeof payload.result?.id === "string" && payload.result.id.trim()
+        ? payload.result.id.trim()
+        : token.zoneID;
+    return name ? { id, name } : undefined;
 }
 
 async function cloudflareGet<T>(
@@ -237,7 +280,7 @@ async function cloudflareGet<T>(
         httpsOnly: true,
         maxRedirects: 0,
         maxBytes: 2 * 1024 * 1024,
-        timeoutMs: 30_000,
+        timeoutMs: 120_000,
         headers: {
             Accept: "application/json",
             Authorization: `Bearer ${apiToken}`,

@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { createWriteStream } from "node:fs";
 import {
     chmod,
     copyFile,
@@ -8,13 +7,12 @@ import {
     mkdtemp,
     rename,
     rm,
+    writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { pipeline } from "node:stream/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { get as httpsGet } from "node:https";
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { safeHttpGet } from "../lib/http/safe-http.js";
 import * as tar from "tar";
 import { getManagedToolSpec } from "./manifest.js";
 import { extractZipFile } from "./unzip.js";
@@ -76,14 +74,7 @@ export async function ensureManagedTool(
         if (process.platform !== "win32") {
             await chmod(staged, 0o755);
         }
-        await rm(target, { force: true });
-        await rename(staged, target);
-
-        const installedVersion = await probeVersion(target);
-        if (!installedVersion?.includes(spec.version)) {
-            await rm(target, { force: true });
-            throw new Error(`${spec.label} 安装后无法正常启动`);
-        }
+        await replaceManagedBinary(staged, target, spec.label, spec.version);
 
         return {
             tool,
@@ -111,7 +102,7 @@ async function probeVersion(binary: string): Promise<string | undefined> {
     try {
         const { stdout, stderr } = await execFileAsync(binary, ["--version"], {
             windowsHide: true,
-            timeout: 10_000,
+            timeout: 30_000,
         });
         return `${stdout}\n${stderr}`.trim();
     } catch {
@@ -123,55 +114,64 @@ async function downloadVerified(
     url: string,
     destination: string,
     expectedSha256: string,
-    redirects = 0,
 ): Promise<void> {
-    if (redirects > 6) {
-        throw new Error("下载重定向次数过多");
-    }
-    await mkdir(dirname(destination), { recursive: true });
-
-    await new Promise<void>((resolve, reject) => {
-        const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
-        const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-        const request = httpsGet(
-            url,
-            {
-                agent,
-                headers: { "user-agent": "codex-mcp-managed-tools" },
-            },
-            (response) => {
-                const status = response.statusCode ?? 0;
-                const location = response.headers.location;
-                if (status >= 300 && status < 400 && location) {
-                    response.resume();
-                    const nextUrl = new URL(location, url).href;
-                    void downloadVerified(nextUrl, destination, expectedSha256, redirects + 1)
-                        .then(resolve, reject);
-                    return;
-                }
-                if (status !== 200) {
-                    response.resume();
-                    reject(new Error(`下载失败（HTTP ${status}）`));
-                    return;
-                }
-
-                const hash = createHash("sha256");
-                response.on("data", (chunk: Buffer) => hash.update(chunk));
-                void pipeline(response, createWriteStream(destination, { mode: 0o600 }))
-                    .then(() => {
-                        const actual = hash.digest("hex");
-                        if (actual !== expectedSha256) {
-                            reject(new Error("下载文件校验失败，请重新尝试"));
-                            return;
-                        }
-                        resolve();
-                    })
-                    .catch(reject);
-            },
-        );
-        request.setTimeout(30_000, () => {
-            request.destroy(new Error("下载超时，请检查网络后重试"));
-        });
-        request.on("error", reject);
+    const response = await safeHttpGet(url, {
+        httpsOnly: true,
+        timeoutMs: 600_000,
+        maxRedirects: 6,
+        maxBytes: 128 * 1024 * 1024,
+        headers: { "user-agent": "codex-mcp-managed-tools" },
     });
+    if (response.status !== 200) {
+        throw new Error(`下载失败（HTTP ${response.status}）`);
+    }
+    const actual = createHash("sha256").update(response.body).digest("hex");
+    if (actual !== expectedSha256) {
+        throw new Error("下载文件校验失败，请重新尝试");
+    }
+    await writeFile(destination, response.body, { mode: 0o600 });
+}
+
+async function replaceManagedBinary(
+    staged: string,
+    target: string,
+    label: string,
+    expectedVersion: string,
+): Promise<void> {
+    const backup = `${target}.${process.pid}.${randomUUID()}.bak`;
+    let backedUp = false;
+    try {
+        try {
+            await copyFile(target, backup);
+            backedUp = true;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+
+        try {
+            await rename(staged, target);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (process.platform !== "win32" || !["EACCES", "EEXIST", "EPERM"].includes(code ?? "")) {
+                throw error;
+            }
+            await rm(target, { force: true });
+            await rename(staged, target);
+        }
+
+        const installedVersion = await probeVersion(target);
+        if (!installedVersion?.includes(expectedVersion)) {
+            throw new Error(`${label} 安装后无法正常启动`);
+        }
+    } catch (error) {
+        if (backedUp) {
+            await copyFile(backup, target).catch(() => undefined);
+        } else {
+            await rm(target, { force: true }).catch(() => undefined);
+        }
+        throw error;
+    } finally {
+        await rm(staged, { force: true }).catch(() => undefined);
+        await rm(backup, { force: true }).catch(() => undefined);
+    }
 }

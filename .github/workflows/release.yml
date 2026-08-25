@@ -42,6 +42,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Production dependency audit
+        if: runner.os == 'Linux'
+        run: npm audit --omit=dev --registry=https://registry.npmjs.org
+
   package:
     name: 生成 Release
     needs: verify

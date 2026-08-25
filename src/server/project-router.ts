@@ -101,7 +101,7 @@ export class BindingProjectScopeProvider {
         private readonly fallbackOwnerId: string,
     ) {}
 
-    resolveProject(): ToolProjectScope {
+    resolveRuntime(): ProjectRuntime {
         const ownerKey = currentBindingOwnerKey(this.fallbackOwnerId);
         const binding = this.bindings.resolve(ownerKey);
         const project = binding ? this.registry.getActiveById(binding.projectId) : undefined;
@@ -133,6 +133,12 @@ export class BindingProjectScopeProvider {
             );
         }
         this.bindings.touch(ownerKey);
+        return runtime;
+    }
+
+    resolveProject(): ToolProjectScope {
+        const ownerKey = currentBindingOwnerKey(this.fallbackOwnerId);
+        const runtime = this.resolveRuntime();
         return {
             project: runtime.project,
             processes: new CurrentOwnerProcessSessions(
@@ -144,7 +150,17 @@ export class BindingProjectScopeProvider {
         };
     }
 
-    /** Read-only view: undefined instead of throwing when unbound. */
+    /** Read-only runtime view: undefined instead of throwing when unbound. */
+    tryResolveRuntime(): ProjectRuntime | undefined {
+        try {
+            return this.resolveRuntime();
+        } catch (error) {
+            if (error instanceof UnboundProjectError) return undefined;
+            throw error;
+        }
+    }
+
+    /** Read-only project view: undefined instead of throwing when unbound. */
     tryResolveProject(): ToolProjectScope | undefined {
         try {
             return this.resolveProject();

@@ -36,6 +36,8 @@ export interface CliFlags {
     local: boolean;
     noTunnel: boolean;
     tunnelLogs: boolean;
+    /** True when the user explicitly supplied a runtime-mode flag. */
+    runtimeIntentSpecified: boolean;
     foreground: boolean;
     all: boolean;
     json: boolean;
@@ -245,6 +247,8 @@ export function parseCliArgs(argv: string[]): CliFlags {
         local,
         noTunnel,
         tunnelLogs,
+        runtimeIntentSpecified:
+            seen.has("local") || seen.has("noTunnel") || seen.has("tunnelLogs"),
         foreground,
         all,
         json,
@@ -292,6 +296,7 @@ function defaults(command: CliCommand): CliFlags {
         local: false,
         noTunnel: false,
         tunnelLogs: false,
+        runtimeIntentSpecified: false,
         foreground: false,
         all: false,
         json: false,

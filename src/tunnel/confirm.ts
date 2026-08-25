@@ -5,19 +5,6 @@ export type ConfirmAction = (
     defaultValue?: boolean,
 ) => Promise<boolean>;
 
-export async function requireTunnelDeleteConfirmation(
-    tunnelName: string,
-    confirm: ConfirmAction = askYesNo,
-): Promise<void> {
-    const approved = await confirm(
-        `Cloudflare 上已有同名 Tunnel“${tunnelName}”，但这台电脑没有它的凭据。要删除并重新创建吗？这可能影响其它正在使用它的电脑。`,
-        false,
-    );
-    if (!approved) {
-        throw new Error("已取消。没有删除现有 Tunnel");
-    }
-}
-
 export async function requireDnsOverwriteConfirmation(
     domain: string,
     confirm: ConfirmAction = askYesNo,

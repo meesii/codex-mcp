@@ -10,10 +10,11 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_REDIRECTS = 5;
 const DOH_MAX_BYTES = 64 * 1024;
-const DOH_TIMEOUT_MS = 5_000;
+const DOH_TIMEOUT_MS = 60_000;
 const SYSTEM_PROXY_CACHE_MS = 30_000;
 const MAX_PROXY_AGENTS = 8;
 
@@ -68,6 +69,14 @@ export interface SafeHttpOptions {
     allowPrivate?: boolean;
     /** Disable automatic HTTP(S) proxy discovery for a specific trusted call. */
     useProxy?: boolean;
+    /** Optional caller cancellation; timeout is only the final hang guard. */
+    signal?: AbortSignal;
+}
+
+export interface SafeHttpRequestOptions extends SafeHttpOptions {
+    method: "GET" | "POST" | "DELETE";
+    body?: string | Buffer;
+    maxRequestBytes?: number;
 }
 
 export interface SafeHttpResponse {
@@ -110,7 +119,22 @@ export async function safeHttpGet(
     input: string | URL,
     options: SafeHttpOptions = {},
 ): Promise<SafeHttpResponse> {
+    return await safeHttpRequest(input, { ...options, method: "GET" });
+}
+
+/** Same network policy as safeHttpGet, with a bounded request body and explicit method. */
+export async function safeHttpRequest(
+    input: string | URL,
+    options: SafeHttpRequestOptions,
+): Promise<SafeHttpResponse> {
     const url = input instanceof URL ? new URL(input.href) : new URL(input);
+    const maxRequestBytes = options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES;
+    if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes <= 0) {
+        throw new Error("maxRequestBytes must be a positive integer");
+    }
+    if (options.body !== undefined && Buffer.byteLength(options.body) > maxRequestBytes) {
+        throw new Error(`Request body exceeds ${maxRequestBytes} bytes`);
+    }
     const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -124,10 +148,11 @@ export async function safeHttpGet(
 
 async function requestOne(
     url: URL,
-    options: SafeHttpOptions,
+    options: SafeHttpRequestOptions,
     redirectsRemaining: number,
     deadline: RequestDeadline,
 ): Promise<SafeHttpResponse> {
+    throwIfAborted(options.signal);
     assertAllowedUrl(url, options);
     const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
@@ -137,11 +162,14 @@ async function requestOne(
 
     const proxies =
         !options.allowPrivate && options.useProxy !== false
-            ? await resolveProxies(url)
+            ? await withinRequestDeadline(resolveProxies(url), deadline, options.signal)
             : [];
     const requestHeaders = {
         "User-Agent": "codex-mcp/0.1",
         "Accept-Encoding": "identity",
+        ...(options.body !== undefined
+            ? { "Content-Length": String(Buffer.byteLength(options.body)) }
+            : {}),
         ...(options.headers ?? {}),
     };
 
@@ -163,10 +191,10 @@ async function requestOne(
     }
 
     remainingTimeoutMs(deadline);
-    const lookup = options.allowPrivate ? undefined : createSafeLookup(deadline);
+    const lookup = options.allowPrivate ? undefined : createSafeLookup(deadline, options.signal);
     const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
     const req = requestFn(url, {
-        method: "GET",
+        method: options.method,
         lookup,
         headers: requestHeaders,
     });
@@ -184,13 +212,13 @@ async function requestOne(
 async function requestThroughProxy(
     url: URL,
     proxy: URL,
-    options: SafeHttpOptions,
+    options: SafeHttpRequestOptions,
     redirectsRemaining: number,
     maxBytes: number,
     deadline: RequestDeadline,
     requestHeaders: Record<string, string>,
 ): Promise<SafeHttpResponse> {
-    const addresses = await resolvePublicAddresses(url.hostname, proxy, deadline);
+    const addresses = await resolvePublicAddresses(url.hostname, proxy, deadline, options.signal);
     const targets = addresses
         .sort((left, right) => left.family - right.family)
         .slice(0, 2);
@@ -209,7 +237,7 @@ async function requestThroughProxy(
             hostname: target.address,
             port,
             path: `${url.pathname}${url.search}`,
-            method: "GET",
+            method: options.method,
             agent,
             headers: {
                 Host: url.host,
@@ -242,7 +270,7 @@ async function requestThroughProxy(
 function finishRequest(
     req: ReturnType<typeof httpRequest>,
     url: URL,
-    options: SafeHttpOptions,
+    options: SafeHttpRequestOptions,
     redirectsRemaining: number,
     maxBytes: number,
     deadline: RequestDeadline,
@@ -250,9 +278,14 @@ function finishRequest(
     return new Promise<SafeHttpResponse>((resolve, reject) => {
         const timeoutMs = remainingTimeoutMs(deadline);
         let settled = false;
+        const cleanup = (): void => {
+            clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
+        };
         const fail = (error: Error): void => {
             if (settled) return;
             settled = true;
+            cleanup();
             reject(error);
         };
 
@@ -260,12 +293,20 @@ function finishRequest(
             req.destroy(new Error(`Request timed out after ${deadline.timeoutMs}ms`));
         }, timeoutMs);
         timer.unref();
+        const onAbort = (): void => {
+            req.destroy(abortError(options.signal));
+        };
+        options.signal?.addEventListener("abort", onAbort, { once: true });
 
         req.once("response", (res) => {
             const status = res.statusCode ?? 0;
             const location = res.headers.location;
             if (location && [301, 302, 303, 307, 308].includes(status)) {
                 res.resume();
+                if (options.method !== "GET") {
+                    fail(new Error("Non-GET redirects are not allowed"));
+                    return;
+                }
                 if (redirectsRemaining <= 0) {
                     fail(new Error("Too many redirects"));
                     return;
@@ -278,7 +319,7 @@ function finishRequest(
                     return;
                 }
                 settled = true;
-                clearTimeout(timer);
+                cleanup();
                 void requestOne(next, options, redirectsRemaining - 1, deadline).then(resolve, reject);
                 return;
             }
@@ -305,7 +346,7 @@ function finishRequest(
             res.on("end", () => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timer);
+                cleanup();
                 const headers: Record<string, string> = {};
                 for (const [key, value] of Object.entries(res.headers)) {
                     if (value === undefined) continue;
@@ -324,8 +365,8 @@ function finishRequest(
         });
 
         req.on("error", (error) => fail(error));
-        req.on("close", () => clearTimeout(timer));
-        req.end();
+        req.on("close", cleanup);
+        req.end(options.body);
     });
 }
 
@@ -370,9 +411,9 @@ function assertAllowedUrl(url: URL, options: SafeHttpOptions): void {
     }
 }
 
-function createSafeLookup(deadline: RequestDeadline): LookupFunction {
+function createSafeLookup(deadline: RequestDeadline, signal?: AbortSignal): LookupFunction {
     return ((hostname: string, options: unknown, callback: (...args: unknown[]) => void) => {
-        void resolvePublicAddresses(hostname, undefined, deadline)
+        void resolvePublicAddresses(hostname, undefined, deadline, signal)
             .then((addresses) => {
                 const wantsAll =
                     typeof options === "object" &&
@@ -402,7 +443,9 @@ async function resolvePublicAddresses(
     hostname: string,
     proxy?: URL,
     deadline?: RequestDeadline,
+    signal?: AbortSignal,
 ): Promise<ResolvedAddress[]> {
+    throwIfAborted(signal);
     if (deadline) remainingTimeoutMs(deadline);
     const normalized = normalizeHostname(hostname);
     if (isIP(normalized)) {
@@ -411,8 +454,8 @@ async function resolvePublicAddresses(
     }
 
     const addresses = proxy
-        ? await resolveWithDohThroughProxy(normalized, proxy, deadline)
-        : await dnsLookup(normalized, { all: true, verbatim: true });
+        ? await resolveWithDohThroughProxy(normalized, proxy, deadline, signal)
+        : await withAbortSignal(dnsLookup(normalized, { all: true, verbatim: true }), signal);
     if (addresses.length === 0) {
         throw new Error(`No addresses found for ${hostname}`);
     }
@@ -428,6 +471,7 @@ async function resolveWithDohThroughProxy(
     hostname: string,
     proxy: URL,
     deadline?: RequestDeadline,
+    signal?: AbortSignal,
 ): Promise<ResolvedAddress[]> {
     const providers = [
         { host: "cloudflare-dns.com", path: "/dns-query", style: "cloudflare" as const },
@@ -437,8 +481,8 @@ async function resolveWithDohThroughProxy(
     for (const provider of providers) {
         try {
             const [ipv4, ipv6] = await Promise.all([
-                queryDoh(provider, hostname, "A", proxy, deadline),
-                queryDoh(provider, hostname, "AAAA", proxy, deadline),
+                queryDoh(provider, hostname, "A", proxy, deadline, signal),
+                queryDoh(provider, hostname, "AAAA", proxy, deadline, signal),
             ]);
             const combined = [...ipv4, ...ipv6];
             if (combined.length > 0) return combined;
@@ -459,11 +503,13 @@ async function queryDoh(
     type: "A" | "AAAA",
     proxy: URL,
     deadline?: RequestDeadline,
+    signal?: AbortSignal,
 ): Promise<ResolvedAddress[]> {
     const query = new URLSearchParams({ name: hostname, type });
     const path = `${provider.path}?${query.toString()}`;
     const agent = getProxyAgent(proxy, "https:");
     const body = await new Promise<Buffer>((resolve, reject) => {
+        throwIfAborted(signal);
         const req = httpsRequest({
             protocol: "https:",
             hostname: provider.host,
@@ -487,6 +533,10 @@ async function queryDoh(
             req.destroy(new Error(`DNS-over-HTTPS timed out after ${timeoutMs}ms`));
         }, timeoutMs);
         timer.unref();
+        const onAbort = (): void => {
+            req.destroy(abortError(signal));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
         req.on("response", (res) => {
             if (res.statusCode !== 200) {
                 res.resume();
@@ -506,7 +556,10 @@ async function queryDoh(
             res.on("end", () => resolve(Buffer.concat(chunks, total)));
         });
         req.on("error", reject);
-        req.on("close", () => clearTimeout(timer));
+        req.on("close", () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+        });
         req.end();
     });
 
@@ -637,7 +690,7 @@ async function getSystemProxies(protocol: "http:" | "https:"): Promise<URL[]> {
 
 async function getMacProxies(protocol: "http:" | "https:"): Promise<URL[]> {
     const { stdout } = await execFileAsync("/usr/sbin/scutil", ["--proxy"], {
-        timeout: 1_500,
+        timeout: 10_000,
         maxBuffer: 64 * 1024,
         encoding: "utf8",
     });
@@ -653,7 +706,7 @@ async function getWindowsProxies(protocol: "http:" | "https:"): Promise<URL[]> {
         "powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", script],
         {
-            timeout: 1_500,
+            timeout: 10_000,
             maxBuffer: 64 * 1024,
             encoding: "utf8",
             windowsHide: true,
@@ -667,7 +720,7 @@ async function getLinuxProxies(protocol: "http:" | "https:"): Promise<URL[]> {
         "gsettings",
         ["get", "org.gnome.system.proxy", "mode"],
         {
-            timeout: 1_000,
+            timeout: 10_000,
             maxBuffer: 8 * 1024,
             encoding: "utf8",
         },
@@ -703,7 +756,7 @@ async function getLinuxProxies(protocol: "http:" | "https:"): Promise<URL[]> {
 
 async function readGsettingsValue(schema: string, key: string): Promise<string> {
     const { stdout } = await execFileAsync("gsettings", ["get", schema, key], {
-        timeout: 1_000,
+        timeout: 10_000,
         maxBuffer: 8 * 1024,
         encoding: "utf8",
     });
@@ -886,6 +939,46 @@ function remainingTimeoutMs(deadline: RequestDeadline): number {
         throw new Error(`Request timed out after ${deadline.timeoutMs}ms`);
     }
     return remaining;
+}
+
+async function withinRequestDeadline<T>(
+    operation: Promise<T>,
+    deadline: RequestDeadline,
+    signal?: AbortSignal,
+): Promise<T> {
+    const timeoutMs = remainingTimeoutMs(deadline);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            withAbortSignal(operation, signal),
+            new Promise<T>((_resolve, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error(`Request timed out after ${deadline.timeoutMs}ms`)),
+                    timeoutMs,
+                );
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+async function withAbortSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+    throwIfAborted(signal);
+    if (!signal) return await operation;
+    return await new Promise<T>((resolve, reject) => {
+        const onAbort = (): void => reject(abortError(signal));
+        signal.addEventListener("abort", onAbort, { once: true });
+        operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) throw abortError(signal);
+}
+
+function abortError(signal?: AbortSignal): Error {
+    return signal?.reason instanceof Error ? signal.reason : new Error("Request cancelled");
 }
 
 export function assertPublicAddress(address: string): void {

@@ -33,6 +33,10 @@ export interface CapabilityManagerOptions {
     homeDirectory?: string;
     loadConfig?: () => UserConfig;
     providers?: CapabilityProvider[];
+    /** Include ~/.codex, ~/.claude and ~/.agents user-scoped capabilities. Default true. */
+    includeUserScopes?: boolean;
+    /** Include project/workspace-scoped capabilities such as .mcp.json and .claude/skills. Default true. */
+    includeProjectScopes?: boolean;
 }
 
 const DEFAULT_PROVIDERS: CapabilityProvider[] = [
@@ -45,6 +49,8 @@ export class CapabilityManager {
     private readonly homeDirectory: string;
     private readonly loadConfig: () => UserConfig;
     private readonly providers: CapabilityProvider[];
+    private readonly includeUserScopes: boolean;
+    private readonly includeProjectScopes: boolean;
     private readonly lastMcpCounts = new Map<CapabilitySourceId, number>();
     private readonly lastWarnings = new Map<CapabilitySourceId, string[]>();
     private readonly lastProviderConfigs = new Map<CapabilitySourceId, UserMcpConfig>();
@@ -57,6 +63,8 @@ export class CapabilityManager {
         this.homeDirectory = options.homeDirectory ?? homedir();
         this.loadConfig = options.loadConfig ?? loadUserConfig;
         this.providers = options.providers ?? DEFAULT_PROVIDERS;
+        this.includeUserScopes = options.includeUserScopes ?? true;
+        this.includeProjectScopes = options.includeProjectScopes ?? true;
     }
 
     getConfig(): ResolvedCapabilitiesConfig {
@@ -64,18 +72,19 @@ export class CapabilityManager {
     }
 
     getContext(): CapabilityContext {
-        const user = this.loadConfig();
-        const workspaceRoots = [this.primaryWorkspace, ...(user.workspaces ?? [])]
-            .map((root) => resolve(root))
-            .filter((root, index, all) => all.indexOf(root) === index)
-            .filter(isDirectory);
-        if (!workspaceRoots.includes(resolve(this.primaryWorkspace))) {
-            workspaceRoots.unshift(resolve(this.primaryWorkspace));
+        const primaryWorkspace = resolve(this.primaryWorkspace);
+        const workspaceRoots = this.includeProjectScopes && isDirectory(primaryWorkspace)
+            ? [primaryWorkspace]
+            : [];
+        if (this.includeProjectScopes && !workspaceRoots.includes(primaryWorkspace)) {
+            workspaceRoots.unshift(primaryWorkspace);
         }
         return {
             homeDirectory: this.homeDirectory,
-            primaryWorkspace: resolve(this.primaryWorkspace),
+            primaryWorkspace,
             workspaceRoots,
+            includeUserScope: this.includeUserScopes,
+            includeProjectScope: this.includeProjectScopes,
         };
     }
 

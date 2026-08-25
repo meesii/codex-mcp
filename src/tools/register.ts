@@ -2,7 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config/loader.js";
 import type { DownstreamMcpHub } from "../downstream/hub.js";
 import type { SkillRegistry } from "../skills/registry.js";
-import type { UiSettingsStore } from "../ui/settings.js";
+import type { CapabilityToolScopeProvider } from "../capabilities/tool-scope.js";
+import type { UiPreferences } from "../ui/preferences.js";
 import { configureServerToolAuth } from "../lib/tool/meta.js";
 import { configureServerUiPreferences, registerToolCardResource } from "../ui/register-ui.js";
 import type { ToolScopeProvider, ToolScopeTryProvider } from "../server/project-router.js";
@@ -27,6 +28,7 @@ export interface RegisterToolsOptions {
     scope: ToolScopeProvider;
     tryScope: ToolScopeTryProvider;
     projectTools?: ProjectToolDeps;
+    capabilityScope?: CapabilityToolScopeProvider;
 }
 
 export function registerAllTools(
@@ -35,11 +37,15 @@ export function registerAllTools(
     options: RegisterToolsOptions,
     hub: DownstreamMcpHub,
     skills: SkillRegistry,
-    uiSettings: UiSettingsStore,
+    uiPreferences: UiPreferences,
 ): void {
     const { scope, tryScope, projectTools } = options;
+    const capabilityScope: CapabilityToolScopeProvider = options.capabilityScope ?? (async () => ({
+        hub,
+        skills,
+    }));
     configureServerToolAuth(server, config.oauthRequired);
-    configureServerUiPreferences(server, uiSettings.get());
+    configureServerUiPreferences(server, uiPreferences);
     registerToolCardResource(server, config);
 
     if (projectTools) registerProjectTools(server, projectTools);
@@ -52,7 +58,7 @@ export function registerAllTools(
     registerCodeExploreTool(server, scope);
     registerExecCommandTool(server, scope);
     registerWriteStdinTool(server, scope);
-    registerSkillTools(server, skills);
-    registerMcpGatewayTools(server, hub);
+    registerSkillTools(server, capabilityScope);
+    registerMcpGatewayTools(server, capabilityScope);
     registerSummaryTool(server, tryScope);
 }

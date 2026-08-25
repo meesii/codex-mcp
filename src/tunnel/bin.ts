@@ -66,7 +66,7 @@ export async function suggestCloudflaredBin(
 export async function probeCloudflaredVersion(bin: string): Promise<string> {
     const { stdout, stderr } = await execFileAsync(bin, ["--version"], {
         windowsHide: true,
-        timeout: 15_000,
+        timeout: 30_000,
     });
     const text = `${stdout}\n${stderr}`.trim();
     const first = text.split(/\r?\n/).find((line) => line.trim());
@@ -119,7 +119,7 @@ async function findOnPath(fileName: string): Promise<string | undefined> {
         const tool = process.platform === "win32" ? "where.exe" : "which";
         const { stdout } = await execFileAsync(tool, [fileName], {
             windowsHide: true,
-            timeout: 10_000,
+            timeout: 30_000,
         });
         const first = stdout
             .split(/\r?\n/)

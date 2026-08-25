@@ -74,7 +74,7 @@ export function assertAllowedPath(pathValue: string, allowedRoots: readonly stri
         }
     }
 
-    throw new AccessDeniedError(`Path is outside registered workspaces: ${pathValue}`);
+    throw new AccessDeniedError(`Path is outside the bound project root: ${pathValue}`);
 }
 
 export function resolveAllowedPath(

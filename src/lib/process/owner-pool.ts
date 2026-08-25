@@ -62,6 +62,14 @@ export class ProcessOwnerPool {
         };
     }
 
+    async shutdownOwner(ownerId: string): Promise<void> {
+        const entry = this.owners.get(ownerId);
+        if (!entry) return;
+        if (entry.cleanupTimer) clearTimeout(entry.cleanupTimer);
+        this.owners.delete(ownerId);
+        await entry.processes.shutdown();
+    }
+
     async shutdown(): Promise<void> {
         for (const entry of this.owners.values()) {
             if (entry.cleanupTimer) clearTimeout(entry.cleanupTimer);

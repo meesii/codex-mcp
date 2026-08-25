@@ -17,5 +17,6 @@ bin/cloudflared.exe
 
 # Local reference clones (not part of the published project)
 docs/*
+!docs/setup-tunnel-lifecycle.md
 !docs/oauth-security-hardening/
 !docs/oauth-security-hardening/**

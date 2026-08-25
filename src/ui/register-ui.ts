@@ -6,22 +6,18 @@ import {
     TOOL_CARD_MIME,
     TOOL_CARD_URI,
     SUMMARY_CARD_URI,
-    SETTINGS_CARD_URI,
 } from "./constants.js";
 import { toolCardHtml } from "./tool-card-html.js";
 import { summaryCardHtml } from "./summary-card-html.js";
-import { settingsCardHtml } from "./settings-card-html.js";
 import { toolStatus } from "./tool-labels.js";
 import {
     DEFAULT_UI_PREFERENCES,
-    isSettingsUiTool,
     isUiEnabledForTool,
     type UiPreferences,
-} from "./settings.js";
+} from "./preferences.js";
 
 const SHARED_TOOL_CARD_HTML = toolCardHtml();
 const SUMMARY_CARD_HTML = summaryCardHtml();
-const SETTINGS_CARD_HTML = settingsCardHtml();
 const legacyToolCardHtmlCache = new Map<ToolName | undefined, string>();
 const serverUiPreferences = new WeakMap<object, UiPreferences>();
 
@@ -76,20 +72,6 @@ export function summaryCardResourceMeta(config: ServerConfig): Record<string, un
     };
 }
 
-export function settingsCardResourceMeta(config: ServerConfig): Record<string, unknown> {
-    const base = toolCardResourceMeta(config);
-    return {
-        ...base,
-        "openai/widgetDescription":
-            "Interactive local settings panel for codex-mcp custom UI visibility.",
-        ui: {
-            ...((base.ui as Record<string, unknown> | undefined) ?? {}),
-            prefersBorder: false,
-            domain: config.widgetDomain,
-        },
-    };
-}
-
 export function toolNameFromCardPath(pathName: string): ToolName | undefined {
     const base = pathName.replace(/\.html$/i, "");
     const withoutVersion = base.replace(/[@-]v\d+$/i, "");
@@ -110,7 +92,6 @@ function cachedLegacyToolCardHtml(toolName: ToolName | undefined): string {
 export function registerToolCardResource(server: McpServer, config: ServerConfig): void {
     const resourceMeta = toolCardResourceMeta(config);
     const summaryMeta = summaryCardResourceMeta(config);
-    const settingsMeta = settingsCardResourceMeta(config);
 
     const readFixed = async (uri: { href: string }) => ({
         contents: [
@@ -156,27 +137,6 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
         }),
     );
 
-    server.registerResource(
-        "settings-card",
-        SETTINGS_CARD_URI,
-        {
-            description:
-                "Interactive codex-mcp settings panel for custom UI visibility.",
-            mimeType: TOOL_CARD_MIME,
-            _meta: settingsMeta,
-        },
-        async (uri) => ({
-            contents: [
-                {
-                    uri: uri.href,
-                    mimeType: TOOL_CARD_MIME,
-                    text: SETTINGS_CARD_HTML,
-                    _meta: settingsMeta,
-                },
-            ],
-        }),
-    );
-
     // Compatibility for connectors that still request the old per-tool URIs.
     server.registerResource(
         "tool-card-legacy",
@@ -207,11 +167,9 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
 export function toolUiMeta(server: object, toolName: string): Record<string, unknown> {
     const status = toolStatus(toolName);
     const preferences = uiPreferencesForServer(server);
-    const templateUri = isSettingsUiTool(toolName)
-        ? SETTINGS_CARD_URI
-        : toolName === "summary"
-          ? SUMMARY_CARD_URI
-          : TOOL_CARD_URI;
+    const templateUri = toolName === "summary"
+        ? SUMMARY_CARD_URI
+        : TOOL_CARD_URI;
     const uiEnabled = isUiEnabledForTool(toolName, preferences);
     return {
         ...(uiEnabled

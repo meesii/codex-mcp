@@ -162,7 +162,7 @@ export class PrivateKeyJwtVerifier {
         const response = await safeHttpGet(url, {
             httpsOnly: true,
             maxBytes: JWKS_MAX_BYTES,
-            timeoutMs: 30_000,
+            timeoutMs: 120_000,
             maxRedirects: 2,
             headers: { Accept: "application/json" },
         });

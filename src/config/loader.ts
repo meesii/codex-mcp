@@ -66,9 +66,10 @@ export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
     }
 
     const projectRoot = resolveProjectRoot(options.projectRoot);
-    const allowedHosts = !local && user.domain ? [user.domain.toLowerCase()] : [];
+    const domain = user.publicAccess?.domain;
+    const allowedHosts = !local && domain ? [domain.toLowerCase()] : [];
     const publicMcpUrl =
-        !local && user.domain ? `https://${user.domain.toLowerCase()}/mcp` : undefined;
+        !local && domain ? `https://${domain.toLowerCase()}/mcp` : undefined;
 
     return {
         host,
