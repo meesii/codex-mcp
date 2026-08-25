@@ -687,7 +687,7 @@ function printRegistrationBanner(status: DaemonStatusPayload, project: { id: str
         { label: "当前项目", value: `${project.name}（${project.path}）` },
         { label: "已注册项目", value: `${status.projects.length} 个` },
     ]);
-    printInfo(`在 ChatGPT 中优先用 project_select 选择 ${project.id}；只有已批准的 workspace_projects schema 明确包含 project_id 时才能用它兼容绑定，否则请 Refresh / 重新发布 MCP app actions。`);
+    printInfo(`在 ChatGPT 中使用 project_control(action=select, project_id=${project.id}) 绑定这个项目；升级后请 Refresh / 重新发布 MCP app actions。`);
     printOutro("如需停止当前项目：codex-mcp exit");
 }
 

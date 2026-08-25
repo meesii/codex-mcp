@@ -1,4 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { registerTool } from "../lib/tool/log.js";
@@ -17,8 +18,7 @@ export function registerLsTool(server: McpServer, scope: ToolScopeProvider): voi
         "ls",
         withToolAuth({
             title: "List directory",
-            description:
-                "List directory entries for workspace-relative or absolute paths. Reading outside registered workspaces does not require approval. Prefer this over bash ls/Get-ChildItem for simple listings.",
+            description: "List a single directory without recursion.",
             inputSchema: {
                 path: z
                     .string()
@@ -27,47 +27,30 @@ export function registerLsTool(server: McpServer, scope: ToolScopeProvider): voi
             },
             outputSchema: {
                 path: z.string(),
-                entries: z.array(
-                    z.object({
-                        name: z.string(),
-                        type: z.enum(["dir", "file", "other"]),
-                    }),
-                ),
-                truncated: z.boolean(),
+                text: z.string(),
+                count: z.number().int(),
+                entries: z.array(z.object({ name: z.string(), type: z.enum(["directory", "file"]), size: z.number().int().optional() })),
             },
             annotations: readOnlyAnnotations,
         }),
         async ({ path: dirPath }) => {
             try {
                 const { project } = scope();
-                const absolutePath = project.resolveReadPath(dirPath ?? ".");
+                const absolutePath = project.resolvePath(dirPath ?? ".");
                 const info = await stat(absolutePath);
                 if (!info.isDirectory()) {
                     return errorResult(`Not a directory: ${dirPath ?? "."}`);
                 }
 
                 const entries = await readdir(absolutePath, { withFileTypes: true });
-                const items = entries
-                    .slice(0, MAX_DIRECTORY_ENTRIES)
-                    .map((entry) => ({
-                        name: entry.name,
-                        type: (entry.isDirectory()
-                            ? "dir"
-                            : entry.isFile()
-                              ? "file"
-                              : "other") as "dir" | "file" | "other",
-                    }))
-                    .sort((left, right) => left.name.localeCompare(right.name));
-
-                const truncated = entries.length > items.length;
-                return okResult(
-                    `Listed ${items.length}${truncated ? ` of ${entries.length}` : ""} entries in ${dirPath ?? "."}.`,
-                    {
-                        path: dirPath ?? ".",
-                        entries: items,
-                        truncated,
-                    },
-                );
+                const items = await Promise.all(entries.slice(0, MAX_DIRECTORY_ENTRIES).map(async (entry) => {
+                    const isDirectory = entry.isDirectory();
+                    const entryInfo = isDirectory ? undefined : await stat(join(absolutePath, entry.name));
+                    return { name: entry.name, type: isDirectory ? "directory" as const : "file" as const, ...(entryInfo ? { size: entryInfo.size } : {}) };
+                }));
+                items.sort((a, b) => a.type === b.type ? a.name.localeCompare(b.name) : a.type === "directory" ? -1 : 1);
+                const text = items.map((item) => `${item.type === "directory" ? "[dir] " : "      "}${item.name}`).join("\n") || "(empty)";
+                return okResult(text, { text, path: dirPath ?? ".", count: items.length, entries: items });
             } catch (error) {
                 return projectErrorResult(error);
             }

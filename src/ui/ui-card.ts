@@ -20,12 +20,8 @@ export interface UiCard {
     args?: Record<string, string | number | boolean>;
     /** Short outcome line after completion. */
     outcome?: string;
-    /** `summary` tool: overall task finished. */
-    done?: boolean;
-    /** `summary` tool: progress note (may wrap). */
+    /** `summary` tool: user-facing round note. */
     summaryText?: string;
-    /** `summary` tool: next step when not done. */
-    nextText?: string | null;
 }
 
 function toArgsMap(
@@ -34,17 +30,14 @@ function toArgsMap(
     if (!args || typeof args !== "object") return undefined;
     const keys = [
         "path",
-        "command",
+        "cmd",
         "pattern",
-        "url",
-        "processId",
-        "format",
+        "session_id",
         "offset",
         "limit",
         "chars",
         "summary",
-        "next",
-        "done",
+        "title",
     ] as const;
     const out: Record<string, string | number | boolean> = {};
     for (const key of keys) {
@@ -54,11 +47,7 @@ function toArgsMap(
             out[key] = value.length;
             continue;
         }
-        if (key === "command" && typeof value === "string") {
-            out[key] = value;
-            continue;
-        }
-        if (key === "url" && typeof value === "string") {
+        if (key === "cmd" && typeof value === "string") {
             out[key] = value;
             continue;
         }
@@ -99,17 +88,8 @@ export function buildUiCard(
             (typeof structured?.summary === "string" && structured.summary.trim()) ||
             (typeof args?.summary === "string" && args.summary.trim()) ||
             "";
-        const nextRaw =
-            structured?.next ??
-            (typeof args?.next === "string" ? args.next : null);
-        const nextText =
-            typeof nextRaw === "string" && nextRaw.trim() ? nextRaw.trim() : null;
-        const done = structured?.done === true || args?.done === true;
-
-        card.done = done;
         card.summaryText = summaryText || call.title;
-        card.nextText = done ? null : nextText;
-        card.label = done ? "任务完成" : "进度汇报";
+        card.label = "本轮总结";
     }
 
     return card;

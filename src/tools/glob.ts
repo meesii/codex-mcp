@@ -1,163 +1,26 @@
-import { readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
 import { Minimatch } from "minimatch";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { ProjectContext } from "../config/project.js";
+import { collectFiles } from "../lib/search/file-walker.js";
 import { registerTool } from "../lib/tool/log.js";
 import { readOnlyAnnotations, withToolAuth } from "../lib/tool/meta.js";
 import { okResult } from "../lib/tool/result.js";
-import {
-    projectErrorResult,
-    type ToolScopeProvider,
-} from "../server/project-router.js";
-
-const MAX_DISCOVERED_FILES = 50_000;
-const MAX_RETURNED_FILES = 500;
-
-const GLOB_OPTIONS = {
-    dot: true,
-    nocase: process.platform === "win32",
-    nocomment: true,
-    magicalBraces: true,
-} as const;
-
-interface GlobWalkState {
-    candidateCount: number;
-    files: string[];
-}
-
-async function walkGlobFiles(
-    project: ProjectContext,
-    scopeRoot: string,
-    current: string,
-    matcher: Minimatch,
-    excludes: Minimatch[],
-    state: GlobWalkState,
-    maxDiscoveredFiles: number,
-): Promise<boolean> {
-    const entries = await readdir(current, { withFileTypes: true });
-    for (const entry of entries) {
-        if (entry.name === "node_modules" || entry.name === ".git") continue;
-
-        const full = join(current, entry.name);
-        const scopeRelativePath = relative(scopeRoot, full).replaceAll("\\", "/");
-        const projectRelativePath = project.displayPath(full);
-        if (entry.isDirectory()) {
-            if (matcher.negate || matcher.match(scopeRelativePath, true)) {
-                if (
-                    await walkGlobFiles(
-                        project,
-                        scopeRoot,
-                        full,
-                        matcher,
-                        excludes,
-                        state,
-                        maxDiscoveredFiles,
-                    )
-                ) {
-                    return true;
-                }
-            }
-            continue;
-        }
-        if (!entry.isFile()) continue;
-
-        const matches = matcher.match(scopeRelativePath);
-        if (!matches && !matcher.negate && !matcher.match(scopeRelativePath, true)) {
-            continue;
-        }
-
-        state.candidateCount += 1;
-        if (matches && !excludes.some((item) => item.match(scopeRelativePath))) {
-            state.files.push(projectRelativePath);
-        }
-        if (state.candidateCount >= maxDiscoveredFiles) return true;
-    }
-    return false;
-}
-
-export async function listGlobFiles(
-    project: ProjectContext,
-    pattern: string,
-    maxDiscoveredFiles = MAX_DISCOVERED_FILES,
-    options: { path?: string; exclude?: string[] } = {},
-): Promise<{ files: string[]; scanTruncated: boolean }> {
-    const matcher = new Minimatch(pattern.replaceAll("\\", "/"), GLOB_OPTIONS);
-    const excludes = (options.exclude ?? []).map(
-        (item) => new Minimatch(item.replaceAll("\\", "/"), GLOB_OPTIONS),
-    );
-    const scopeRoot = project.resolveReadPath(options.path?.trim() || ".");
-    const state: GlobWalkState = { candidateCount: 0, files: [] };
-    const scanTruncated = await walkGlobFiles(
-        project,
-        scopeRoot,
-        scopeRoot,
-        matcher,
-        excludes,
-        state,
-        maxDiscoveredFiles,
-    );
-    return { files: state.files, scanTruncated };
-}
+import { projectErrorResult, type ToolScopeProvider } from "../server/project-router.js";
 
 export function registerGlobTool(server: McpServer, scope: ToolScopeProvider): void {
-    registerTool(
-        server,
-        "glob",
-        withToolAuth({
-            title: "Find files by glob",
-            description:
-                "Find files by standard glob syntax with optional subtree scope, exclusion globs, and result limits. Absolute scopes outside registered workspaces are readable without approval; returned external paths remain absolute.",
-            inputSchema: {
-                pattern: z
-                    .string()
-                    .min(1)
-                    .max(1024)
-                    .describe("Glob pattern, e.g. **/*.ts or *.txt"),
-                path: z
-                    .string()
-                    .optional()
-                    .describe("Optional project-relative subtree; pattern is evaluated relative to this scope."),
-                exclude: z
-                    .union([z.string(), z.array(z.string()).max(50)])
-                    .optional()
-                    .describe("Optional scope-relative exclusion glob(s)."),
-                max_results: z.number().int().min(1).max(2_000).optional(),
-            },
-            outputSchema: {
-                count: z.number().int(),
-                files: z.array(z.string()),
-                truncated: z.boolean(),
-            },
-            annotations: readOnlyAnnotations,
-        }),
-        async ({ pattern, path, exclude, max_results: maxResults }) => {
-            try {
-                const { project } = scope();
-                const excludes = exclude === undefined ? [] : Array.isArray(exclude) ? exclude : [exclude];
-                const { files, scanTruncated } = await listGlobFiles(
-                    project,
-                    pattern,
-                    MAX_DISCOVERED_FILES,
-                    {
-                        ...(path ? { path } : {}),
-                        exclude: excludes,
-                    },
-                );
-                const limited = files.slice(0, maxResults ?? MAX_RETURNED_FILES);
-                const truncated = scanTruncated || files.length > limited.length;
-                return okResult(
-                    `Found ${files.length}${scanTruncated ? "+" : ""} files${truncated ? " (truncated)" : ""}.`,
-                    {
-                        count: files.length,
-                        files: limited,
-                        truncated,
-                    },
-                );
-            } catch (error) {
-                return projectErrorResult(error);
-            }
-        },
-    );
+    registerTool(server, "glob", withToolAuth({
+        title: "Find files by glob", description: "Find files by glob pattern, e.g. **/*.ts.",
+        inputSchema: { pattern: z.string().min(1), path: z.string().optional(), maxResults: z.number().int().positive().max(5_000).optional() },
+        outputSchema: { text: z.string(), count: z.number().int(), files: z.array(z.string()) },
+        annotations: readOnlyAnnotations,
+    }), async ({ pattern, path, maxResults }) => {
+        try {
+            const { project } = scope();
+            const root = project.resolvePath(path ?? ".");
+            const matcher = new Minimatch(pattern, { dot: true, nocase: process.platform === "win32" });
+            const files = (await collectFiles(root, maxResults ?? 500, (value) => matcher.match(value))).map((item) => item.relativePath);
+            const text = files.join("\n") || "(empty)";
+            return okResult(text, { text, count: files.length, files });
+        } catch (error) { return projectErrorResult(error); }
+    });
 }

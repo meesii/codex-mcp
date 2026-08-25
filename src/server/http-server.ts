@@ -3,7 +3,6 @@ import type { Server as NodeHttpServer } from "node:http";
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { createMcpHandler, isInitializeRequest } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config/loader.js";
-import { AgentInstructionRegistry } from "../agents/registry.js";
 import { createOAuthRuntime, type OAuthRuntime } from "../auth/server.js";
 import { hasAdminPassword } from "../auth/password-store.js";
 import { DownstreamMcpHub } from "../downstream/hub.js";
@@ -17,11 +16,7 @@ import { runtimeTelemetry } from "../lib/util/telemetry.js";
 import { createMcpServer } from "./mcp-server.js";
 import { ProjectContext } from "../config/project.js";
 import { SkillRegistry } from "../skills/registry.js";
-import { GoalStore } from "../goals/store.js";
 import { UiSettingsStore } from "../ui/settings.js";
-import { WorkspaceRegistry } from "../workspace/registry.js";
-import type { PermissionGrantStore } from "../permissions/store.js";
-import { PermissionRuntime } from "../permissions/runtime.js";
 import type { CapabilityManager } from "../capabilities/manager.js";
 import {
     BindingProjectScopeProvider,
@@ -32,6 +27,7 @@ import type { ProjectRegistry } from "../projects/registry.js";
 import type { BindingStore } from "../projects/bindings.js";
 import type { ProjectRuntimeManager } from "../projects/runtime.js";
 import { PACKAGE_VERSION } from "./version.js";
+import { RoundChangeStore } from "../lib/tool/round-changes.js";
 
 const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_INITIALIZES_PER_WINDOW = 60;
@@ -49,16 +45,10 @@ export interface CreateHttpServerOptions {
     skills?: SkillRegistry;
     /** External capability source manager used by reload/status tools. */
     capabilities?: CapabilityManager;
-    /** Scoped AGENTS.md registry; defaults to one bound to projectRoot. */
-    agents?: AgentInstructionRegistry;
-    /** Optional goal storage directory override, primarily for isolated tests. */
-    goalStorageDir?: string;
     /** Optional UI settings store; defaults to ~/.codex-mcp/config.json persistence. */
     uiSettings?: UiSettingsStore;
     /** Optional per-client tool policy resolver; omitted means all tools. */
     allowedToolsResolver?: (clientId?: string) => ReadonlySet<string> | undefined;
-    /** Optional permission persistence backend; defaults to ~/.codex-mcp/config.json. */
-    permissionStore?: PermissionGrantStore;
     /** Multi-project daemon mode: registers control routes and resolves project scope per tool call. */
     daemon?: DaemonServerOptions;
 }
@@ -81,8 +71,6 @@ export interface RunningHttpServer {
     hub: DownstreamMcpHub;
     skills: SkillRegistry;
     capabilities?: CapabilityManager;
-    agents: AgentInstructionRegistry;
-    goals: GoalStore;
     uiSettings: UiSettingsStore;
     listen: () => Promise<NodeHttpServer>;
     close: () => Promise<void>;
@@ -116,10 +104,7 @@ export function createHttpServer(
     const daemonOptions = options.daemon;
     const hub = options.hub ?? DownstreamMcpHub.empty();
     const skills = options.skills ?? SkillRegistry.empty();
-    const project = new ProjectContext(config.projectRoot, config.workspaceRoots ?? [config.projectRoot]);
-    const workspace = new WorkspaceRegistry(project);
-    const agents = options.agents ?? new AgentInstructionRegistry(project);
-    const goals = new GoalStore(project, options.goalStorageDir);
+    const project = new ProjectContext(config.projectRoot);
     const uiSettings = options.uiSettings ?? new UiSettingsStore();
     const allowedToolsResolver = options.allowedToolsResolver ?? (() => undefined);
     const publicHttpHostnames =
@@ -147,17 +132,11 @@ export function createHttpServer(
     });
     const rootProcesses = new ProcessSessionManager();
     const processOwners = new ProcessOwnerPool(rootProcesses);
-    const permissionRuntime = new PermissionRuntime();
+    const roundChanges = new RoundChangeStore();
     const mcpHandler = createMcpHandler(
         (context) => {
             const authClientId = config.oauthRequired ? context.authInfo?.clientId : undefined;
             const processOwnerId = resolveProcessOwnerId(config.oauthRequired, authClientId);
-            const permissionOwnerId = resolvePermissionOwnerId(
-                config.oauthRequired,
-                authClientId,
-                context.authInfo?.extra,
-                context.requestInfo,
-            );
             const processes = new CurrentOwnerProcessSessions(
                 rootProcesses,
                 processOwners,
@@ -178,12 +157,8 @@ export function createHttpServer(
                     tryScope,
                     hub,
                     skills,
-                    capabilities: options.capabilities,
                     uiSettings,
                     allowedTools: allowedToolsResolver(authClientId),
-                    permissionStore: options.permissionStore,
-                    permissionRuntime,
-                    permissionOwnerId,
                     projectTools: {
                         registry: daemonOptions.registry,
                         bindings: daemonOptions.bindings,
@@ -194,16 +169,12 @@ export function createHttpServer(
             }
             return createMcpServer({
                 config,
-                scope: () => ({ project, workspace, agents, goals, processes }),
-                tryScope: () => ({ project, workspace, agents, goals, processes }),
+                scope: () => ({ project, processes, roundChanges: roundChanges.forOwner(processOwnerId) }),
+                tryScope: () => ({ project, processes, roundChanges: roundChanges.forOwner(processOwnerId) }),
                 hub,
                 skills,
-                capabilities: options.capabilities,
                 uiSettings,
                 allowedTools: allowedToolsResolver(authClientId),
-                permissionStore: options.permissionStore,
-                permissionRuntime,
-                permissionOwnerId,
             });
         },
         {
@@ -349,8 +320,6 @@ export function createHttpServer(
         hub,
         skills,
         ...(options.capabilities ? { capabilities: options.capabilities } : {}),
-        agents,
-        goals,
         uiSettings,
         getMcpUrl: () => `http://${config.host}:${boundPort}/mcp`,
         getTunnelProbe: () => ({ ...tunnelProbe }),
@@ -384,7 +353,6 @@ export function createHttpServer(
         close: async () => {
             await mcpHandler.close();
             await processOwners.shutdown();
-            permissionRuntime.clear();
             await hub.close();
             if (daemonOptions) {
                 await daemonOptions.runtimes.shutdownAll();
@@ -504,24 +472,6 @@ function resolveProcessOwnerId(
         throw new Error("Authenticated MCP request is missing an OAuth client id");
     }
     return `oauth:${authClientId}`;
-}
-
-function resolvePermissionOwnerId(
-    oauthRequired: boolean,
-    authClientId: string | undefined,
-    authExtra: Record<string, unknown> | undefined,
-    requestInfo?: Request,
-): string {
-    const transportSessionId = requestInfo?.headers.get("mcp-session-id")?.trim();
-    if (transportSessionId) {
-        return `mcp-session:${transportSessionId}`;
-    }
-    if (!oauthRequired) return LOCAL_PROCESS_OWNER_ID;
-    const oauthSessionId = authExtra?.codexMcpSessionId;
-    if (typeof oauthSessionId === "string" && oauthSessionId.length > 0) {
-        return `oauth-session:${oauthSessionId}`;
-    }
-    return resolveProcessOwnerId(true, authClientId);
 }
 
 async function closeNodeServer(server: NodeHttpServer | undefined): Promise<void> {

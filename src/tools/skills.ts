@@ -19,21 +19,18 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
         "skills_list",
         withToolAuth({
             title: "List imported skills",
-            description:
-                "List model-invocable skills discovered from enabled external capability sources. Use skill_read before following a skill that matches the current task.",
+            description: "List the skills enabled from external capability sources.",
             inputSchema: {},
             outputSchema: {
-                count: z.number().int(),
+                text: z.string(), count: z.number().int(),
                 skills: z.array(skillInfoSchema),
             },
             annotations: readOnlyAnnotations,
         }),
         async () => {
             const listed = skills.list();
-            return okResult(`Listed ${listed.length} imported skill(s).`, {
-                count: listed.length,
-                skills: listed,
-            });
+            const text = listed.length ? listed.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") : "No skills enabled.";
+            return okResult(text, { text, count: listed.length, skills: listed });
         },
     );
 
@@ -42,31 +39,25 @@ export function registerSkillTools(server: McpServer, skills: SkillRegistry): vo
         "skill_read",
         withToolAuth({
             title: "Read imported skill",
-            description:
-                "Read SKILL.md or another text file inside a discovered imported skill. path defaults to SKILL.md and must stay inside that skill directory.",
+            description: "Read the full SKILL.md body of one enabled skill.",
             inputSchema: {
                 name: z.string().min(1).describe("Skill name from skills_list."),
-                path: z
-                    .string()
-                    .min(1)
-                    .optional()
-                    .describe("Relative file inside the skill, default SKILL.md."),
             },
             outputSchema: {
-                name: z.string(),
+                text: z.string(), name: z.string(),
+                description: z.string(), source: z.enum(["agents", "codex", "claude"]),
                 path: z.string(),
                 content: z.string(),
                 truncated: z.boolean(),
             },
             annotations: readOnlyAnnotations,
         }),
-        async ({ name, path }) => {
+        async ({ name }) => {
             try {
-                const result = skills.read(name, path);
-                return okResult(
-                    `Read ${result.name}/${result.path}${result.truncated ? " (truncated)" : ""}.`,
-                    { ...result },
-                );
+                const info = skills.list().find((skill) => skill.name === name);
+                if (!info) return errorResult(`Unknown skill: ${name}`);
+                const result = skills.read(name);
+                return okResult(result.content, { text: result.content, ...info, path: result.path, content: result.content, truncated: result.truncated });
             } catch (error) {
                 return errorResult(error instanceof Error ? error.message : String(error));
             }

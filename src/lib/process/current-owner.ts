@@ -47,8 +47,7 @@ export class CurrentOwnerProcessSessions implements ProcessSessionAccess {
     }
 
     runtimeStats(): ProcessRuntimeStats {
-        // runtime_status intentionally reports aggregate server telemetry rather
-        // than exposing only the current conversation's process counts.
+        // Daemon diagnostics consume aggregate telemetry, not one conversation's counts.
         return this.root.runtimeStats();
     }
 

@@ -61,7 +61,7 @@ function canonicalizePotentialPathInner(
     return resolve(canonicalExisting, suffix);
 }
 
-export function assertAllowedPath(pathValue: string, allowedRoots: string[]): string {
+export function assertAllowedPath(pathValue: string, allowedRoots: readonly string[]): string {
     const resolvedPath = resolve(expandHomePath(pathValue));
     const canonicalPath = canonicalizePotentialPath(resolvedPath);
 
@@ -80,7 +80,7 @@ export function assertAllowedPath(pathValue: string, allowedRoots: string[]): st
 export function resolveAllowedPath(
     inputPath: string,
     cwd: string,
-    allowedRoots: string[],
+    allowedRoots: readonly string[],
 ): string {
     const absolutePath = resolve(cwd, inputPath);
     return assertAllowedPath(absolutePath, allowedRoots);

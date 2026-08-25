@@ -152,7 +152,7 @@ export class CodexClientsStore implements OAuthRegisteredClientsStore {
             const response = await safeHttpGet(url, {
                 httpsOnly: true,
                 maxBytes: CIMD_MAX_BYTES,
-                timeoutMs: 8_000,
+                timeoutMs: 30_000,
                 maxRedirects: 2,
                 headers: { Accept: "application/json" },
             });

@@ -321,23 +321,21 @@ export function summaryCardHtml(): string {
 
   function paintCard(card) {
     var ok = card.ok !== false;
-    var done = card.done === true;
-    var kind = !ok ? "fail" : done ? "ok" : "progress";
+    var kind = !ok ? "fail" : "ok";
     var summaryText = String(card.summaryText || card.title || "").trim() || "—";
-    var nextText = card.nextText != null ? String(card.nextText).trim() : "";
-    var outcome = !ok ? "调用失败" : done ? "任务完成" : "继续下一阶段";
+    var outcome = !ok ? "调用失败" : "本轮处理已结束";
 
     shell.className = "shell " + (kind === "ok" ? "success" : kind === "fail" ? "failure" : "progress");
     iconEl.innerHTML = iconSvg(kind);
-    toolEl.textContent = done ? "任务完成" : "进度汇报";
+    toolEl.textContent = card.title || "本轮总结";
     statusEl.textContent = outcome;
     statusEl.title = outcome;
 
     var rows = [
       '<div class="row"><dt>总结</dt><dd>' + escapeHtml(summaryText) + "</dd></div>"
     ];
-    if (!done && nextText) {
-      rows.push('<div class="row"><dt>下一步</dt><dd>' + escapeHtml(nextText) + "</dd></div>");
+    if (card.fileChanges && typeof card.fileChanges.count === "number") {
+      rows.push('<div class="row"><dt>文件变更</dt><dd>' + escapeHtml(String(card.fileChanges.count)) + " 个</dd></div>");
     }
     rows.push(
       '<div class="row outcome ' + kind + '"><dt>结果</dt><dd>' +
@@ -366,11 +364,9 @@ export function summaryCardHtml(): string {
     if (uiCard && typeof uiCard === "object") {
       return {
         ok: uiCard.ok !== false && ok,
-        done: uiCard.done === true || (structured && structured.done === true),
+        title: (structured && structured.title) || "本轮总结",
         summaryText: uiCard.summaryText || uiCard.title || (structured && structured.summary) || args.summary || "",
-        nextText: uiCard.nextText != null
-          ? uiCard.nextText
-          : (structured && structured.next) || args.next || null,
+        fileChanges: structured && structured.fileChanges,
         running: false
       };
     }
@@ -378,9 +374,9 @@ export function summaryCardHtml(): string {
     if (!structured && !args.summary) return null;
     return {
       ok: ok,
-      done: !!(structured && structured.done === true) || args.done === true,
+      title: (structured && structured.title) || args.title || "本轮总结",
       summaryText: (structured && structured.summary) || args.summary || "",
-      nextText: (structured && structured.next) || args.next || null,
+      fileChanges: structured && structured.fileChanges,
       running: false
     };
   }

@@ -1,5 +1,5 @@
 /**
- * Process-wide async mutex for write/edit/bash serialization.
+ * Process-wide async mutex for transactional file mutation serialization.
  */
 export class ProjectLock {
     private tail: Promise<unknown> = Promise.resolve();

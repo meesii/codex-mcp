@@ -1,79 +1,25 @@
-export const PROJECT_TOOL_NAMES = [
-    "project_list",
-    "project_select",
-    "project_current",
-    "project_unbind",
-    "project_control",
-] as const;
+export const PROJECT_TOOL_NAMES = ["project_control"] as const;
 
 export const CORE_TOOL_NAMES = [
     "read",
-    "read_many",
-    "write",
-    "edit",
+    "read_image",
     "apply_patch",
-    "bash",
-    "exec_command",
-    "write_stdin",
-    "process_kill",
-    "process_list",
-    "process_status",
-    "process_output",
-    "runtime_status",
-    "server_info",
+    "ls",
     "grep",
     "glob",
-    "ls",
-    "webfetch",
-    "summary",
-    "goal_start",
-    "goal_status",
-    "goal_update",
-    "goal_verify",
-    "goal_finish",
-    "goal_cancel",
-    "settings_get",
-    "settings_update",
-    "permission_list",
-    "permission_grant",
-    "permission_revoke",
-    "permission_control",
+    "code_explore",
+    "exec_command",
+    "write_stdin",
     "skills_list",
     "skill_read",
-    "agents_for_path",
-    "capabilities_reload",
-    "workspace_roots",
-    "workspace_add",
-    "workspace_remove",
-    "workspace_control",
-    "workspace_projects",
-    "workspace_search",
-    "workspace_context",
-    "context_pack",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
-    "git_branches",
-    "code_explore",
-] as const;
-
-export const GATEWAY_TOOL_NAMES = [
-    "mcp_servers",
-    "mcp_reconnect",
     "mcp_tools",
     "mcp_call",
-    "mcp_resources",
-    "mcp_resource_read",
-    "mcp_prompts",
-    "mcp_prompt_get",
+    "summary",
 ] as const;
 
-export const TOOL_NAMES = [
-    ...PROJECT_TOOL_NAMES,
-    ...CORE_TOOL_NAMES,
-    ...GATEWAY_TOOL_NAMES,
-] as const;
+export const GATEWAY_TOOL_NAMES = ["mcp_tools", "mcp_call"] as const;
+
+export const TOOL_NAMES = [...PROJECT_TOOL_NAMES, ...CORE_TOOL_NAMES] as const;
 
 export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
 export type CoreToolName = (typeof CORE_TOOL_NAMES)[number];

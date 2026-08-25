@@ -14,7 +14,7 @@ export interface ClientCapabilitiesConfig {
 export interface UserUiConfig {
     /** Show custom cards for ordinary coding tools. Defaults to false. */
     tools?: boolean;
-    /** Show custom cards for summary/goal status tools. Defaults to true. */
+    /** Show the summary status card. Defaults to true. */
     status?: boolean;
 }
 

@@ -14,8 +14,6 @@ export interface ServerConfig {
     publicMcpUrl?: string;
     /** Absolute primary project directory bound at process start. */
     projectRoot: string;
-    /** Primary + configured additional workspace roots that currently exist. */
-    workspaceRoots?: string[];
     /**
      * Hostnames allowed in the HTTP Host header (for tunnels / public DNS).
      * When empty, localhost bindings keep the SDK default localhost-only check.
@@ -68,7 +66,6 @@ export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
     }
 
     const projectRoot = resolveProjectRoot(options.projectRoot);
-    const workspaceRoots = resolveWorkspaceRoots(projectRoot, user.workspaces ?? []);
     const allowedHosts = !local && user.domain ? [user.domain.toLowerCase()] : [];
     const publicMcpUrl =
         !local && user.domain ? `https://${user.domain.toLowerCase()}/mcp` : undefined;
@@ -80,7 +77,6 @@ export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
         oauthRequired: !local,
         ...(publicMcpUrl ? { publicMcpUrl } : {}),
         projectRoot,
-        workspaceRoots,
         allowedHosts,
         widgetDomain: resolveWidgetDomain(allowedHosts, host, port),
     };
@@ -96,19 +92,6 @@ export function resolveWidgetDomain(
     }
     const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
     return `http://${localHost}:${port}`;
-}
-
-function resolveWorkspaceRoots(primaryRoot: string, configured: string[]): string[] {
-    const roots = [primaryRoot];
-    for (const pathValue of configured) {
-        try {
-            roots.push(assertProjectDirectory(pathValue));
-        } catch {
-            // Additional workspaces may live on removable/offline volumes. Keep
-            // startup usable and simply omit roots that are unavailable now.
-        }
-    }
-    return [...new Set(roots)];
 }
 
 function assertProjectDirectory(pathValue: string): string {

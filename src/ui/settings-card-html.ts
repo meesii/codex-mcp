@@ -69,7 +69,7 @@ export function settingsCardHtml(): string {
         <label class="row">
           <span class="copy">
             <span class="label">普通工具 UI</span>
-            <span class="hint">read、edit、grep、bash、Git 等工具卡片</span>
+            <span class="hint">read、apply_patch、grep、exec_command 等工具卡片</span>
           </span>
           <span class="switch">
             <input id="tools" type="checkbox" />
@@ -79,7 +79,7 @@ export function settingsCardHtml(): string {
         <label class="row">
           <span class="copy">
             <span class="label">状态 UI</span>
-            <span class="hint">Summary 和 Goal 进度卡片</span>
+            <span class="hint">Summary 本轮总结卡片</span>
           </span>
           <span class="switch">
             <input id="status" type="checkbox" />

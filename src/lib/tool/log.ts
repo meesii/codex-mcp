@@ -1,4 +1,6 @@
 import type { CallToolResult, McpServer, ServerContext } from "@modelcontextprotocol/server";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { toolUiMeta } from "../../ui/register-ui.js";
 import { securitySchemesForServer } from "./meta.js";
 import { summarizeOutcome, summarizeToolCall } from "../../ui/tool-summary.js";
@@ -95,6 +97,7 @@ function logToolCall(
     args: Record<string, unknown>,
     result: CallToolResult | { thrown: string },
     durationMs: number,
+    invocationId: string,
 ): void {
     if (!isToolLogEnabled()) return;
 
@@ -114,6 +117,7 @@ function logToolCall(
             `${time}  ${tool}  ${ms}  ${detail}`.trimEnd(),
         );
         writeRuntimeLog("error", "tool_call", {
+            invocationId,
             tool: toolName,
             durationMs,
             ok: false,
@@ -136,6 +140,7 @@ function logToolCall(
         `${time}  ${tool}  ${ms}  ${detail}`.trimEnd(),
     );
     writeRuntimeLog(ok ? "info" : "warn", "tool_call", {
+        invocationId,
         tool: toolName,
         durationMs,
         ok,
@@ -209,8 +214,18 @@ export function registerTool(
         previousUi || generatedUi
             ? { ...(previousUi ?? {}), ...(generatedUi ?? {}) }
             : undefined;
+    const sourceConfig = config as Record<string, unknown>;
+    const inputSchema = sourceConfig.inputSchema && typeof sourceConfig.inputSchema === "object"
+        ? sourceConfig.inputSchema as Record<string, unknown>
+        : {};
     const configWithUi = {
-        ...config,
+        ...sourceConfig,
+        inputSchema: {
+            purpose: z.string().max(80).describe(
+                "Short user-visible summary of what this call will obtain, verify, or change.",
+            ),
+            ...inputSchema,
+        },
         securitySchemes,
         _meta: {
             ...previousMeta,
@@ -226,8 +241,18 @@ export function registerTool(
     ): Promise<CallToolResult> => {
         return await runWithToolInvocationContext(context, async () => {
             const startedAt = performance.now();
+            const invocationId = randomUUID();
+            if (isToolLogEnabled()) {
+                writeRuntimeLog("info", "tool_call_started", {
+                    invocationId,
+                    tool: name,
+                    purpose: typeof args.purpose === "string" ? args.purpose : "",
+                });
+            }
             try {
-                const result = withUiCardMeta(name, args, await handler(args));
+                const executionArgs = { ...args };
+                delete executionArgs.purpose;
+                const result = withUiCardMeta(name, args, await handler(executionArgs));
                 const durationMs = performance.now() - startedAt;
                 runtimeTelemetry.recordTool(
                     name,
@@ -235,7 +260,7 @@ export function registerTool(
                     result.isError === true,
                     estimateResultBytes(result),
                 );
-                logToolCall(name, args, result, Math.round(durationMs));
+                logToolCall(name, args, result, Math.round(durationMs), invocationId);
                 return result;
             } catch (error) {
                 const durationMs = performance.now() - startedAt;
@@ -245,6 +270,7 @@ export function registerTool(
                     args,
                     { thrown: error instanceof Error ? error.message : String(error) },
                     Math.round(durationMs),
+                    invocationId,
                 );
                 throw error;
             }

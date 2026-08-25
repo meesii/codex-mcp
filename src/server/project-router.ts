@@ -1,16 +1,14 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
-import type { AgentInstructionRegistry } from "../agents/registry.js";
 import type { ProjectContext } from "../config/project.js";
-import type { GoalStore } from "../goals/store.js";
 import { CurrentOwnerProcessSessions } from "../lib/process/current-owner.js";
 import type { ProcessSessionAccess } from "../lib/process/sessions.js";
+import type { RoundChangeTracker } from "../lib/tool/round-changes.js";
 import { currentToolOwnerId } from "../lib/tool/context.js";
 import { errorResult } from "../lib/tool/result.js";
 import type { RegisteredProject } from "../daemon/state.js";
 import type { BindingStore } from "../projects/bindings.js";
 import type { ProjectRegistry } from "../projects/registry.js";
 import type { ProjectRuntimeManager, ProjectRuntime } from "../projects/runtime.js";
-import type { WorkspaceRegistry } from "../workspace/registry.js";
 
 /**
  * Everything a project-level tool needs for one tool call. Resolved at call
@@ -18,10 +16,8 @@ import type { WorkspaceRegistry } from "../workspace/registry.js";
  */
 export interface ToolProjectScope {
     readonly project: ProjectContext;
-    readonly workspace: WorkspaceRegistry;
-    readonly agents: AgentInstructionRegistry;
-    readonly goals: GoalStore;
     readonly processes: ProcessSessionAccess;
+    readonly roundChanges: RoundChangeTracker;
 }
 
 /**
@@ -61,8 +57,8 @@ export function unboundProjectMessage(activeProjects: RegisteredProject[]): stri
     if (activeProjects.length === 0) {
         return [
             "这个会话还没有绑定项目，而且当前没有已注册的项目。请让用户先在项目目录里运行 codex-mcp 注册项目。",
-            "注册后优先调用 project_select(project_id=...)。",
-            "如果 project_select 不在 ChatGPT 已批准的 action snapshot 中，只有当 workspace_projects 的已批准输入 schema 明确包含 project_id 时才能用它兼容绑定；否则必须 Refresh 或重新发布 MCP app actions。",
+            "注册后调用 project_control(action=select, project_id=...)。",
+            "如果 project_control 不在 ChatGPT 已批准的 action snapshot 中，请 Refresh 或重新发布 MCP app actions。",
         ].join("\n");
     }
     const list = activeProjects
@@ -72,8 +68,8 @@ export function unboundProjectMessage(activeProjects: RegisteredProject[]): stri
         "当前会话还没有绑定项目，因此不能读写文件、执行命令或查看 Git 状态。",
         "请先向用户确认要用哪个项目，不要自动猜测：",
         list,
-        "首选：project_select(project_id=\"<确认的项目 id>\")。",
-        "兼容入口：如果 project_select 不可见，并且当前 host 已批准的 workspace_projects 输入 schema 明确包含 project_id，可调用 workspace_projects(project_id=\"<确认的项目 id>\")。如果旧快照里没有该参数，新增 optional 参数无法穿透冻结 schema；请 Refresh 或重新发布 MCP app actions。",
+        "调用 project_control(action=select, project_id=\"<确认的项目 id>\")。",
+        "如果 project_control 不可见，请 Refresh 或重新发布 MCP app actions；已删除的旧项目工具不再提供兼容入口。",
     ].join("\n");
 }
 
@@ -139,14 +135,12 @@ export class BindingProjectScopeProvider {
         this.bindings.touch(ownerKey);
         return {
             project: runtime.project,
-            workspace: runtime.workspace,
-            agents: runtime.agents,
-            goals: runtime.goals,
             processes: new CurrentOwnerProcessSessions(
                 runtime.rootProcesses,
                 runtime.processOwners,
                 this.fallbackOwnerId,
             ),
+            roundChanges: runtime.roundChanges.forOwner(ownerKey),
         };
     }
 

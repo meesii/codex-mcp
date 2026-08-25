@@ -89,6 +89,11 @@ interface SystemProxyCache {
     proxies: URL[];
 }
 
+interface RequestDeadline {
+    expiresAt: number;
+    timeoutMs: number;
+}
+
 let systemProxyCache: SystemProxyCache | undefined;
 const proxyAgents = new Map<string, Agent>();
 
@@ -107,23 +112,28 @@ export async function safeHttpGet(
 ): Promise<SafeHttpResponse> {
     const url = input instanceof URL ? new URL(input.href) : new URL(input);
     const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-    return requestOne(url, options, maxRedirects);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error("timeoutMs must be positive");
+    }
+    return requestOne(url, options, maxRedirects, {
+        expiresAt: Date.now() + timeoutMs,
+        timeoutMs,
+    });
 }
 
 async function requestOne(
     url: URL,
     options: SafeHttpOptions,
     redirectsRemaining: number,
+    deadline: RequestDeadline,
 ): Promise<SafeHttpResponse> {
     assertAllowedUrl(url, options);
     const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
         throw new Error("maxBytes must be a positive integer");
     }
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-        throw new Error("timeoutMs must be positive");
-    }
+    remainingTimeoutMs(deadline);
 
     const proxies =
         !options.allowPrivate && options.useProxy !== false
@@ -144,7 +154,7 @@ async function requestOne(
                 options,
                 redirectsRemaining,
                 maxBytes,
-                timeoutMs,
+                deadline,
                 requestHeaders,
             );
         } catch (error) {
@@ -152,7 +162,8 @@ async function requestOne(
         }
     }
 
-    const lookup = options.allowPrivate ? undefined : createSafeLookup();
+    remainingTimeoutMs(deadline);
+    const lookup = options.allowPrivate ? undefined : createSafeLookup(deadline);
     const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
     const req = requestFn(url, {
         method: "GET",
@@ -160,7 +171,7 @@ async function requestOne(
         headers: requestHeaders,
     });
     try {
-        return await finishRequest(req, url, options, redirectsRemaining, maxBytes, timeoutMs);
+        return await finishRequest(req, url, options, redirectsRemaining, maxBytes, deadline);
     } catch (error) {
         if (proxyErrors.length === 0) throw error;
         const directDetail = error instanceof Error ? error.message : String(error);
@@ -176,10 +187,10 @@ async function requestThroughProxy(
     options: SafeHttpOptions,
     redirectsRemaining: number,
     maxBytes: number,
-    timeoutMs: number,
+    deadline: RequestDeadline,
     requestHeaders: Record<string, string>,
 ): Promise<SafeHttpResponse> {
-    const addresses = await resolvePublicAddresses(url.hostname, proxy);
+    const addresses = await resolvePublicAddresses(url.hostname, proxy, deadline);
     const targets = addresses
         .sort((left, right) => left.family - right.family)
         .slice(0, 2);
@@ -188,9 +199,9 @@ async function requestThroughProxy(
     }
 
     const attempts = [...targets, ...targets];
-    const perAttemptTimeoutMs = Math.max(1_500, Math.floor(timeoutMs / attempts.length));
     let lastError: unknown;
     for (const target of attempts) {
+        remainingTimeoutMs(deadline);
         const port = Number(url.port || (url.protocol === "https:" ? "443" : "80"));
         const agent = getProxyAgent(proxy, url.protocol);
         const common = {
@@ -216,7 +227,7 @@ async function requestThroughProxy(
                 options,
                 redirectsRemaining,
                 maxBytes,
-                perAttemptTimeoutMs,
+                deadline,
             );
         } catch (error) {
             lastError = error;
@@ -234,9 +245,10 @@ function finishRequest(
     options: SafeHttpOptions,
     redirectsRemaining: number,
     maxBytes: number,
-    timeoutMs: number,
+    deadline: RequestDeadline,
 ): Promise<SafeHttpResponse> {
     return new Promise<SafeHttpResponse>((resolve, reject) => {
+        const timeoutMs = remainingTimeoutMs(deadline);
         let settled = false;
         const fail = (error: Error): void => {
             if (settled) return;
@@ -245,7 +257,7 @@ function finishRequest(
         };
 
         const timer = setTimeout(() => {
-            req.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
+            req.destroy(new Error(`Request timed out after ${deadline.timeoutMs}ms`));
         }, timeoutMs);
         timer.unref();
 
@@ -267,7 +279,7 @@ function finishRequest(
                 }
                 settled = true;
                 clearTimeout(timer);
-                void requestOne(next, options, redirectsRemaining - 1).then(resolve, reject);
+                void requestOne(next, options, redirectsRemaining - 1, deadline).then(resolve, reject);
                 return;
             }
 
@@ -358,9 +370,9 @@ function assertAllowedUrl(url: URL, options: SafeHttpOptions): void {
     }
 }
 
-function createSafeLookup(): LookupFunction {
+function createSafeLookup(deadline: RequestDeadline): LookupFunction {
     return ((hostname: string, options: unknown, callback: (...args: unknown[]) => void) => {
-        void resolvePublicAddresses(hostname)
+        void resolvePublicAddresses(hostname, undefined, deadline)
             .then((addresses) => {
                 const wantsAll =
                     typeof options === "object" &&
@@ -386,7 +398,12 @@ function createSafeLookup(): LookupFunction {
     }) as LookupFunction;
 }
 
-async function resolvePublicAddresses(hostname: string, proxy?: URL): Promise<ResolvedAddress[]> {
+async function resolvePublicAddresses(
+    hostname: string,
+    proxy?: URL,
+    deadline?: RequestDeadline,
+): Promise<ResolvedAddress[]> {
+    if (deadline) remainingTimeoutMs(deadline);
     const normalized = normalizeHostname(hostname);
     if (isIP(normalized)) {
         assertPublicAddress(normalized);
@@ -394,7 +411,7 @@ async function resolvePublicAddresses(hostname: string, proxy?: URL): Promise<Re
     }
 
     const addresses = proxy
-        ? await resolveWithDohThroughProxy(normalized, proxy)
+        ? await resolveWithDohThroughProxy(normalized, proxy, deadline)
         : await dnsLookup(normalized, { all: true, verbatim: true });
     if (addresses.length === 0) {
         throw new Error(`No addresses found for ${hostname}`);
@@ -407,7 +424,11 @@ async function resolvePublicAddresses(hostname: string, proxy?: URL): Promise<Re
     return [...unique.values()];
 }
 
-async function resolveWithDohThroughProxy(hostname: string, proxy: URL): Promise<ResolvedAddress[]> {
+async function resolveWithDohThroughProxy(
+    hostname: string,
+    proxy: URL,
+    deadline?: RequestDeadline,
+): Promise<ResolvedAddress[]> {
     const providers = [
         { host: "cloudflare-dns.com", path: "/dns-query", style: "cloudflare" as const },
         { host: "dns.google", path: "/resolve", style: "google" as const },
@@ -416,8 +437,8 @@ async function resolveWithDohThroughProxy(hostname: string, proxy: URL): Promise
     for (const provider of providers) {
         try {
             const [ipv4, ipv6] = await Promise.all([
-                queryDoh(provider, hostname, "A", proxy),
-                queryDoh(provider, hostname, "AAAA", proxy),
+                queryDoh(provider, hostname, "A", proxy, deadline),
+                queryDoh(provider, hostname, "AAAA", proxy, deadline),
             ]);
             const combined = [...ipv4, ...ipv6];
             if (combined.length > 0) return combined;
@@ -437,6 +458,7 @@ async function queryDoh(
     hostname: string,
     type: "A" | "AAAA",
     proxy: URL,
+    deadline?: RequestDeadline,
 ): Promise<ResolvedAddress[]> {
     const query = new URLSearchParams({ name: hostname, type });
     const path = `${provider.path}?${query.toString()}`;
@@ -458,9 +480,12 @@ async function queryDoh(
         });
         let total = 0;
         const chunks: Buffer[] = [];
+        const timeoutMs = deadline
+            ? Math.min(DOH_TIMEOUT_MS, remainingTimeoutMs(deadline))
+            : DOH_TIMEOUT_MS;
         const timer = setTimeout(() => {
-            req.destroy(new Error(`DNS-over-HTTPS timed out after ${DOH_TIMEOUT_MS}ms`));
-        }, DOH_TIMEOUT_MS);
+            req.destroy(new Error(`DNS-over-HTTPS timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
         timer.unref();
         req.on("response", (res) => {
             if (res.statusCode !== 200) {
@@ -853,6 +878,14 @@ function isSocksProxy(proxy: URL): boolean {
 
 function normalizeHostname(hostname: string): string {
     return hostname.replace(/^\[|\]$/g, "");
+}
+
+function remainingTimeoutMs(deadline: RequestDeadline): number {
+    const remaining = deadline.expiresAt - Date.now();
+    if (remaining <= 0) {
+        throw new Error(`Request timed out after ${deadline.timeoutMs}ms`);
+    }
+    return remaining;
 }
 
 export function assertPublicAddress(address: string): void {

@@ -307,7 +307,7 @@ export function toolCardHtml(toolName?: string): string {
   var knownTool = ${bakedTool} || "";
   var knownArgs = null;
   var STRIP_HEIGHT = 56;
-  var ARG_KEYS = ["path", "command", "pattern", "url", "processId", "format", "offset", "limit", "chars"];
+  var ARG_KEYS = ["purpose", "path", "paths", "cmd", "pattern", "session_id", "offset", "limit", "chars"];
 
   function iconSvg(kind) {
     if (kind === "loading") {
@@ -331,59 +331,28 @@ export function toolCardHtml(toolName?: string): string {
   var LABELS = {
     project_control: "管理会话项目",
     read: "读取文件",
-    write: "写入文件",
-    edit: "修改文件",
-    bash: "执行命令",
-    exec_command: "后台命令",
-    write_stdin: "进程交互",
-    process_kill: "结束进程",
-    process_list: "列出进程",
-    process_status: "查看进程",
-    process_output: "查看进程输出",
-    runtime_status: "查看运行指标",
+    read_image: "读取图片",
+    apply_patch: "应用补丁",
+    exec_command: "执行命令",
+    write_stdin: "终端交互",
     grep: "搜索内容",
     glob: "查找文件",
     ls: "列出目录",
-    webfetch: "抓取网页",
-    summary: "总结进度",
-    skills_list: "列出 Codex Skills",
-    skill_read: "读取 Codex Skill",
-    agents_for_path: "读取项目指令",
-    capabilities_reload: "刷新 Codex 能力",
-    permission_list: "查看外部授权",
-    permission_grant: "授权外部访问",
-    permission_revoke: "撤销外部授权",
-    permission_control: "管理外部授权",
-    workspace_roots: "列出工作区",
-    workspace_add: "添加工作区",
-    workspace_remove: "移除工作区",
-    workspace_control: "管理工作区",
-    workspace_projects: "列出工作区项目",
-    workspace_search: "搜索工作区",
-    workspace_context: "读取项目上下文",
-    context_pack: "构建任务上下文",
-    git_status: "读取 Git 状态",
-    git_diff: "读取 Git 差异",
-    git_log: "读取 Git 历史",
-    git_show: "查看 Git 提交",
-    git_branches: "列出 Git 分支",
-    code_explore: "探索代码关系",
-    mcp_servers: "列出下游 MCP",
-    mcp_reconnect: "重连下游 MCP",
-    mcp_tools: "列出下游工具",
+    summary: "总结本轮",
+    skills_list: "列出 Skills",
+    skill_read: "读取 Skill",
+    code_explore: "探索代码结构",
+    mcp_tools: "发现下游工具",
     mcp_call: "调用下游工具",
-    mcp_resources: "列出下游资源",
-    mcp_resource_read: "读取下游资源",
-    mcp_prompts: "列出下游提示词",
-    mcp_prompt_get: "读取下游提示词"
   };
   var PARAM_LABELS = {
     path: "路径",
-    command: "命令",
+    purpose: "目的",
+    cmd: "命令",
     pattern: "模式",
     url: "网址",
     uri: "资源 URI",
-    processId: "进程",
+    session_id: "会话",
     chars: "输入",
     offset: "起始行",
     limit: "行数",
@@ -407,53 +376,14 @@ export function toolCardHtml(toolName?: string): string {
     project_id: "项目 ID"
   };
   var PARAM_KEYS = {
-    project_control: ["action", "project_id", "project_path", "force"],
-    read: ["path", "offset", "limit"],
-    write: ["path"],
-    edit: ["path"],
-    bash: ["command"],
-    exec_command: ["command", "name"],
-    write_stdin: ["processId", "chars"],
-    process_kill: ["processId"],
-    process_list: [],
-    process_status: ["processId"],
-    process_output: ["processId"],
-    runtime_status: [],
-    grep: ["pattern", "path"],
-    glob: ["pattern"],
-    ls: ["path"],
-    webfetch: ["url", "format"],
-    summary: ["summary", "next", "done"],
-    skills_list: [],
-    skill_read: ["name", "path"],
-    agents_for_path: ["path"],
-    capabilities_reload: [],
-    permission_list: [],
-    permission_grant: ["capability", "path", "duration"],
-    permission_revoke: ["capability", "path"],
-    permission_control: ["action", "capability", "path", "duration"],
-    workspace_roots: [],
-    workspace_add: ["path"],
-    workspace_remove: ["path"],
-    workspace_control: ["action", "path"],
-    workspace_projects: ["project_id", "project_path", "force", "max_depth"],
-    workspace_search: ["pattern", "path"],
-    workspace_context: ["path", "intent"],
-    context_pack: ["query", "path"],
-    git_status: ["path"],
-    git_diff: ["path", "staged"],
-    git_log: ["path", "limit"],
-    git_show: ["path", "revision"],
-    git_branches: ["path"],
-    code_explore: ["query", "project_path"],
-    mcp_servers: [],
-    mcp_reconnect: ["server"],
-    mcp_tools: ["server"],
-    mcp_call: ["server", "tool"],
-    mcp_resources: ["server"],
-    mcp_resource_read: ["server", "uri"],
-    mcp_prompts: ["server"],
-    mcp_prompt_get: ["server", "prompt"]
+    project_control: ["purpose", "action", "project_id", "project_path"],
+    read: ["purpose", "path", "paths"], read_image: ["purpose", "path"],
+    apply_patch: ["purpose"], ls: ["purpose", "path"], grep: ["purpose", "pattern", "path"],
+    glob: ["purpose", "pattern", "path"], code_explore: ["purpose", "path"],
+    exec_command: ["purpose", "cmd", "workdir"], write_stdin: ["purpose", "session_id", "chars"],
+    skills_list: ["purpose"], skill_read: ["purpose", "name"],
+    mcp_tools: ["purpose", "server"], mcp_call: ["purpose", "server", "tool"],
+    summary: ["title", "summary"]
   };
 
   function labelOf(toolName) {
@@ -527,14 +457,14 @@ export function toolCardHtml(toolName?: string): string {
 
   function formatParamValue(key, value) {
     if (value === undefined || value === null || value === "") return null;
-    if (key === "processId") return "#" + value;
+    if (key === "session_id") return "#" + value;
     if (key === "chars") {
       if (typeof value === "number") return value + " 字符";
       if (typeof value === "string") {
         return value.length > 0 ? value.length + " 字符" : "(空)";
       }
     }
-    if (key === "command" && typeof value === "string") return value;
+    if (key === "cmd" && typeof value === "string") return value;
     if (key === "url" && typeof value === "string") return value;
     if (typeof value === "string") return clip(value, 96);
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -552,10 +482,10 @@ export function toolCardHtml(toolName?: string): string {
     });
 
     var title = "—";
-    if (toolName === "read" || toolName === "write" || toolName === "edit" || toolName === "ls") {
+    if (toolName === "read" || toolName === "read_image" || toolName === "ls") {
       title = clip(String(input.path || (params[0] && params[0].value) || ""), 80) || "—";
-    } else if (toolName === "bash" || toolName === "exec_command") {
-      title = String(input.command || "") || "—";
+    } else if (toolName === "exec_command") {
+      title = String(input.cmd || "") || "—";
     } else if (toolName === "grep") {
       var pattern = String(input.pattern || "");
       var path = input.path != null ? String(input.path) : "";
@@ -564,8 +494,6 @@ export function toolCardHtml(toolName?: string): string {
         : (clip(pattern || path, 80) || "—");
     } else if (toolName === "glob") {
       title = clip(String(input.pattern || ""), 80) || "—";
-    } else if (toolName === "webfetch") {
-      title = String(input.url || "") || "—";
     } else if (toolName === "summary") {
       title = clip(String(input.summary || ""), 80) || "—";
     } else if (toolName === "mcp_tools") {
@@ -576,8 +504,8 @@ export function toolCardHtml(toolName?: string): string {
       title = mcpServer && mcpTool
         ? clip(mcpServer + "/" + mcpTool, 80)
         : (clip(mcpServer || mcpTool, 80) || "—");
-    } else if (toolName === "write_stdin" || toolName === "process_kill") {
-      title = input.processId != null ? "#" + input.processId : "—";
+    } else if (toolName === "write_stdin") {
+      title = input.session_id != null ? "#" + input.session_id : "—";
     } else if (params[0]) {
       title = clip(params[0].value, 80);
     }
@@ -594,22 +522,13 @@ export function toolCardHtml(toolName?: string): string {
       var text = String(contentText || "").trim();
       return text ? clip(text, 100) : "";
     }
-    if (toolName === "read" && typeof data.lineCount === "number") return data.lineCount + " 行";
-    if (toolName === "write" && typeof data.bytes === "number") return "写入 " + data.bytes + " 字节";
-    if (toolName === "edit") {
-      if (data.replaced === true) return "已替换";
-      if (data.replaced === false) return "未替换";
-    }
-    if (toolName === "bash") {
-      if (data.timedOut === true) return "超时";
-      if (typeof data.exitCode === "number") return "退出码 " + data.exitCode;
-    }
-    if (toolName === "exec_command" || toolName === "write_stdin" || toolName === "process_kill") {
+    if (toolName === "read" && Array.isArray(data.files)) return data.files.length + " 个文件";
+    if (toolName === "apply_patch" && Array.isArray(data.files)) return data.files.length + " 个文件";
+    if (toolName === "exec_command" || toolName === "write_stdin") {
       var parts = [];
-      if (typeof data.processId === "number") parts.push("#" + data.processId);
+      if (typeof data.session_id === "number") parts.push("#" + data.session_id);
       if (data.running === true) parts.push("运行中");
-      else if (typeof data.exitCode === "number") parts.push("退出码 " + data.exitCode);
-      else if (typeof data.signal === "string") parts.push(data.signal);
+      else if (typeof data.exit_code === "number") parts.push("退出码 " + data.exit_code);
       if (parts.length) return parts.join(" · ");
     }
     if (toolName === "grep" && typeof data.matchCount === "number") return data.matchCount + " 处匹配";
@@ -618,19 +537,7 @@ export function toolCardHtml(toolName?: string): string {
       if (Array.isArray(data.files)) return data.files.length + " 个文件";
     }
     if (toolName === "ls" && Array.isArray(data.entries)) return data.entries.length + " 项";
-    if (toolName === "webfetch" && typeof data.bytes === "number") return data.bytes + " 字节";
-    if (toolName === "summary") {
-      if (data.done === true) return "任务完成";
-      if (data.continueWorking === true) return "继续下一阶段";
-    }
-    if (toolName === "mcp_tools" && Array.isArray(data.tools)) {
-      return data.tools.length + " 个工具";
-    }
-    if (toolName === "mcp_call") {
-      var called = typeof data.tool === "string" ? data.tool : "";
-      if (data.isError === true) return called ? called + " 失败" : "调用失败";
-      return called ? called + " 完成" : "调用完成";
-    }
+    if (toolName === "summary" && data.fileChanges && typeof data.fileChanges.count === "number") return data.fileChanges.count + " 个变更文件";
     var fallback = String(contentText || "").trim();
     return fallback ? clip(fallback, 100) : "";
   }

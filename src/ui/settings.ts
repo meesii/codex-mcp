@@ -5,9 +5,9 @@ import {
 } from "../config/user-config.js";
 
 export interface UiPreferences {
-    /** Render custom cards for ordinary coding tools such as read/edit/bash. */
+    /** Render custom cards for ordinary coding tools such as read/apply_patch/exec_command. */
     tools: boolean;
-    /** Render custom cards for status/progress tools such as summary and goal_*. */
+    /** Render the summary status card. */
     status: boolean;
 }
 
@@ -84,11 +84,11 @@ export function createMemoryUiSettingsStore(
 }
 
 export function isSettingsUiTool(toolName: string): boolean {
-    return toolName === "settings_get" || toolName === "settings_update";
+    return false;
 }
 
 export function isStatusUiTool(toolName: string): boolean {
-    return toolName === "summary" || toolName.startsWith("goal_");
+    return toolName === "summary";
 }
 
 export function isUiEnabledForTool(
