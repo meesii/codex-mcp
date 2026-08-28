@@ -520,7 +520,7 @@ codex-mcp setup
 | `codex-mcp logs -f` | 持续跟随运行日志 |
 | `codex-mcp setup` | 首次设置或管理现有配置 |
 | `codex-mcp doctor` | 只读检查安装、配置和依赖 |
-| `codex-mcp doctor --fix` | 创建缺失本机目录、清理失效 daemon 状态等安全修复 |
+| `codex-mcp doctor --fix` | 补齐文件搜索组件、创建本机目录、清理失效 daemon 状态等安全修复 |
 | `codex-mcp auth` | 修改 ChatGPT 连接密码 |
 | `codex-mcp update` | 更新到最新版本 |
 | `codex-mcp tunnel` | 重新配置公网连接（兼容快捷入口） |
@@ -647,6 +647,12 @@ codex-mcp doctor
 - 外部能力设置
 
 这是排查问题时最先应该运行的命令。
+
+如果文件搜索组件缺失，可以自动恢复：
+
+```bash
+codex-mcp doctor --fix
+```
 
 ---
 

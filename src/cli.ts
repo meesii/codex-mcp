@@ -35,6 +35,8 @@ import {
 import { configurePublicAccess } from "./tunnel/public-access-manager.js";
 import { ensureUserConfigDirs, loadUserConfig } from "./config/user-config.js";
 import { runSelfUpdate } from "./doctor/update.js";
+import { findRipgrep } from "./lib/search/ripgrep.js";
+import { ensureManagedTool } from "./managed-tools/install.js";
 import { randomBytes } from "node:crypto";
 import {
     cleanStaleDaemonState,
@@ -689,6 +691,16 @@ async function printDoctorReport(fix: boolean): Promise<void> {
         printSuccess("已确保 ~/.codex-mcp 和日志目录存在。");
         if (removedStaleDaemon) {
             printSuccess("已清理失效的 daemon 状态文件。");
+        }
+        if (!(await findRipgrep())) {
+            printInfo("正在恢复文件搜索组件…");
+            try {
+                const installed = await ensureManagedTool("ripgrep");
+                printSuccess(`已安装文件搜索组件：${installed.path}`);
+            } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
+                printWarning(`文件搜索组件自动恢复失败：${detail}`);
+            }
         }
         printInfo("--fix 不会修改 Cloudflare DNS、OAuth 身份、连接密码或项目文件。");
     }

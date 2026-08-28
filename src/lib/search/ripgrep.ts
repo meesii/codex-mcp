@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { getManagedToolPath } from "../../managed-tools/paths.js";
 import { terminateChildProcess } from "../process/tree.js";
 
-let cachedRgPath: string | null | undefined;
+let cachedRgPath: string | undefined;
 
 export async function findRipgrep(): Promise<string | null> {
     if (cachedRgPath !== undefined) {
@@ -43,7 +43,6 @@ export async function findRipgrep(): Promise<string | null> {
         }
     }
 
-    cachedRgPath = null;
     return null;
 }
 
