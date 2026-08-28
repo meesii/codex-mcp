@@ -311,7 +311,7 @@ async function checkRipgrep(): Promise<DoctorCheck> {
         return {
             label: "文件搜索",
             level: "error",
-            detail: "文件搜索组件缺失；重新运行安装脚本可以自动恢复",
+            detail: "文件搜索组件缺失；运行 `codex-mcp doctor --fix` 可以自动恢复",
         };
     }
     try {
