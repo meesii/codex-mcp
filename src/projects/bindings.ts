@@ -77,6 +77,20 @@ export class BindingStore {
         return this.bindings.filter((item) => item.projectId === projectId).length;
     }
 
+    /** Remove a known snapshot of owner keys from one project without touching newer bindings. */
+    removeFromProject(projectId: string, ownerKeys: Iterable<string>): number {
+        const targets = new Set(ownerKeys);
+        const remaining = this.bindings.filter(
+            (item) => item.projectId !== projectId || !targets.has(item.ownerKey),
+        );
+        const removed = this.bindings.length - remaining.length;
+        if (removed > 0) {
+            this.bindings = remaining;
+            this.persist();
+        }
+        return removed;
+    }
+
     /** Drop every binding that points at a deactivated project. */
     invalidateProject(projectId: string): number {
         const remaining = this.bindings.filter((item) => item.projectId !== projectId);
