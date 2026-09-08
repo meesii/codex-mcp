@@ -18,6 +18,7 @@ import {
     type DaemonState,
     type RegisteredProject,
     type RuntimeIntent,
+    type SessionBinding,
 } from "./state.js";
 
 const DAEMON_START_TIMEOUT_MS = 300_000;
@@ -66,6 +67,15 @@ export interface ControlDeactivateResponse {
     projects: RegisteredProject[];
 }
 
+export interface ControlProjectBindingsResponse {
+    ok: boolean;
+    bindings: SessionBinding[];
+}
+
+export interface ControlCleanupBindingsResponse extends ControlProjectBindingsResponse {
+    removed: number;
+}
+
 /**
  * Loopback-only client for the daemon control API. The control token lives in
  * daemon.json; the endpoint only accepts loopback clients that present it.
@@ -96,6 +106,27 @@ export class DaemonControlClient {
             method: "DELETE",
         });
         return data as ControlDeactivateResponse;
+    }
+
+    async listProjectBindings(id: string): Promise<SessionBinding[]> {
+        const data = await this.request(
+            `/daemon/projects/${encodeURIComponent(id)}/bindings`,
+        );
+        return (data as ControlProjectBindingsResponse).bindings;
+    }
+
+    async cleanupProjectBindings(
+        id: string,
+        removeOwnerKeys: string[],
+    ): Promise<ControlCleanupBindingsResponse> {
+        const data = await this.request(
+            `/daemon/projects/${encodeURIComponent(id)}/bindings/cleanup`,
+            {
+                method: "POST",
+                body: JSON.stringify({ removeOwnerKeys }),
+            },
+        );
+        return data as ControlCleanupBindingsResponse;
     }
 
     async shutdown(): Promise<void> {

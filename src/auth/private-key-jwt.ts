@@ -165,6 +165,7 @@ export class PrivateKeyJwtVerifier {
             timeoutMs: 120_000,
             maxRedirects: 2,
             headers: { Accept: "application/json" },
+            proxyByHostname: url.hostname.toLowerCase() === "chatgpt.com",
         });
         if (response.status !== 200) {
             throw new Error(`jwks_uri returned HTTP ${response.status}`);

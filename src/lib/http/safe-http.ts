@@ -69,6 +69,14 @@ export interface SafeHttpOptions {
     allowPrivate?: boolean;
     /** Disable automatic HTTP(S) proxy discovery for a specific trusted call. */
     useProxy?: boolean;
+    /**
+     * Preserve the original hostname when connecting through a proxy.
+     *
+     * The hostname is still resolved through DNS-over-HTTPS first and all returned
+     * addresses must be public. Use this only for explicitly trusted hosts whose
+     * proxy routing depends on the original hostname.
+     */
+    proxyByHostname?: boolean;
     /** Optional caller cancellation; timeout is only the final hang guard. */
     signal?: AbortSignal;
 }
@@ -113,7 +121,9 @@ const proxyAgents = new Map<string, Agent>();
  * When a proxy is used, public DNS resolution is independently checked through
  * DNS-over-HTTPS and the proxied destination is pinned to one of those validated public
  * IPs. TLS SNI and certificate validation still use the original hostname. This keeps
- * proxy support from weakening the public-target SSRF / DNS-rebinding boundary.
+ * proxy support from weakening the public-target SSRF / DNS-rebinding boundary. Explicitly
+ * trusted callers may preserve the original proxy hostname after the same public-DNS check
+ * when a domain-aware proxy requires it for routing.
  */
 export async function safeHttpGet(
     input: string | URL,
@@ -226,7 +236,7 @@ async function requestThroughProxy(
         throw new Error(`No public addresses found for ${url.hostname}`);
     }
 
-    const attempts = [...targets, ...targets];
+    const attempts = options.proxyByHostname ? [targets[0]] : [...targets, ...targets];
     let lastError: unknown;
     for (const target of attempts) {
         remainingTimeoutMs(deadline);
@@ -234,7 +244,7 @@ async function requestThroughProxy(
         const agent = getProxyAgent(proxy, url.protocol);
         const common = {
             protocol: url.protocol,
-            hostname: target.address,
+            hostname: options.proxyByHostname ? url.hostname : target.address,
             port,
             path: `${url.pathname}${url.search}`,
             method: options.method,
@@ -320,7 +330,16 @@ function finishRequest(
                 }
                 settled = true;
                 cleanup();
-                void requestOne(next, options, redirectsRemaining - 1, deadline).then(resolve, reject);
+                const nextOptions =
+                    options.proxyByHostname &&
+                    normalizeHostname(next.hostname).toLowerCase() !==
+                        normalizeHostname(url.hostname).toLowerCase()
+                        ? { ...options, proxyByHostname: false }
+                        : options;
+                void requestOne(next, nextOptions, redirectsRemaining - 1, deadline).then(
+                    resolve,
+                    reject,
+                );
                 return;
             }
 

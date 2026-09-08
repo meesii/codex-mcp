@@ -451,6 +451,54 @@ function registerDaemonControlRoutes(
         }
     });
 
+    app.get("/daemon/projects/:id/bindings", (req, res) => {
+        const id = decodeURIComponent(req.params.id);
+        if (!daemon.registry.getById(id)) {
+            res.status(404).json({ error: `project not found: ${id}` });
+            return;
+        }
+        const bindings = daemon.bindings
+            .list()
+            .filter((item) => item.projectId === id);
+        res.json({ ok: true, bindings });
+    });
+
+    app.post("/daemon/projects/:id/bindings/cleanup", (req, res) => {
+        try {
+            const id = decodeURIComponent(req.params.id);
+            if (!daemon.registry.getById(id)) {
+                res.status(404).json({ error: `project not found: ${id}` });
+                return;
+            }
+            const body = (req.body ?? {}) as { removeOwnerKeys?: unknown };
+            if (
+                !Array.isArray(body.removeOwnerKeys) ||
+                body.removeOwnerKeys.length > 1_024 ||
+                body.removeOwnerKeys.some(
+                    (item) => typeof item !== "string" || item.length === 0 || item.length > 2_048,
+                )
+            ) {
+                res.status(400).json({ error: "removeOwnerKeys must be an array of owner keys" });
+                return;
+            }
+            const removed = daemon.bindings.removeFromProject(
+                id,
+                body.removeOwnerKeys as string[],
+            );
+            const bindings = daemon.bindings
+                .list()
+                .filter((item) => item.projectId === id);
+            logMcpEvent("daemon_project_bindings_cleaned", {
+                project: id,
+                removed,
+                remaining: bindings.length,
+            });
+            res.json({ ok: true, removed, bindings });
+        } catch (error) {
+            res.status(400).json({ error: errorMessage(error) });
+        }
+    });
+
     app.delete("/daemon/projects/:id", async (req, res) => {
         try {
             const id = decodeURIComponent(req.params.id);

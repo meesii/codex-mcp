@@ -516,6 +516,7 @@ codex-mcp setup
 | `codex-mcp project add [目录]` | 注册项目，默认当前目录 |
 | `codex-mcp project remove [项目]` | 停用项目，默认当前目录 |
 | `codex-mcp project info [项目]` | 查看项目详情 |
+| `codex-mcp bindings clean [项目]` | 交互清理会话绑定，空格选中要保留的会话 |
 | `codex-mcp logs [--lines N]` | 查看最近运行日志 |
 | `codex-mcp logs -f` | 持续跟随运行日志 |
 | `codex-mcp setup` | 首次设置或管理现有配置 |

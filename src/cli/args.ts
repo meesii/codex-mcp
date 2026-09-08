@@ -12,10 +12,12 @@ export type CliCommand =
     | "restart"
     | "logs"
     | "project"
+    | "bindings"
     | "exit"
     | "daemon";
 
 export type ProjectAction = "list" | "add" | "remove" | "info";
+export type BindingsAction = "clean";
 
 type FlagName =
     | "local"
@@ -32,6 +34,7 @@ type FlagName =
 export interface CliFlags {
     command: CliCommand;
     projectAction?: ProjectAction;
+    bindingsAction?: BindingsAction;
     target?: string;
     local: boolean;
     noTunnel: boolean;
@@ -68,6 +71,7 @@ const ALLOWED_FLAGS: Record<string, ReadonlySet<FlagName>> = {
     "project:add": new Set(["local", "noTunnel", "tunnelLogs"]),
     "project:remove": new Set(),
     "project:info": new Set(),
+    "bindings:clean": new Set(),
 };
 
 const FLAG_LABELS: Record<FlagName, string> = {
@@ -195,15 +199,35 @@ export function parseCliArgs(argv: string[]): CliFlags {
     if (command === "project") {
         const actionToken = remaining[0] ?? "list";
         if (!isProjectAction(actionToken)) {
-            throw new Error(`不认识这个 project 子命令：${actionToken}。可用：list、add、remove、info`);
+            throw new Error(
+                `不认识这个 project 子命令：${actionToken}。可用：list、add、remove、info`,
+            );
+        } else {
+            projectAction = actionToken;
+            target = remaining[1];
+            if (remaining.length > 2) {
+                throw new Error(`这里不需要这些内容：${remaining.slice(2).join(" ")}`);
+            }
         }
-        projectAction = actionToken;
+    } else if (command !== "bindings" && remaining.length > 0) {
+        throw new Error(`这里不需要这些内容：${remaining.join(" ")}`);
+    }
+
+    let bindingsAction: BindingsAction | undefined;
+    if (command === "bindings") {
+        const actionToken = remaining[0];
+        if (actionToken !== "clean") {
+            throw new Error(
+                actionToken
+                    ? `不认识这个 bindings 子命令：${actionToken}。可用：clean`
+                    : "`codex-mcp bindings` 后面需要子命令：clean",
+            );
+        }
+        bindingsAction = "clean";
         target = remaining[1];
         if (remaining.length > 2) {
             throw new Error(`这里不需要这些内容：${remaining.slice(2).join(" ")}`);
         }
-    } else if (remaining.length > 0) {
-        throw new Error(`这里不需要这些内容：${remaining.join(" ")}`);
     }
 
     if (requestedHelp) {
@@ -231,18 +255,25 @@ export function parseCliArgs(argv: string[]): CliFlags {
         }
     }
 
-    const key = command === "project" ? `project:${projectAction}` : command;
+    const key = command === "project"
+        ? `project:${projectAction}`
+        : command === "bindings"
+          ? `bindings:${bindingsAction}`
+          : command;
     const allowed = ALLOWED_FLAGS[key];
     if (!allowed) throw new Error(`内部错误：没有定义命令 ${key} 的选项范围`);
     for (const flag of seen) {
         if (!allowed.has(flag)) {
-            throw new Error(`${FLAG_LABELS[flag]} 不适用于 \`${displayCommand(command, projectAction)}\``);
+            throw new Error(
+                `${FLAG_LABELS[flag]} 不适用于 \`${displayCommand(command, projectAction ?? bindingsAction)}\``,
+            );
         }
     }
 
     return {
         command,
         ...(projectAction ? { projectAction } : {}),
+        ...(bindingsAction ? { bindingsAction } : {}),
         ...(target ? { target } : {}),
         local,
         noTunnel,
@@ -274,6 +305,7 @@ function resolveCommand(token: string | undefined): CliCommand {
         token === "restart" ||
         token === "logs" ||
         token === "project" ||
+        token === "bindings" ||
         token === "exit" ||
         token === "daemon"
     ) {
@@ -286,7 +318,7 @@ function isProjectAction(value: string): value is ProjectAction {
     return value === "list" || value === "add" || value === "remove" || value === "info";
 }
 
-function displayCommand(command: CliCommand, action?: ProjectAction): string {
+function displayCommand(command: CliCommand, action?: ProjectAction | BindingsAction): string {
     return action ? `codex-mcp ${command} ${action}` : `codex-mcp ${command}`;
 }
 

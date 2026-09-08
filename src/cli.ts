@@ -64,7 +64,7 @@ import {
     runStatus,
     runStop,
 } from "./cli/daemon-commands.js";
-import { runExit, runProjectCommand } from "./cli/project-commands.js";
+import { runBindingsCommand, runExit, runProjectCommand } from "./cli/project-commands.js";
 
 /** Print CLI usage. */
 function printUsage(): void {
@@ -80,6 +80,7 @@ function printUsage(): void {
             "codex-mcp project add [目录]      注册项目（默认当前目录）",
             "codex-mcp project remove [项目]   停用项目（默认当前目录）",
             "codex-mcp project info [项目]     查看项目详情",
+            "codex-mcp bindings clean [项目]     清理会话绑定（默认当前目录）",
             "codex-mcp logs [--lines N]        查看最近运行日志",
             "codex-mcp logs -f                 持续跟随运行日志",
             "codex-mcp setup                   设置 / 管理公网连接",
@@ -234,6 +235,11 @@ async function main(argv: string[]): Promise<void> {
 
     if (flags.command === "project") {
         await runProjectCommand(flags);
+        return;
+    }
+
+    if (flags.command === "bindings") {
+        await runBindingsCommand(flags);
         return;
     }
 
