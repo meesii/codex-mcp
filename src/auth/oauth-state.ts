@@ -82,9 +82,13 @@ export class OAuthStateStore {
     private constructor(
         private state: PersistedOAuthState,
         private readonly path: string,
+        private readonly writeState: (path: string, value: unknown) => Promise<void>,
     ) {}
 
-    static async open(path: string = getOAuthStatePath()): Promise<OAuthStateStore> {
+    static async open(
+        path: string = getOAuthStatePath(),
+        options: { writeState?: (path: string, value: unknown) => Promise<void> } = {},
+    ): Promise<OAuthStateStore> {
         const fallback: PersistedOAuthState = {
             version: STATE_VERSION,
             clients: {},
@@ -98,7 +102,7 @@ export class OAuthStateStore {
         if (!isPersistedOAuthState(state)) {
             throw new Error(`Unsupported OAuth state version in ${path}`);
         }
-        const store = new OAuthStateStore(state, path);
+        const store = new OAuthStateStore(state, path, options.writeState ?? writePrivateJson);
         await store.cleanup();
         return store;
     }
@@ -443,7 +447,7 @@ export class OAuthStateStore {
     }
 
     private async persist(state: PersistedOAuthState): Promise<void> {
-        await writePrivateJson(this.path, state);
+        await this.writeState(this.path, state);
         this.state = state;
     }
 }

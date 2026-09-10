@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, renameSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ const home = mkdtempSync(join(tmpdir(), "codex-mcp-oauth-"));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 const { OAuthStateStore } = await import("../dist/auth/oauth-state.js");
+const { writePrivateJson } = await import("../dist/auth/storage.js");
 const { PrivateKeyJwtVerifier } = await import("../dist/auth/private-key-jwt.js");
 const resource = new URL("https://mcp.example.com/mcp");
 const issuer = new URL("/", resource);
@@ -18,38 +19,36 @@ const grant = { clientId: client.client_id, redirectUri: client.redirect_uris[0]
 const exchange = code => ({ ...grant, code });
 
 function fixture() {
-    const path = join(mkdtempSync(join(home, "state-")), "oauth.json");
-    return { path, block() {
-        renameSync(path, `${path}.saved`);
-        mkdirSync(path);
-        return () => { rmSync(path, { recursive: true, force: true }); renameSync(`${path}.saved`, path); };
-    } };
+    return { path: join(mkdtempSync(join(home, "state-")), "oauth.json") };
 }
 
 test("OAuth writes commit before publishing; failed registration and exchange remain retryable", async () => {
     const files = fixture();
-    const store = await OAuthStateStore.open(files.path);
-    let restore = files.block();
-    try {
-        await assert.rejects(store.registerClient(client, issuer.href));
-        assert.equal(store.getClient(client.client_id, issuer.href), undefined);
-    } finally { restore(); }
+    let failNextWrite = false;
+    const store = await OAuthStateStore.open(files.path, {
+        writeState: async (path, value) => {
+            if (failNextWrite) {
+                failNextWrite = false;
+                throw new Error("disk full");
+            }
+            await writePrivateJson(path, value);
+        },
+    });
+    failNextWrite = true;
+    await assert.rejects(store.registerClient(client, issuer.href), /disk full/);
+    assert.equal(store.getClient(client.client_id, issuer.href), undefined);
     await store.registerClient(client, issuer.href);
     const code = await store.createAuthorizationCode(grant);
-    restore = files.block();
-    try {
-        await assert.rejects(store.exchangeAuthorizationCode(exchange(code)));
-        assert.equal(await store.challengeForAuthorizationCode(client.client_id, code), grant.codeChallenge);
-    } finally { restore(); }
+    failNextWrite = true;
+    await assert.rejects(store.exchangeAuthorizationCode(exchange(code)), /disk full/);
+    assert.equal(await store.challengeForAuthorizationCode(client.client_id, code), grant.codeChallenge);
     const tokens = await store.exchangeAuthorizationCode(exchange(code));
     const reopened = await OAuthStateStore.open(files.path);
     assert.equal((await reopened.verifyAccessToken(tokens.access_token, grant.credentialGeneration)).clientId, client.client_id);
     assert.equal(readFileSync(files.path, "utf8").includes(tokens.access_token), false);
     assert.equal(readFileSync(files.path, "utf8").includes(tokens.refresh_token), false);
-    restore = files.block();
-    try {
-        await assert.rejects(store.exchangeRefreshToken({ ...grant, refreshToken: tokens.refresh_token }));
-    } finally { restore(); }
+    failNextWrite = true;
+    await assert.rejects(store.exchangeRefreshToken({ ...grant, refreshToken: tokens.refresh_token }), /disk full/);
     await store.exchangeRefreshToken({ ...grant, refreshToken: tokens.refresh_token });
 });
 
