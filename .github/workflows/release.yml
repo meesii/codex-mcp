@@ -178,4 +178,4 @@ jobs:
             echo "$PACKAGE_NAME@$PACKAGE_VERSION 已经在 npm 上，跳过发布"
             exit 0
           fi
-          npm publish release/codex-mcp.tgz --access public --provenance
+          npm publish ./release/codex-mcp.tgz --access public --provenance
