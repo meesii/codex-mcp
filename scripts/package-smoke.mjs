@@ -52,6 +52,7 @@ function run(file, args, options = {}) {
             encoding: "utf8",
             stdio: "pipe",
             timeout: options.timeout ?? 180_000,
+            shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(file),
         });
     } catch (error) {
         const output = `${error.stdout ?? ""}${error.stderr ?? ""}`;
