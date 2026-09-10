@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, renameSync, rmdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ function fixture() {
     return { path, block() {
         renameSync(path, `${path}.saved`);
         mkdirSync(path);
-        return () => { rmdirSync(path); renameSync(`${path}.saved`, path); };
+        return () => { rmSync(path, { recursive: true, force: true }); renameSync(`${path}.saved`, path); };
     } };
 }
 

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const root = new URL("..", import.meta.url);
 const cli = new URL("dist/cli.js", root);
+const packageVersion = JSON.parse(readFileSync(fileURLToPath(new URL("package.json", root)), "utf8")).version;
 
 function run(args, env = mkdtempSync(join(tmpdir(), "codex-mcp-cli-")), cwd = process.cwd(), extraEnv = {}) {
     try {
@@ -81,7 +82,7 @@ test("read-only commands work from a clean home", () => {
     const home = mkdtempSync(join(tmpdir(), "codex-mcp-cli-"));
     const version = run(["version"], home);
     assert.equal(version.code, 0);
-    assert.match(version.output.trim(), /^1\.0\.0$/);
+    assert.equal(version.output.trim(), packageVersion);
 
     const status = run(["status", "--json"], home);
     assert.equal(status.code, 0);
