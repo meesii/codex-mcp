@@ -25,6 +25,7 @@ const TUNNEL_ID_RE =
 export async function ensureLogin(
     bin: string,
     force: boolean,
+    options: { signal?: AbortSignal; onOutput?: (text: string) => void } = {},
 ): Promise<CloudflareOriginToken> {
     if (!force && hasManagedCloudflareLogin()) {
         printSuccess("已登录 Cloudflare，无需重复登录。");
@@ -41,11 +42,22 @@ export async function ensureLogin(
     const candidateCert = join(candidateHome, ".cloudflared", "cert.pem");
     try {
         printInfo("正在打开浏览器，请登录 Cloudflare 并完成授权…");
-        const code = await runCloudflaredInherit(
-            bin,
-            cloudflaredManagementArgs("login"),
-            { managedHome: candidateHome },
-        );
+        const code = options.signal || options.onOutput
+            ? (await runCloudflared(
+                  bin,
+                  cloudflaredManagementArgs("login"),
+                  {
+                      managedHome: candidateHome,
+                      allowFailure: true,
+                      signal: options.signal,
+                      onOutput: options.onOutput,
+                  },
+              )).code ?? 1
+            : await runCloudflaredInherit(
+                  bin,
+                  cloudflaredManagementArgs("login"),
+                  { managedHome: candidateHome },
+              );
         if (code !== 0 || !existsSync(candidateCert)) {
             throw new Error("Cloudflare 登录没有完成；旧登录保持不变");
         }
@@ -194,39 +206,16 @@ async function findTunnelIdByName(
         cloudflaredManagementArgs("list", "--output", "json"),
         { allowFailure: true, timeoutMs: 180_000 },
     );
-    if (jsonAttempt.code === 0 && jsonAttempt.stdout.trim()) {
-        try {
-            const rows = JSON.parse(jsonAttempt.stdout) as Array<{ id?: string; name?: string }>;
-            const hit = rows.find((row) => row.name === tunnelName);
-            return hit?.id;
-        } catch {
-            // Fall through to the human-readable table for older cloudflared.
-        }
+    if (jsonAttempt.code !== 0) {
+        throw new Error((jsonAttempt.stderr || jsonAttempt.stdout).trim() || `无法读取 Cloudflare Tunnel 列表（退出代码 ${jsonAttempt.code}）`);
     }
-    const list = await runCloudflared(bin, cloudflaredManagementArgs("list"), {
-        allowFailure: true,
-        timeoutMs: 180_000,
-    });
-    if (list.code !== 0) {
-        throw new Error(
-            (list.stderr || list.stdout).trim() ||
-            `无法读取 Cloudflare Tunnel 列表（退出代码 ${list.code}）`,
-        );
+    const rows: unknown = JSON.parse(jsonAttempt.stdout);
+    if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.id !== "string" || typeof row.name !== "string")) {
+        throw new Error("cloudflared 返回了无效的 Tunnel JSON 列表；请更新 cloudflared");
     }
-    return findTunnelIdInListText(`${list.stdout}\n${list.stderr}`, tunnelName);
-}
-
-function findTunnelIdInListText(
-    text: string,
-    tunnelName: string,
-): string | undefined {
-    const exactName = new RegExp(`(?:^|\\s)${escapeRegExp(tunnelName)}(?:\\s|$)`);
-    for (const line of text.split(/\r?\n/)) {
-        if (!exactName.test(line)) continue;
-        const id = line.match(TUNNEL_ID_RE)?.[0];
-        if (id) return id;
-    }
-    return undefined;
+    const matches = rows.filter((row) => row.name === tunnelName);
+    if (matches.length > 1) throw new Error(`存在多个同名 Tunnel：${tunnelName}`);
+    return matches[0]?.id;
 }
 
 function cloudflaredManagementArgs(...args: string[]): string[] {
@@ -235,10 +224,6 @@ function cloudflaredManagementArgs(...args: string[]): string[] {
         command.push("--origincert", getCloudflareOriginCertPath());
     }
     return [...command, ...args];
-}
-
-function escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function readableError(error: unknown): string {

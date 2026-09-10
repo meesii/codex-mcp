@@ -1,9 +1,7 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expandHomePath } from "../config/loader.js";
 import { normalizeHostname } from "../config/user-config.js";
 import { safeHttpGet } from "../lib/http/safe-http.js";
-import { copyPrivateFileAtomic } from "../lib/fs/atomic-file.js";
 import { normalizeTunnelId } from "./id.js";
 import {
     getCredentialsPath,
@@ -69,14 +67,6 @@ export function readManagedCloudflareOriginToken(
     return parseCloudflareOriginToken(readFileSync(certPath, "utf8"));
 }
 
-export function getLegacyCloudflareOriginCertPath(): string {
-    return expandHomePath("~/.cloudflared/cert.pem");
-}
-
-export function getLegacyTunnelCredentialsPath(tunnelId: string): string {
-    return expandHomePath(`~/.cloudflared/${normalizeTunnelId(tunnelId)}.json`);
-}
-
 /** Parse only non-secret identity fields while proving the credential is runnable. */
 export function readTunnelCredentialIdentity(
     path: string,
@@ -100,66 +90,6 @@ export function readTunnelCredentialIdentity(
         accountId,
         tunnelId: normalizeTunnelId(record.TunnelID, "Tunnel 凭据中的 TunnelID"),
     };
-}
-
-export interface CloudflareStateMigrationResult {
-    certMigrated: boolean;
-    credentialsMigrated: boolean;
-}
-
-export function migrateLegacyCloudflareState(
-    tunnelId?: string,
-): CloudflareStateMigrationResult {
-    const result: CloudflareStateMigrationResult = {
-        certMigrated: false,
-        credentialsMigrated: false,
-    };
-    if (!tunnelId) return result;
-
-    let normalizedTunnelId: string;
-    try {
-        normalizedTunnelId = normalizeTunnelId(tunnelId);
-    } catch {
-        return result;
-    }
-
-    const managedCertPath = getCloudflareOriginCertPath();
-    const legacyCertPath = getLegacyCloudflareOriginCertPath();
-    const legacyCredentialsPath = getLegacyTunnelCredentialsPath(normalizedTunnelId);
-    const managedCredentialsPath = getCredentialsPath(normalizedTunnelId);
-
-    const certSource = existsSync(managedCertPath)
-        ? managedCertPath
-        : existsSync(legacyCertPath)
-          ? legacyCertPath
-          : undefined;
-    if (!certSource || !existsSync(legacyCredentialsPath)) return result;
-
-    let accountID: string;
-    let credentials: CloudflareTunnelCredentialIdentity;
-    try {
-        accountID = parseCloudflareOriginToken(readFileSync(certSource, "utf8")).accountID;
-        credentials = readTunnelCredentialIdentity(legacyCredentialsPath);
-    } catch {
-        return result;
-    }
-
-    if (credentials.accountId !== accountID || credentials.tunnelId !== normalizedTunnelId) return result;
-
-    mkdirSync(getManagedCloudflareDir(), { recursive: true });
-    if (!existsSync(managedCertPath) && certSource === legacyCertPath) {
-        copyPrivateFile(legacyCertPath, managedCertPath);
-        result.certMigrated = true;
-    }
-    if (!existsSync(managedCredentialsPath)) {
-        copyPrivateFile(legacyCredentialsPath, managedCredentialsPath);
-        result.credentialsMigrated = true;
-    }
-    return result;
-}
-
-function copyPrivateFile(source: string, destination: string): void {
-    copyPrivateFileAtomic(source, destination);
 }
 
 export function parseCloudflareOriginToken(pem: string): CloudflareOriginToken {

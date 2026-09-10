@@ -9,6 +9,7 @@ import {
     type RegisteredProject,
 } from "../daemon/state.js";
 import { writeRuntimeLog } from "../lib/runtime-log.js";
+import { AsyncMutex } from "../lib/util/mutex.js";
 
 /**
  * In-memory registry of registered projects backed by `~/.codex-mcp/projects.json`.
@@ -21,6 +22,7 @@ import { writeRuntimeLog } from "../lib/runtime-log.js";
 export class ProjectRegistry {
     private projects: RegisteredProject[];
     private readonly save: (projects: RegisteredProject[]) => Promise<void>;
+    private readonly mutex = new AsyncMutex();
 
     constructor(options: {
         projects?: RegisteredProject[];
@@ -31,93 +33,108 @@ export class ProjectRegistry {
     }
 
     list(): RegisteredProject[] {
-        return [...this.projects];
+        return this.projects.map((item) => ({ ...item }));
     }
 
     listActive(): RegisteredProject[] {
-        return this.projects.filter((item) => item.active);
+        return this.projects.filter((item) => item.active).map((item) => ({ ...item }));
     }
 
     getById(id: string): RegisteredProject | undefined {
-        return this.projects.find((item) => item.id === id);
+        const project = this.projects.find((item) => item.id === id);
+        return project ? { ...project } : undefined;
     }
 
     getActiveById(id: string): RegisteredProject | undefined {
-        return this.projects.find((item) => item.id === id && item.active);
+        const project = this.projects.find((item) => item.id === id && item.active);
+        return project ? { ...project } : undefined;
     }
 
     getByPath(path: string): RegisteredProject | undefined {
-        return this.projects.find((item) => item.path === path);
+        const project = this.projects.find((item) => item.path === path);
+        return project ? { ...project } : undefined;
     }
 
     /** Register or refresh a project. Returns the canonical registered entry. */
-    register(input: { path: string; name?: string }): RegisteredProject {
-        const canonicalPath = canonicalProjectPath(input.path);
-        const now = new Date().toISOString();
-        const existing = this.getByPath(canonicalPath);
+    async register(input: { path: string; name?: string }): Promise<RegisteredProject> {
+        return await this.mutex.runExclusive(async () => {
+            const canonicalPath = canonicalProjectPath(input.path);
+            const now = new Date().toISOString();
+            const existing = this.getByPath(canonicalPath);
 
-        if (existing) {
-            const name = input.name?.trim() || existing.name || detectProjectDisplayName(canonicalPath);
-            const updated: RegisteredProject = {
-                ...existing,
+            if (existing) {
+                const name = input.name?.trim() || existing.name || detectProjectDisplayName(canonicalPath);
+                const updated: RegisteredProject = {
+                    ...existing,
+                    name,
+                    active: true,
+                    lastSeenAt: now,
+                };
+                const nextProjects = this.projects.map((item) =>
+                    item.path === canonicalPath ? updated : item,
+                );
+                await this.persist(nextProjects);
+                this.projects = nextProjects;
+                return { ...updated };
+            }
+
+            const name = input.name?.trim() || detectProjectDisplayName(canonicalPath);
+            const id = deriveProjectId(name, canonicalPath);
+            const collision = this.projects.find((item) => item.id === id && item.path !== canonicalPath);
+            if (collision) {
+                throw new Error(
+                    `项目 ID 冲突：${canonicalPath} 与 ${collision.path} 生成了相同 ID ${id}；已拒绝注册以避免跨项目误路由`,
+                );
+            }
+            const entry: RegisteredProject = {
+                id,
                 name,
+                path: canonicalPath,
                 active: true,
+                addedAt: now,
                 lastSeenAt: now,
             };
-            this.projects = this.projects.map((item) =>
-                item.path === canonicalPath ? updated : item,
-            );
-            void this.persist();
-            return { ...updated };
-        }
-
-        const name = input.name?.trim() || detectProjectDisplayName(canonicalPath);
-        const entry: RegisteredProject = {
-            id: deriveProjectId(name, canonicalPath),
-            name,
-            path: canonicalPath,
-            active: true,
-            addedAt: now,
-            lastSeenAt: now,
-        };
-        this.projects.push(entry);
-        void this.persist();
-        return { ...entry };
+            const nextProjects = [...this.projects, entry];
+            await this.persist(nextProjects);
+            this.projects = nextProjects;
+            return { ...entry };
+        });
     }
 
-    deactivateById(id: string): RegisteredProject | undefined {
-        const target = this.getById(id);
-        if (!target || !target.active) return undefined;
-        return this.setActive(target, false);
+    async deactivateById(id: string): Promise<RegisteredProject | undefined> {
+        return await this.mutex.runExclusive(async () => {
+            const target = this.getById(id);
+            if (!target || !target.active) return undefined;
+            return await this.setActive(target, false);
+        });
     }
 
-    deactivateByPath(path: string): RegisteredProject | undefined {
-        const canonicalPath = canonicalProjectPath(path);
-        const target = this.getByPath(canonicalPath);
-        if (!target || !target.active) return undefined;
-        return this.setActive(target, false);
+    async deactivateByPath(path: string): Promise<RegisteredProject | undefined> {
+        return await this.mutex.runExclusive(async () => {
+            const canonicalPath = canonicalProjectPath(path);
+            const target = this.getByPath(canonicalPath);
+            if (!target || !target.active) return undefined;
+            return await this.setActive(target, false);
+        });
     }
 
-    deactivateAll(): void {
-        const changed = this.projects.some((item) => item.active);
-        if (!changed) return;
-        this.projects = this.projects.map((item) => ({ ...item, active: false }));
-        void this.persist();
-    }
-
-    private setActive(target: RegisteredProject, active: boolean): RegisteredProject {
+    private async setActive(target: RegisteredProject, active: boolean): Promise<RegisteredProject> {
         const updated = { ...target, active };
-        this.projects = this.projects.map((item) =>
+        const nextProjects = this.projects.map((item) =>
             item.id === target.id ? updated : item,
         );
-        void this.persist();
+        await this.persist(nextProjects);
+        this.projects = nextProjects;
         return { ...updated };
     }
 
-    private persist(): void {
-        this.save(this.projects).catch((error: unknown) => {
+    private async persist(projects: RegisteredProject[]): Promise<void> {
+        try {
+            await this.save(projects);
+        } catch (error: unknown) {
             const detail = error instanceof Error ? error.message : String(error);
             writeRuntimeLog("error", "project_state_save_failed", { error: detail });
-        });
+            throw error;
+        }
     }
 }

@@ -1,3 +1,4 @@
+import { applyTunnelSetup, discardTunnelSetupCandidate } from "./apply-setup.js";
 import { loadUserConfig } from "../config/user-config.js";
 import {
     contactRunningDaemon,
@@ -10,8 +11,6 @@ import {
 import type { RuntimeIntent } from "../daemon/state.js";
 import { printInfo, printWarning } from "../lib/util/terminal.js";
 import {
-    applyTunnelSetup,
-    discardTunnelSetupCandidate,
     ensureTunnelSetup,
     loadCommittedTunnelSetup,
     runTunnelWizard,
@@ -35,9 +34,31 @@ export interface ConfigurePublicAccessResult extends AppliedTunnelSetup {
     daemonRestarted: boolean;
 }
 
+export interface ConfigurePreparedPublicAccessOptions {
+    signal?: AbortSignal;
+    onPhase?: (phase: string) => void;
+    confirmDnsOverwrite?: (domain: string) => Promise<void>;
+}
+
 /** Single owner for interactive public configuration and daemon handoff. */
 export async function configurePublicAccess(
     options: ConfigurePublicAccessOptions,
+): Promise<ConfigurePublicAccessResult> {
+    return await configurePreparedPublicAccess(async ({ host, port }) =>
+        options.forceWizard
+            ? await runTunnelWizard({
+                  forceCloudflareLogin: options.forceCloudflareLogin,
+                  host,
+                  port,
+              })
+            : await ensureTunnelSetup({ host, port }),
+    );
+}
+
+/** Transactional public-access orchestration shared by terminal setup and the local Web Console. */
+export async function configurePreparedPublicAccess(
+    prepareCandidate: (context: { host: string; port: number }) => Promise<TunnelSetupResult>,
+    options: ConfigurePreparedPublicAccessOptions = {},
 ): Promise<ConfigurePublicAccessResult> {
     return await withDaemonLifecycleLock(async () => {
         const current = loadUserConfig();
@@ -46,9 +67,11 @@ export async function configurePublicAccess(
         const initialDaemon = await contactRunningDaemon();
         let previousIntent = initialDaemon?.state.runtimeIntent;
 
+        options.signal?.throwIfAborted();
+        options.onPhase?.("本机端口预检");
         // If no supported daemon owns the origin port, reject an unknown port
         // conflict before creating or changing any Cloudflare candidate resource.
-        // A healthy daemon stays online while the interactive candidate is prepared.
+        // A healthy daemon stays online while the candidate is prepared.
         if (!initialDaemon) {
             await assertSetupPortAvailable(host, port);
         }
@@ -59,13 +82,9 @@ export async function configurePublicAccess(
         let daemonStopped = false;
         let committed = false;
         try {
-            candidate = options.forceWizard
-                ? await runTunnelWizard({
-                      forceCloudflareLogin: options.forceCloudflareLogin,
-                      host,
-                      port,
-                  })
-                : await ensureTunnelSetup({ host, port });
+            options.onPhase?.("准备公网候选配置");
+            candidate = await prepareCandidate({ host, port });
+            options.signal?.throwIfAborted();
 
             const daemon = await contactRunningDaemon();
             if (daemon) {
@@ -80,15 +99,20 @@ export async function configurePublicAccess(
             }
 
             applyStarted = true;
-            const applied = await applyTunnelSetup(candidate);
+            const applied = await applyTunnelSetup(candidate, {}, {
+                signal: options.signal,
+                onPhase: options.onPhase,
+                confirmDnsOverwrite: options.confirmDnsOverwrite,
+            });
             committed = true;
             if (previousIntent) {
                 try {
+                    options.onPhase?.("恢复后台服务");
                     await restartAfterSetup(previousIntent);
                 } catch (restartError) {
                     throw new Error(
                         `公网配置已经提交并验证成功，但后台服务恢复失败：${readableError(restartError)}。` +
-                        "请运行 `codex-mcp status` 和 `codex-mcp doctor` 检查，然后运行 `codex-mcp` 重新启动。",
+                        "请运行 `codex-mcp status` 和 `codex-mcp doctor` 检查，然后运行 `codex-mcp start` 重新启动。",
                     );
                 }
             }
@@ -144,7 +168,7 @@ export async function checkPublicAccess(): Promise<SetupPublicVerificationResult
     if (portState === "occupied") {
         throw new Error(`本机端口 ${port} 已被其它程序占用，无法检查公网连接`);
     }
-    return await verifySetupPublicRoute(committed, host, port, { totalTimeoutMs: 300_000 });
+    return await verifySetupPublicRoute(committed, host, port, {});
 }
 
 async function restartAfterSetup(intent: RuntimeIntent): Promise<DaemonContact> {

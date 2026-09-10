@@ -33,23 +33,32 @@ export function cloudflaredChildEnv(
 export async function runCloudflared(
     bin: string,
     args: string[],
-    options: { timeoutMs?: number; allowFailure?: boolean } = {},
+    options: {
+        timeoutMs?: number;
+        allowFailure?: boolean;
+        managedHome?: string;
+        signal?: AbortSignal;
+        onOutput?: (text: string) => void;
+    } = {},
 ): Promise<CloudflaredRunResult> {
     const timeoutMs = options.timeoutMs ?? 300_000;
     const result = await new Promise<CloudflaredRunResult>((resolve, reject) => {
         const child = spawn(bin, args, {
             stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true,
-            env: cloudflaredChildEnv(),
+            env: cloudflaredChildEnv(process.env, options.managedHome),
             detached: process.platform !== "win32",
         });
         let stdout = "";
         let stderr = "";
         let timedOut = false;
+        let aborted = false;
+        let abortReason: Error | undefined;
         let settled = false;
 
         const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
             const text = chunk.toString("utf8");
+            options.onOutput?.(text);
             if (target === "stdout") {
                 if (stdout.length < MAX_CAPTURE_CHARS) {
                     stdout += text.slice(0, MAX_CAPTURE_CHARS - stdout.length);
@@ -67,6 +76,20 @@ export async function runCloudflared(
                 reject(error);
             });
         }, timeoutMs);
+        const onAbort = (): void => {
+            aborted = true;
+            abortReason = options.signal?.reason instanceof Error
+                ? options.signal.reason
+                : new Error("cloudflared 操作已取消");
+            void terminateChildProcess(child).catch((error) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                reject(error);
+            });
+        };
+        if (options.signal?.aborted) onAbort();
+        else options.signal?.addEventListener("abort", onAbort, { once: true });
         timer.unref();
 
         child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
@@ -75,12 +98,18 @@ export async function runCloudflared(
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
             reject(error);
         });
         child.on("close", (code) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
+            if (aborted) {
+                reject(abortReason ?? new Error("cloudflared 操作已取消"));
+                return;
+            }
             if (timedOut) {
                 reject(new Error(`cloudflared 运行超时：${args.join(" ")}`));
                 return;

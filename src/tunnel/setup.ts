@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { isIP } from "node:net";
+import { loopbackHost } from "../lib/http/listen-address.js";
 import { homedir, hostname as osHostname } from "node:os";
 import { printInfo, printSuccess, printWarning } from "../lib/util/terminal.js";
 import { ensureManagedTool } from "../managed-tools/install.js";
@@ -10,7 +10,6 @@ import {
     getUserConfigPath,
     loadUserConfig,
     normalizeHostname,
-    saveUserConfig,
     type CloudflarePublicAccessConfig,
     type PublicAccessConfig,
     type UserConfig,
@@ -18,17 +17,7 @@ import {
 import { probeCloudflaredVersion, suggestCloudflaredBin } from "./bin.js";
 import {
     discoverCloudflareZones,
-    migrateLegacyCloudflareState,
 } from "./cloudflare-account.js";
-import {
-    cutoverCloudflareDns,
-    dnsSnapshotReferencesTunnel,
-    dnsSnapshotPointsToTunnel,
-    restoreCloudflareDns,
-    snapshotCloudflareDns,
-    type CloudflareDnsSnapshot,
-} from "./cloudflare-api.js";
-import { requireDnsOverwriteConfirmation } from "./confirm.js";
 import {
     assertCredentialMatches,
     cleanupCreatedTunnel,
@@ -36,16 +25,10 @@ import {
     ensureTunnelCreated,
 } from "./cloudflare-session.js";
 import { askLine, askSelect, askYesNo, canPromptInteractively, withSpinner } from "./prompt.js";
+import type { SetupPublicVerificationResult } from "./setup-verify.js";
 import {
-    assertSetupPortAvailable,
-    verifySetupPublicRoute,
-    type SetupPublicVerificationResult,
-} from "./setup-verify.js";
-import {
-    getCloudflaredConfigPath,
     getCredentialsPath,
     readCloudflaredYml,
-    removeCloudflaredRevision,
     resolveCloudflaredRuntimeConfigPath,
     writeCloudflaredRevision,
 } from "./yml.js";
@@ -75,6 +58,20 @@ export interface TunnelSetupOptions {
     force?: boolean;
     /** Authenticate to Cloudflare again without deleting the old cert first. */
     forceCloudflareLogin?: boolean;
+    host?: string;
+    port?: number;
+}
+
+export interface CloudflareSetupDiscoveryResult {
+    zones: string[];
+    complete: boolean;
+    currentDomain?: string;
+    preferredZone?: string;
+    defaultPrefix: string;
+    tunnelName: string;
+}
+
+export interface ProgrammaticTunnelSetupOptions {
     host?: string;
     port?: number;
 }
@@ -112,118 +109,131 @@ export function isPublicSetupConfigured(userConfig: UserConfig): boolean {
     return userConfig.publicAccess !== undefined;
 }
 
-/** Verify a candidate, compensate remote changes on failure, then commit locally. */
-export async function applyTunnelSetup(candidate: TunnelSetupResult): Promise<AppliedTunnelSetup> {
-    const host = candidate.userConfig.host ?? "127.0.0.1";
-    const port = candidate.userConfig.port ?? 3920;
-    const cancellation = installSetupCancellationGuard();
+/** Build an external-HTTPS candidate without terminal prompts. */
+export function prepareExternalTunnelSetup(
+    domainValue: string,
+    options: ProgrammaticTunnelSetupOptions = {},
+): TunnelSetupResult {
+    const userConfig = loadUserConfig();
+    const host = options.host ?? userConfig.host ?? "127.0.0.1";
+    const port = options.port ?? userConfig.port ?? 3920;
+    const domain = normalizeHostname(domainValue);
+    const publicAccess: PublicAccessConfig = { kind: "external", domain };
+    return {
+        userConfig: { ...userConfig, host, port, publicAccess },
+        publicAccess,
+        domain,
+        useCloudflared: false,
+        ...(userConfig.publicAccess?.kind === "cloudflare" && userConfig.publicAccess.configRevision
+            ? { previousConfigRevision: userConfig.publicAccess.configRevision }
+            : {}),
+    };
+}
 
-    let dnsSnapshot: CloudflareDnsSnapshot | undefined;
-    let committedDns: CloudflareDnsSnapshot | undefined;
-    let dnsChanged = false;
-    let phase = "本机端口预检";
+/** Login when needed and return the selectable Cloudflare zones without exposing credentials. */
+export async function discoverCloudflareSetup(
+    options: ProgrammaticTunnelSetupOptions & {
+        forceLogin?: boolean;
+        signal?: AbortSignal;
+        onLoginOutput?: (text: string) => void;
+    } = {},
+): Promise<CloudflareSetupDiscoveryResult> {
+    const userConfig = loadUserConfig();
+    const previousManaged = userConfig.publicAccess?.kind === "cloudflare" ? userConfig.publicAccess : undefined;
+    const bin = await resolveOrInstallCloudflaredBin(previousManaged?.cloudflaredBin);
+    await ensureLogin(bin, options.forceLogin === true, {
+        signal: options.signal,
+        onOutput: options.onLoginOutput,
+    });
+    const discovery = await discoverCloudflareZones();
+    if (discovery.zones.length === 0) {
+        throw new Error(
+            "Cloudflare 账号里没有可用于公网 hostname 的域名。Named Tunnel 的 <UUID>.cfargotunnel.com 只能作为 CNAME 目标。",
+        );
+    }
+    const currentDomain = userConfig.publicAccess?.domain;
+    const preferredZone = findMatchingZone(currentDomain, discovery.zones) ?? discovery.zones[0];
+    const previousPrefix = preferredZone ? subdomainPrefixForZone(currentDomain, preferredZone) : undefined;
+    return {
+        zones: discovery.zones,
+        complete: discovery.complete,
+        ...(currentDomain ? { currentDomain } : {}),
+        ...(preferredZone ? { preferredZone } : {}),
+        defaultPrefix: previousPrefix && !previousPrefix.includes(".") ? previousPrefix : "codex-mcp",
+        tunnelName: previousManaged?.tunnelName ?? defaultTunnelName(),
+    };
+}
+
+/** Build a managed Cloudflare candidate from explicit Web/CLI selections, without terminal prompts. */
+export async function prepareCloudflareTunnelSetup(
+    input: ProgrammaticTunnelSetupOptions & {
+        zone: string;
+        prefix: string;
+        forceLogin?: boolean;
+    },
+): Promise<TunnelSetupResult> {
+    const userConfig = loadUserConfig();
+    const host = input.host ?? userConfig.host ?? "127.0.0.1";
+    const port = input.port ?? userConfig.port ?? 3920;
+    ensureUserConfigDirs();
+    ensureStarterUserConfig(host, port);
+    const previousManaged = userConfig.publicAccess?.kind === "cloudflare" ? userConfig.publicAccess : undefined;
+    const bin = await resolveOrInstallCloudflaredBin(previousManaged?.cloudflaredBin);
+    const login = await ensureLogin(bin, input.forceLogin === true);
+    const discovery = await discoverCloudflareZones();
+    const zone = normalizeHostname(input.zone);
+    if (!discovery.zones.includes(zone)) {
+        throw new Error(`Cloudflare 账号中没有可用域名：${zone}`);
+    }
+    const zoneId = discovery.zoneIds[zone];
+    if (!zoneId) throw new Error(`无法确定 Cloudflare zone ID：${zone}`);
+    const domain = cloudflareManagedHostname(zone, input.prefix);
+    const preferredTunnelName = previousManaged?.tunnelName ?? defaultTunnelName();
+    const tunnel = await ensureTunnelCreated(
+        bin,
+        preferredTunnelName,
+        login.accountID,
+        previousManaged?.tunnelId,
+    );
     try {
-        await assertSetupPortAvailable(host, port);
-        cancellation.throwIfRequested();
-        phase = candidate.useCloudflared ? "candidate connector 启动" : "公网验证";
-        const verification = await verifySetupPublicRoute(candidate, host, port, {
-            totalTimeoutMs: 300_000,
-            signal: cancellation.signal,
-            beforePublicVerify: candidate.useCloudflared
-                ? async () => {
-                      cancellation.throwIfRequested();
-                      phase = "DNS 快照";
-                      if (!candidate.zoneId || !candidate.tunnelId) {
-                          throw new Error("Cloudflare DNS 配置缺少 zone 或 Tunnel ID");
-                      }
-                      dnsSnapshot = await snapshotCloudflareDns(candidate.zoneId, candidate.domain);
-                      if (
-                          dnsSnapshot.records.length > 0 &&
-                          !dnsSnapshotPointsToTunnel(dnsSnapshot, candidate.tunnelId)
-                      ) {
-                          printWarning(`域名 ${candidate.domain} 已经有其它 DNS 记录，需要确认是否替换。`);
-                          await requireDnsOverwriteConfirmation(candidate.domain);
-                      }
-                      cancellation.throwIfRequested();
-                      phase = "DNS cutover";
-                      const cutover = await withSpinner(
-                          `正在把域名 ${candidate.domain} 连接到已就绪的 Tunnel…`,
-                          "DNS 路由切换完成",
-                          () => cutoverCloudflareDns(dnsSnapshot!, candidate.tunnelId!),
-                      );
-                      dnsChanged = cutover.changed;
-                      committedDns = cutover.committed;
-                      cancellation.throwIfRequested();
-                      phase = "公网验证";
-                  }
-                : undefined,
+        const credentialsFile = getCredentialsPath(tunnel.id);
+        if (!existsSync(credentialsFile)) throw new Error(`没有找到 Tunnel 凭据：${credentialsFile}`);
+        assertCredentialMatches(credentialsFile, tunnel.id, login.accountID);
+        const generated = writeCloudflaredRevision({
+            tunnelId: tunnel.id,
+            credentialsFile,
+            hostname: domain,
+            serviceUrl: localServiceUrl(host, port),
         });
-
-        cancellation.throwIfRequested();
-        phase = "本机配置提交";
-        const committedConfig = saveUserConfig({
-            host,
-            port,
-            publicAccess: candidate.publicAccess,
-        });
-        if (
-            candidate.previousConfigRevision &&
-            candidate.previousConfigRevision !== candidate.configRevision
-        ) {
-            try {
-                removeCloudflaredRevision(candidate.previousConfigRevision);
-            } catch (error) {
-                printWarning(`旧 Tunnel 配置 revision 清理失败，可稍后手动检查：${readableError(error)}`);
-            }
-        }
-        printSuccess(`codex-mcp 配置已原子提交：${getUserConfigPath()}`);
+        const publicAccess: CloudflarePublicAccessConfig = {
+            kind: "cloudflare",
+            domain,
+            cloudflaredBin: bin,
+            tunnelName: tunnel.name,
+            tunnelId: tunnel.id,
+            configRevision: generated.revision,
+            accountId: login.accountID,
+            zoneId,
+        };
         return {
-            result: { ...candidate, userConfig: committedConfig },
-            verification,
+            userConfig: { ...userConfig, host, port, publicAccess },
+            publicAccess,
+            domain,
+            useCloudflared: true,
+            bin,
+            tunnelId: tunnel.id,
+            configPath: generated.path,
+            configRevision: generated.revision,
+            ...(previousManaged?.configRevision ? { previousConfigRevision: previousManaged.configRevision } : {}),
+            zoneId,
+            candidateSession: { createdTunnel: tunnel.created },
         };
     } catch (error) {
-        const recoveryErrors: string[] = [];
-        let mayDeleteCreatedTunnel = !dnsSnapshot ||
-            !candidate.tunnelId ||
-            !dnsSnapshotPointsToTunnel(dnsSnapshot, candidate.tunnelId);
-        if (dnsSnapshot && committedDns && dnsChanged) {
-            mayDeleteCreatedTunnel = false;
-            try {
-                await restoreCloudflareDns(dnsSnapshot, committedDns);
-                mayDeleteCreatedTunnel = true;
-                printWarning("公网验证失败，已恢复修改前的 DNS 记录。");
-            } catch (restoreError) {
-                recoveryErrors.push(`DNS 恢复失败：${readableError(restoreError)}`);
-            }
-        }
-        if (
-            dnsSnapshot &&
-            candidate.candidateSession?.createdTunnel &&
-            candidate.zoneId &&
-            candidate.tunnelId
-        ) {
-            try {
-                const latestDns = await snapshotCloudflareDns(candidate.zoneId, candidate.domain);
-                if (dnsSnapshotReferencesTunnel(latestDns, candidate.tunnelId)) {
-                    mayDeleteCreatedTunnel = false;
-                }
-            } catch (inspectError) {
-                mayDeleteCreatedTunnel = false;
-                recoveryErrors.push(`candidate DNS 引用检查失败：${readableError(inspectError)}`);
-            }
-        }
-        await cleanupFailedCandidate(candidate, recoveryErrors, mayDeleteCreatedTunnel);
-        if (recoveryErrors.length > 0) {
-            throw new Error(
-                `公网配置失败（阶段：${phase}）：${readableError(error)}；${recoveryErrors.join("；")}。` +
-                "Cloudflare 可能处于部分变更状态，请先运行 `codex-mcp doctor`，不要重复覆盖 DNS。",
-            );
-        }
-        throw new Error(`公网配置失败（阶段：${phase}）：${readableError(error)}`, {
-            cause: error,
-        });
-    } finally {
-        cancellation.dispose();
+        if (!tunnel.created) throw error;
+        const cleanupErrors: string[] = [];
+        await cleanupCreatedTunnel(bin, tunnel.id, cleanupErrors);
+        if (cleanupErrors.length > 0) throw new Error(`${readableError(error)}；${cleanupErrors.join("；")}`);
+        throw error;
     }
 }
 
@@ -287,7 +297,6 @@ async function runConfigWizard(
     port: number,
     forceCloudflareLogin: boolean,
 ): Promise<TunnelSetupResult> {
-    const existingYml = tryReadExistingYml(userConfig);
     printInfo("设置公网连接");
     printInfo(`验证成功后才会提交到：${getUserConfigPath()}`);
 
@@ -297,7 +306,7 @@ async function runConfigWizard(
     );
     if (!useCloudflared) {
         const domain = await askPublicDomain(
-            userConfig.publicAccess?.domain ?? existingYml?.hostname,
+            userConfig.publicAccess?.domain,
         );
         const publicAccess: PublicAccessConfig = { kind: "external", domain };
         return {
@@ -319,14 +328,7 @@ async function runConfigWizard(
         "Cloudflare 连接组件已就绪",
         () => resolveOrInstallCloudflaredBin(previousManaged?.cloudflaredBin),
     );
-    const knownTunnelId = previousManaged?.tunnelId ?? existingYml?.tunnelId;
-    if (!forceCloudflareLogin) {
-        reportLegacyCloudflareMigration(migrateLegacyCloudflareState(knownTunnelId));
-    }
     const login = await ensureLogin(bin, forceCloudflareLogin);
-    if (forceCloudflareLogin) {
-        reportLegacyCloudflareMigration(migrateLegacyCloudflareState(knownTunnelId));
-    }
 
     const discovery = await withSpinner(
         "正在读取 Cloudflare 账号中的域名…",
@@ -344,7 +346,7 @@ async function runConfigWizard(
         printWarning("Cloudflare 没有允许列出全部域名，当前只使用登录时选中的域名。");
     }
 
-    const previousDomain = userConfig.publicAccess?.domain ?? existingYml?.hostname;
+    const previousDomain = userConfig.publicAccess?.domain;
     const preferredZone = findMatchingZone(previousDomain, discovery.zones) ?? discovery.zones[0];
     const zone = discovery.zones.length === 1
         ? discovery.zones[0]!
@@ -366,7 +368,7 @@ async function runConfigWizard(
         bin,
         preferredTunnelName,
         login.accountID,
-        previousManaged?.tunnelId ?? existingYml?.tunnelId,
+        previousManaged?.tunnelId,
     );
     try {
         const credentialsFile = getCredentialsPath(tunnel.id);
@@ -418,53 +420,7 @@ async function runConfigWizard(
     }
 }
 
-export async function discardTunnelSetupCandidate(candidate: TunnelSetupResult): Promise<void> {
-    const recoveryErrors: string[] = [];
-    await cleanupFailedCandidate(candidate, recoveryErrors, true);
-    if (recoveryErrors.length > 0) {
-        throw new Error(recoveryErrors.join("；"));
-    }
-}
-
-async function cleanupFailedCandidate(
-    candidate: TunnelSetupResult,
-    recoveryErrors: string[],
-    mayDeleteCreatedTunnel: boolean,
-): Promise<void> {
-    if (candidate.candidateSession && candidate.configRevision) {
-        try {
-            removeCloudflaredRevision(candidate.configRevision);
-        } catch (error) {
-            recoveryErrors.push(`candidate YAML 清理失败：${readableError(error)}`);
-        }
-    }
-    if (!candidate.candidateSession?.createdTunnel || !candidate.bin || !candidate.tunnelId) return;
-    if (!mayDeleteCreatedTunnel) {
-        recoveryErrors.push(
-            "candidate Tunnel 仍可能被 DNS 引用，为避免扩大故障未自动删除",
-        );
-        return;
-    }
-    await cleanupCreatedTunnel(candidate.bin, candidate.tunnelId, recoveryErrors);
-}
-
-function tryReadExistingYml(
-    userConfig: UserConfig,
-): { hostname: string; tunnelId: string } | undefined {
-    const access = userConfig.publicAccess;
-    const configPath = access?.kind === "cloudflare"
-        ? resolveCloudflaredRuntimeConfigPath(access)
-        : getCloudflaredConfigPath();
-    if (!existsSync(configPath)) return undefined;
-    try {
-        const parsed = readCloudflaredYml(configPath);
-        return { hostname: parsed.hostname, tunnelId: parsed.tunnelId };
-    } catch {
-        return undefined;
-    }
-}
-
-async function resolveOrInstallCloudflaredBin(configured?: string): Promise<string> {
+export async function resolveOrInstallCloudflaredBin(configured?: string): Promise<string> {
     const existing = await suggestCloudflaredBin(configured);
     if (existing) {
         await probeCloudflaredVersion(existing);
@@ -480,20 +436,7 @@ async function resolveOrInstallCloudflaredBin(configured?: string): Promise<stri
 }
 
 function localServiceUrl(host: string, port: number): string {
-    const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-    const formatted = isIP(localHost) === 6 ? `[${localHost}]` : localHost;
-    return `http://${formatted}:${port}`;
-}
-
-function reportLegacyCloudflareMigration(
-    result: ReturnType<typeof migrateLegacyCloudflareState>,
-): void {
-    if (!result.certMigrated && !result.credentialsMigrated) return;
-    const migrated = [
-        result.certMigrated ? "登录凭据" : undefined,
-        result.credentialsMigrated ? "Tunnel 凭据" : undefined,
-    ].filter((value): value is string => Boolean(value));
-    printInfo(`已把旧 ~/.cloudflared 的${migrated.join("和")}迁移到 codex-mcp 私有目录。`);
+    return `http://${loopbackHost(host)}:${port}`;
 }
 
 async function askPublicDomain(
@@ -506,7 +449,7 @@ async function askPublicDomain(
             defaultValue,
         )).trim();
         if (!domainRaw) {
-            printWarning("需要填写一个域名。没有域名时可用 `codex-mcp --local` 只在本机运行。");
+            printWarning("需要填写一个域名。没有域名时可用 `codex-mcp start --local` 只在本机运行。");
             continue;
         }
         let domain: string;
@@ -595,36 +538,6 @@ async function askCloudflareHostname(zone: string, defaultPrefix: string): Promi
             printWarning(readableError(error));
         }
     }
-}
-
-function installSetupCancellationGuard(): {
-    signal: AbortSignal;
-    throwIfRequested: () => void;
-    dispose: () => void;
-} {
-    const controller = new AbortController();
-    let announced = false;
-    const onSigint = (): void => {
-        if (!controller.signal.aborted) {
-            controller.abort(new Error("已取消公网配置"));
-        }
-        if (!announced) {
-            announced = true;
-            printWarning("收到 Ctrl+C，正在安全结束本次公网配置；如已修改 DNS 会先尝试恢复。");
-        }
-    };
-    process.on("SIGINT", onSigint);
-    return {
-        signal: controller.signal,
-        throwIfRequested: () => {
-            if (controller.signal.aborted) {
-                throw controller.signal.reason instanceof Error
-                    ? controller.signal.reason
-                    : new Error("已取消公网配置");
-            }
-        },
-        dispose: () => process.off("SIGINT", onSigint),
-    };
 }
 
 function readableError(error: unknown): string {

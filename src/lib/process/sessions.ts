@@ -235,7 +235,7 @@ export class ProcessSessionManager implements ProcessSessionAccess {
         let output = session.buffer.toString();
         let outputTruncated = session.truncated;
         if (output.length > limit) {
-            output = `${output.slice(0, Math.floor(limit / 2))}\n... output truncated ...\n${output.slice(-Math.floor(limit / 2))}`;
+            output = truncateOutput(output, limit);
             outputTruncated = true;
         }
         return {
@@ -376,7 +376,7 @@ export class ProcessSessionManager implements ProcessSessionAccess {
         let output = session.buffer.toString();
         let outputTruncated = session.truncated;
         if (output.length > limit) {
-            output = `${output.slice(0, Math.floor(limit / 2))}\n... output truncated ...\n${output.slice(-Math.floor(limit / 2))}`;
+            output = truncateOutput(output, limit);
             outputTruncated = true;
         }
         session.buffer.clear();
@@ -486,4 +486,13 @@ function clampInt(value: number | undefined, fallback: number, maximum: number):
     if (value === undefined) return fallback;
     if (!Number.isFinite(value) || value < 0) return fallback;
     return Math.min(Math.floor(value), maximum);
+}
+
+function truncateOutput(output: string, limit: number): string {
+    const marker = "\n... output truncated ...\n";
+    if (limit <= marker.length) return marker.slice(0, limit);
+    const available = limit - marker.length;
+    const head = Math.ceil(available / 2);
+    const tail = available - head;
+    return output.slice(0, head) + marker + (tail > 0 ? output.slice(-tail) : "");
 }

@@ -1,9 +1,8 @@
 import {
     generateAdminPassword,
     hasAdminPassword,
-    setAdminPassword,
-    verifyAdminPassword,
 } from "../auth/password-store.js";
+import { setConnectionPassword } from "../control/services.js";
 import {
     configureCapabilitySources,
     describeCapabilitiesConfig,
@@ -164,7 +163,7 @@ function printCompletedSetup(
     if (generatedPassword) {
         printWarning("请保存上面的连接密码；电脑只保存密码哈希，忘记后需要重新设置。");
     }
-    printInfo("下一步：进入你的项目目录，运行 codex-mcp。");
+    printInfo("下一步：进入你的项目目录，运行 codex-mcp start。");
     printOutro("设置完成");
 }
 
@@ -209,9 +208,10 @@ async function ensureGeneratedAdminPassword(
 }
 
 async function saveAndVerifyAdminPassword(password: string): Promise<void> {
-    await setAdminPassword(password);
-    if (!(await verifyAdminPassword(password))) {
-        throw new Error("连接密码保存后校验失败，请重新运行 `codex-mcp setup`");
+    try {
+        await setConnectionPassword(password);
+    } catch (error) {
+        throw new Error(`连接密码保存后校验失败，请重新运行 \`codex-mcp setup\`：${readableError(error)}`);
     }
 }
 

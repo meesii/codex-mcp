@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 import { loadConfig, type ServerConfig } from "./config/loader.js";
-import { runDoctorChecks, type DoctorLevel } from "./doctor/index.js";
+import type { DoctorLevel } from "./doctor/index.js";
 import { DownstreamMcpHub } from "./downstream/hub.js";
 import { CapabilityManager } from "./capabilities/manager.js";
 import { CapabilityWatcher } from "./capabilities/runtime.js";
 import type { SkillRegistry } from "./skills/registry.js";
 import { resolveAllowedTools } from "./capabilities/policy.js";
 import { createHttpServer } from "./server/http-server.js";
-import { isToolLogEnabled } from "./lib/tool/log.js";
 import {
     closeRuntimeLog,
     initializeRuntimeLog,
@@ -20,7 +19,6 @@ import {
     printNote,
     printOutro,
     printSuccess,
-    printSummary,
     printWarning,
 } from "./lib/util/terminal.js";
 import {
@@ -32,15 +30,9 @@ import {
     loadCommittedTunnelSetup,
     type TunnelSetupResult,
 } from "./tunnel/setup.js";
-import { configurePublicAccess } from "./tunnel/public-access-manager.js";
-import { ensureUserConfigDirs, loadUserConfig } from "./config/user-config.js";
-import { runSelfUpdate } from "./doctor/update.js";
+import { loadUserConfig } from "./config/user-config.js";
 import { randomBytes } from "node:crypto";
-import {
-    cleanStaleDaemonState,
-    isProcessAlive,
-    type TunnelObservedStatus,
-} from "./daemon/control.js";
+import type { TunnelObservedStatus } from "./daemon/control.js";
 import {
     loadDaemonState,
     removeDaemonState,
@@ -64,7 +56,9 @@ import {
     runStatus,
     runStop,
 } from "./cli/daemon-commands.js";
-import { runExit, runProjectCommand } from "./cli/project-commands.js";
+import { runProjectCommand } from "./cli/project-commands.js";
+import { runControllerProcess } from "./control/process.js";
+import { runDoctorService, selfUpdate } from "./control/services.js";
 
 /** Print CLI usage. */
 function printUsage(): void {
@@ -72,7 +66,7 @@ function printUsage(): void {
     printNote(
         "常用命令",
         [
-            "codex-mcp                         注册当前项目并确保后台服务运行",
+            "codex-mcp start                   注册当前项目并确保后台服务运行",
             "codex-mcp status                  查看服务、版本、Tunnel 和项目状态",
             "codex-mcp restart                 重启后台服务并保留项目注册状态",
             "codex-mcp stop                    停止后台服务",
@@ -92,81 +86,14 @@ function printUsage(): void {
         "其他",
         [
             "codex-mcp status --json           输出机器可读状态",
-            "codex-mcp --local                 注册当前项目并以本机模式启动",
-            "codex-mcp --root <目录>           指定默认 serve 的项目目录",
-            "codex-mcp serve --foreground      以前台方式启动（调试用）",
-            "codex-mcp tunnel                  setup 公网连接的兼容快捷入口",
-            "codex-mcp exit                    兼容入口：停用当前项目",
-            "codex-mcp exit -a                 兼容入口：停止后台服务",
+            "codex-mcp start --local           注册当前项目并以本机模式启动",
+            "codex-mcp start --root <目录>     指定 start 的项目目录",
             "codex-mcp --version               查看版本",
         ].join("\n"),
     );
-    printInfo("多数情况下：进入项目目录运行 codex-mcp；排查问题先看 status 和 logs。");
+    printInfo("多数情况下：进入项目目录运行 codex-mcp start；排查问题先看 status 和 logs。");
     printOutro("首次使用：运行 codex-mcp setup");
 }
-
-/**
- * Clear the terminal when stdout is an interactive TTY.
- */
-function clearTerminal(): void {
-    if (process.stdout.isTTY !== true) return;
-    console.clear();
-}
-
-/**
- * Print the post-listen startup summary.
- *
- * @param input - URLs, root, and tunnel/log status
- */
-function printStartupBanner(input: {
-    mcpUrl: string;
-    localUrl: string;
-    projectRoot: string;
-    logDirectory?: string;
-    logsOn: boolean;
-    downstream: string[];
-    skillCount: number;
-    tunnel:
-        | { protocol?: string; location?: string }
-        | "off"
-        | undefined;
-}): void {
-    clearTerminal();
-    const rows = [{ label: "连接地址", value: input.mcpUrl }];
-    if (input.localUrl !== input.mcpUrl) {
-        rows.push({ label: "本机地址", value: input.localUrl });
-    }
-    rows.push({ label: "项目目录", value: input.projectRoot });
-
-    if (input.tunnel === "off") {
-        rows.push({ label: "公网连接", value: "未启动" });
-    } else if (input.tunnel) {
-        const bits = [input.tunnel.protocol, input.tunnel.location].filter(
-            (part): part is string => Boolean(part),
-        );
-        rows.push({
-            label: "公网连接",
-            value: bits.length > 0 ? bits.join(" · ") : "已连接",
-        });
-    }
-
-    if (input.downstream.length > 0) {
-        rows.push({ label: "外部 MCP", value: input.downstream.join(", ") });
-    }
-    if (input.skillCount > 0) {
-        rows.push({ label: "Skills", value: String(input.skillCount) });
-    }
-
-    rows.push({
-        label: "文件日志",
-        value: input.logDirectory ?? "不可用",
-    });
-    rows.push({ label: "工具日志", value: input.logsOn ? "已开启" : "未开启" });
-    printIntro("codex-mcp");
-    printSummary("已启动", rows);
-    printInfo("按 Ctrl+C 停止服务");
-}
-
 
 /**
  * CLI entrypoint.
@@ -201,14 +128,7 @@ async function main(argv: string[]): Promise<void> {
     }
 
     if (flags.command === "update") {
-        await runSelfUpdate();
-        return;
-    }
-
-    if (flags.command === "tunnel") {
-        const applied = await configurePublicAccess({ forceWizard: true });
-        printSuccess(`公网连接已验证：https://${applied.result.domain}/mcp`);
-        printOutro(applied.daemonRestarted ? "后台服务已载入新配置" : "接下来进入项目目录，运行 codex-mcp 即可启动");
+        await selfUpdate();
         return;
     }
 
@@ -237,29 +157,21 @@ async function main(argv: string[]): Promise<void> {
         return;
     }
 
-    if (flags.command === "exit") {
-        await runExit(flags);
-        return;
-    }
-
     if (flags.command === "daemon") {
         await runDaemonProcess(flags);
         return;
     }
 
-    await runServe(flags);
-}
-
-/**
- * `codex-mcp` without a subcommand: ensure the daemon is running, register the
- * current project, and print status. `--foreground` keeps the old direct serve
- * behavior for debugging.
- */
-async function runServe(flags: CliFlags): Promise<void> {
-    if (flags.foreground) {
-        await runForegroundServe(flags);
+    if (flags.command === "controller") {
+        await runControllerProcess();
         return;
     }
+
+    await runStart(flags);
+}
+
+/** Ensure the daemon is running, register the current project, and print status. */
+async function runStart(flags: CliFlags): Promise<void> {
     await ensureDaemonAndRegister(flags);
 }
 
@@ -285,6 +197,7 @@ interface DaemonStartContext {
 }
 
 interface StartServicesOptions {
+    signal: AbortSignal;
     flags: CliFlags;
     userConfig: ReturnType<typeof loadUserConfig>;
     daemon?: DaemonStartContext;
@@ -329,10 +242,11 @@ function startupCleanupError(original: unknown, cleanupErrors: unknown[]): unkno
 
 /**
  * Start the HTTP MCP server plus the shared hub/skills/watcher, and optionally
- * the Cloudflare sidecar. Used by both the foreground serve and the daemon.
+ * the Cloudflare sidecar. Used by the internal daemon.
  */
 async function startServices(options: StartServicesOptions): Promise<StartedServices> {
-    const { flags, userConfig } = options;
+    const { flags, userConfig, signal } = options;
+    signal.throwIfAborted();
     const allowSidecar = !flags.local && !flags.noTunnel;
 
     const config = loadConfig({
@@ -342,7 +256,7 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
     });
 
     if (!flags.local && config.allowedHosts.length === 0) {
-        throw new Error("还没有设置公网地址，请先运行 `codex-mcp setup`；只在本机使用可加 `--local`");
+        throw new Error("还没有设置公网地址，请先运行 `codex-mcp setup`；只在本机使用请运行 `codex-mcp start --local`");
     }
 
     let logDirectory: string | undefined;
@@ -413,8 +327,12 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
             ? `https://${config.allowedHosts[0]}/mcp`
             : undefined;
 
+    const cancelSidecar = () => { void sidecar?.stop().catch(() => undefined); };
+    signal.addEventListener("abort", cancelSidecar, { once: true });
     try {
+        signal.throwIfAborted();
         await server.listen();
+        signal.throwIfAborted();
         capabilityWatcher = new CapabilityWatcher(capabilities, hub, skills);
         capabilityWatcher.start();
         if (
@@ -432,13 +350,16 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
                 onStateChange: options.onTunnelStatus,
             });
             tunnelReady = await sidecar.start();
+            signal.throwIfAborted();
         }
         if (publicUrl) {
-            await verifyTunnelRoute(publicUrl, server.getTunnelProbe(), { totalTimeoutMs: 300_000 });
+            await verifyTunnelRoute(publicUrl, server.getTunnelProbe(), { signal });
         }
     } catch (error) {
         const cleanupErrors = await cleanupStartedResources(server, capabilityWatcher, sidecar);
         throw startupCleanupError(error, cleanupErrors);
+    } finally {
+        signal.removeEventListener("abort", cancelSidecar);
     }
 
     if (!capabilityWatcher) throw new Error("Capability watcher 没有启动");
@@ -446,110 +367,36 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
 }
 
 /**
- * Foreground debug serve: the historical behavior where this process binds the
- * server and stays in the terminal. Never writes daemon state.
- */
-async function runForegroundServe(flags: CliFlags): Promise<void> {
-    const userConfig = loadUserConfig();
-    if (!flags.local && !userConfig.publicAccess) {
-        throw new Error("还没有已提交的公网配置，请先运行 `codex-mcp setup`");
-    }
-
-    if (!flags.local) {
-        await ensureAdminPasswordConfigured();
-    }
-
-    let tunnelStatus: TunnelObservedStatus = { running: false, state: "off" };
-    const services = await startServices({
-        flags,
-        userConfig,
-        tunnelStatus: () => tunnelStatus,
-        onTunnelStatus: (status) => {
-            tunnelStatus = status;
-        },
-    });
-    const { config, server, hub, skills, sidecar, tunnelReady, logDirectory } = services;
-
-    try {
-        const downstream = hub.listServers().map((item) =>
-            item.status === "ready" ? item.name : `${item.name}!`,
-        );
-
-        printStartupBanner({
-            mcpUrl:
-                config.allowedHosts[0] !== undefined
-                    ? `https://${config.allowedHosts[0]}/mcp`
-                    : server.getMcpUrl(),
-            localUrl: server.getMcpUrl(),
-            projectRoot: config.projectRoot,
-            logDirectory,
-            logsOn: isToolLogEnabled(),
-            downstream,
-            skillCount: skills.list().length,
-            tunnel: sidecar
-                ? (tunnelReady ?? { protocol: undefined, location: undefined })
-                : config.allowedHosts[0] !== undefined && !flags.noTunnel
-                  ? "off"
-                  : undefined,
-        });
-        writeRuntimeLog("info", "server_started", {
-            mode: flags.local ? "local" : "public",
-            tunnel: sidecar !== undefined,
-            downstreamCount: downstream.length,
-            skillCount: skills.list().length,
-            toolLogs: isToolLogEnabled(),
-        });
-    } catch (error) {
-        const cleanupErrors = await cleanupStartedResources(
-            services.server,
-            services.capabilityWatcher,
-            services.sidecar,
-        );
-        throw startupCleanupError(error, cleanupErrors);
-    }
-
-    let shuttingDown = false;
-    const shutdown = async () => {
-        if (shuttingDown) return;
-        shuttingDown = true;
-        writeRuntimeLog("info", "server_stopping");
-        let exitCode = 0;
-        try {
-            services.capabilityWatcher.close();
-            if (sidecar) {
-                await sidecar.stop();
-            }
-            await server.close();
-            writeRuntimeLog("info", "server_stopped");
-        } catch (error) {
-            exitCode = 1;
-            const detail = error instanceof Error ? error.message : String(error);
-            printError(`停止服务时发生错误：${detail}`);
-            writeRuntimeLog("error", "server_stop_failed", { error: detail });
-        } finally {
-            try {
-                closeRuntimeLog();
-            } catch (error) {
-                const detail = error instanceof Error ? error.message : String(error);
-                printWarning(`文件日志关闭失败：${detail}`);
-            }
-            process.exit(exitCode);
-        }
-    };
-
-    process.once("SIGINT", () => {
-        void shutdown();
-    });
-    process.once("SIGTERM", () => {
-        void shutdown();
-    });
-}
-
-/**
  * Internal daemon entrypoint (spawned detached by the CLI). Owns the MCP
  * server, the Cloudflare sidecar, and the durable daemon state.
  */
 async function runDaemonProcess(flags: CliFlags): Promise<void> {
+    if (typeof process.send !== "function" || !process.connected) {
+        throw new Error("daemon 是内部入口；请运行 codex-mcp start");
+    }
+    const startup = new AbortController();
+    const cancel = () => startup.abort(new Error("已取消守护进程启动"));
+    // Keep IPC ownership until state is committed. If the starting CLI dies,
+    // an unfinished daemon must clean up instead of becoming an orphan.
+    process.once("disconnect", cancel);
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+    const release = () => {
+        process.off("disconnect", cancel);
+        process.off("SIGINT", cancel);
+        process.off("SIGTERM", cancel);
+    };
+    try {
+        await runDaemonServices(flags, startup.signal, () => {
+            release();
+            if (process.connected) process.disconnect();
+        });
+    } finally {
+        release();
+    }
+}
+
+async function runDaemonServices(flags: CliFlags, signal: AbortSignal, ready: () => void): Promise<void> {
     const userConfig = loadUserConfig();
     if (!flags.local && !userConfig.publicAccess) {
         throw new Error("daemon 只读取已提交配置；请先在前台运行 `codex-mcp setup`");
@@ -561,6 +408,7 @@ async function runDaemonProcess(flags: CliFlags): Promise<void> {
 
     const registry = new ProjectRegistry();
     const bindings = new BindingStore();
+    await bindings.pruneStale();
     const runtimes = new ProjectRuntimeManager();
     const controlToken = randomBytes(32).toString("base64url");
 
@@ -574,14 +422,11 @@ async function runDaemonProcess(flags: CliFlags): Promise<void> {
         writeRuntimeLog("info", "daemon_stopping");
         let exitCode = 0;
         try {
-            await removeDaemonState().catch(() => undefined);
-            services?.capabilityWatcher.close();
-            if (services?.sidecar) {
-                await services.sidecar.stop().catch(() => undefined);
-            }
             if (services) {
-                await services.server.close();
+                const errors = await cleanupStartedResources(services.server, services.capabilityWatcher, services.sidecar);
+                if (errors.length) throw new AggregateError(errors, "后台服务清理未完成");
             }
+            await removeDaemonState();
             writeRuntimeLog("info", "daemon_stopped");
         } catch (error) {
             exitCode = 1;
@@ -599,6 +444,7 @@ async function runDaemonProcess(flags: CliFlags): Promise<void> {
     };
 
     services = await startServices({
+        signal,
         flags,
         userConfig,
         daemon: {
@@ -620,22 +466,25 @@ async function runDaemonProcess(flags: CliFlags): Promise<void> {
     });
 
     try {
+        signal.throwIfAborted();
         await saveDaemonState({
+            schemaVersion: 1,
             pid: process.pid,
             host: services.config.host,
-            port: services.config.port,
+            port: services.server.getPort(),
             controlToken,
             ...(services.config.publicMcpUrl ? { publicMcpUrl: services.config.publicMcpUrl } : {}),
             startedAt: new Date().toISOString(),
             version: PACKAGE_VERSION,
-            mode: flags.local ? "local" : "public",
             runtimeIntent: {
                 local: flags.local,
                 noTunnel: flags.noTunnel,
                 tunnelLogs: flags.tunnelLogs,
             },
         });
+        signal.throwIfAborted();
     } catch (error) {
+        if (loadDaemonState()?.pid === process.pid) await removeDaemonState();
         const cleanupErrors = await cleanupStartedResources(
             services.server,
             services.capabilityWatcher,
@@ -660,6 +509,7 @@ async function runDaemonProcess(flags: CliFlags): Promise<void> {
     process.once("SIGTERM", () => {
         void shutdown();
     });
+    ready();
 }
 
 async function runLogs(flags: CliFlags): Promise<void> {
@@ -681,24 +531,17 @@ async function runLogs(flags: CliFlags): Promise<void> {
 async function printDoctorReport(fix: boolean): Promise<void> {
     printIntro("codex-mcp 检查");
 
-    if (fix) {
-        const state = loadDaemonState();
-        const removedStaleDaemon = Boolean(state && !isProcessAlive(state.pid));
-        ensureUserConfigDirs();
-        cleanStaleDaemonState();
-        printSuccess("已确保 ~/.codex-mcp 和日志目录存在。");
-        if (removedStaleDaemon) {
-            printSuccess("已清理失效的 daemon 状态文件。");
-        }
-        printInfo("--fix 不会修改 Cloudflare DNS、OAuth 身份、连接密码或项目文件。");
-    }
+    const result = await runDoctorService(fix);
+    for (const fixMessage of result.fixes) printSuccess(fixMessage);
+    if (fix) printInfo("--fix 不会修改 Cloudflare DNS、OAuth 身份、连接密码或项目文件。");
 
-    const report = await runDoctorChecks();
+    const report = result.report;
     for (const check of report.checks) {
         printDoctorMessage(check.level, `${check.label}：${check.detail}`);
     }
 
     if (report.errors > 0) {
+        process.exitCode = 1;
         printError(
             `发现 ${report.errors} 个需要处理的问题。按上面的提示修复后，再运行一次 codex-mcp doctor。`,
         );

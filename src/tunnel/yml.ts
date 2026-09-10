@@ -14,10 +14,6 @@ export interface CloudflaredYml {
     raw: string;
 }
 
-export function getCloudflaredConfigPath(): string {
-    return join(getUserConfigDir(), "cloudflared.yml");
-}
-
 export function getCloudflaredManagementConfigPath(): string {
     return join(getUserConfigDir(), "cloudflared-management.yml");
 }
@@ -36,9 +32,7 @@ export function getCloudflaredRevisionPath(revision: string): string {
 export function resolveCloudflaredRuntimeConfigPath(
     access: CloudflarePublicAccessConfig,
 ): string {
-    return access.configRevision
-        ? getCloudflaredRevisionPath(access.configRevision)
-        : getCloudflaredConfigPath();
+    return getCloudflaredRevisionPath(access.configRevision);
 }
 
 export function getManagedCloudflareDir(): string {
@@ -63,7 +57,7 @@ export function getCredentialsPath(tunnelId: string): string {
 }
 
 export function readCloudflaredYml(
-    filePath: string = getCloudflaredConfigPath(),
+    filePath: string,
 ): CloudflaredYml {
     if (!existsSync(filePath)) {
         throw new Error(`没有找到 cloudflared 配置：${filePath}`);
@@ -106,7 +100,7 @@ export function writeCloudflaredYml(
         hostname: string;
         serviceUrl: string;
     },
-    filePath: string = getCloudflaredConfigPath(),
+    filePath: string,
 ): void {
     mkdirSync(dirname(filePath), { recursive: true });
     const credentials = quoteYamlScalar(input.credentialsFile);

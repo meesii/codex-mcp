@@ -39,8 +39,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Build
-        run: npm run build
+      - name: Test built CLI and safety boundaries
+        run: npm test
+
+      - name: Package and isolated install smoke
+        run: npm run test:package
 
       - name: Production dependency audit
         if: runner.os == 'Linux'
@@ -82,6 +85,7 @@ jobs:
           mkdir -p release
           npm pack --pack-destination release
           mv release/*.tgz release/codex-mcp.tgz
+          node scripts/package-smoke.mjs release/codex-mcp.tgz
           cp scripts/install.sh release/install.sh
           cp scripts/install.ps1 release/install.ps1
           cp scripts/uninstall.sh release/uninstall.sh
@@ -89,12 +93,33 @@ jobs:
           cd release
           sha256sum codex-mcp.tgz install.sh install.ps1 uninstall.sh uninstall.ps1 > SHA256SUMS
 
+      - name: Upload tested release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: release/
+          if-no-files-found: error
+
+  github-release:
+    name: 发布 GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: release
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             release/codex-mcp.tgz \
             release/install.sh \
             release/install.ps1 \
@@ -107,7 +132,7 @@ jobs:
 
   publish-npm:
     name: 发布到 npm
-    needs: verify
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,6 +151,12 @@ jobs:
       - name: Install
         run: npm ci --registry=https://registry.npmjs.org
 
+      - name: Download tested package
+        uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: release
+
       - name: Check version
         shell: bash
         run: |
@@ -136,7 +167,7 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to npm
+      - name: Publish tested tarball to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
@@ -147,4 +178,4 @@ jobs:
             echo "$PACKAGE_NAME@$PACKAGE_VERSION 已经在 npm 上，跳过发布"
             exit 0
           fi
-          npm publish --access public --provenance
+          npm publish release/codex-mcp.tgz --access public --provenance

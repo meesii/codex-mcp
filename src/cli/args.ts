@@ -1,8 +1,7 @@
 export type CliCommand =
-    | "serve"
+    | "start"
     | "setup"
     | "doctor"
-    | "tunnel"
     | "auth"
     | "update"
     | "version"
@@ -12,8 +11,8 @@ export type CliCommand =
     | "restart"
     | "logs"
     | "project"
-    | "exit"
-    | "daemon";
+    | "daemon"
+    | "controller";
 
 export type ProjectAction = "list" | "add" | "remove" | "info";
 
@@ -21,8 +20,6 @@ type FlagName =
     | "local"
     | "noTunnel"
     | "tunnelLogs"
-    | "foreground"
-    | "all"
     | "root"
     | "json"
     | "fix"
@@ -38,8 +35,6 @@ export interface CliFlags {
     tunnelLogs: boolean;
     /** True when the user explicitly supplied a runtime-mode flag. */
     runtimeIntentSpecified: boolean;
-    foreground: boolean;
-    all: boolean;
     json: boolean;
     fix: boolean;
     follow: boolean;
@@ -50,20 +45,19 @@ export interface CliFlags {
 const DEFAULT_LOG_LINES = 100;
 
 const ALLOWED_FLAGS: Record<string, ReadonlySet<FlagName>> = {
-    serve: new Set(["local", "noTunnel", "tunnelLogs", "foreground", "root"]),
+    start: new Set(["local", "noTunnel", "tunnelLogs", "root"]),
     daemon: new Set(["local", "noTunnel", "tunnelLogs"]),
+    controller: new Set(),
     status: new Set(["json"]),
     doctor: new Set(["fix"]),
     stop: new Set(),
     restart: new Set(),
     logs: new Set(["follow", "lines"]),
     setup: new Set(),
-    tunnel: new Set(),
     auth: new Set(),
     update: new Set(),
     version: new Set(),
     help: new Set(),
-    exit: new Set(["all", "root"]),
     "project:list": new Set(),
     "project:add": new Set(["local", "noTunnel", "tunnelLogs"]),
     "project:remove": new Set(),
@@ -74,8 +68,6 @@ const FLAG_LABELS: Record<FlagName, string> = {
     local: "--local",
     noTunnel: "--no-tunnel",
     tunnelLogs: "--tunnel-logs",
-    foreground: "--foreground",
-    all: "--all",
     root: "--root",
     json: "--json",
     fix: "--fix",
@@ -90,8 +82,6 @@ export function parseCliArgs(argv: string[]): CliFlags {
     let local = false;
     let noTunnel = false;
     let tunnelLogs = false;
-    let foreground = false;
-    let all = false;
     let json = false;
     let fix = false;
     let follow = false;
@@ -124,16 +114,6 @@ export function parseCliArgs(argv: string[]): CliFlags {
         if (arg === "--tunnel-logs") {
             tunnelLogs = true;
             seen.add("tunnelLogs");
-            continue;
-        }
-        if (arg === "--foreground") {
-            foreground = true;
-            seen.add("foreground");
-            continue;
-        }
-        if (arg === "--all" || arg === "-a") {
-            all = true;
-            seen.add("all");
             continue;
         }
         if (arg === "--json") {
@@ -176,7 +156,7 @@ export function parseCliArgs(argv: string[]): CliFlags {
             continue;
         }
         if (arg === "-f") {
-            // `-f` is intentionally contextual: foreground for serve, follow for logs.
+            // `-f` is intentionally contextual: follow for logs only.
             shortF = true;
             continue;
         }
@@ -199,6 +179,9 @@ export function parseCliArgs(argv: string[]): CliFlags {
         }
         projectAction = actionToken;
         target = remaining[1];
+        if (projectAction === "list" && target !== undefined) {
+            throw new Error("`project list` 不接受项目参数");
+        }
         if (remaining.length > 2) {
             throw new Error(`这里不需要这些内容：${remaining.slice(2).join(" ")}`);
         }
@@ -223,11 +206,8 @@ export function parseCliArgs(argv: string[]): CliFlags {
         if (command === "logs") {
             follow = true;
             seen.add("follow");
-        } else if (command === "serve") {
-            foreground = true;
-            seen.add("foreground");
         } else {
-            throw new Error("`-f` 只适用于 `serve`（foreground）或 `logs`（follow）");
+            throw new Error("`-f` 只适用于 `logs`（follow）");
         }
     }
 
@@ -249,8 +229,6 @@ export function parseCliArgs(argv: string[]): CliFlags {
         tunnelLogs,
         runtimeIntentSpecified:
             seen.has("local") || seen.has("noTunnel") || seen.has("tunnelLogs"),
-        foreground,
-        all,
         json,
         fix,
         follow,
@@ -260,11 +238,11 @@ export function parseCliArgs(argv: string[]): CliFlags {
 }
 
 function resolveCommand(token: string | undefined): CliCommand {
-    if (token === undefined || token === "serve") return "serve";
+    if (token === undefined) return "help";
     if (
+        token === "start" ||
         token === "setup" ||
         token === "doctor" ||
-        token === "tunnel" ||
         token === "auth" ||
         token === "update" ||
         token === "version" ||
@@ -274,8 +252,8 @@ function resolveCommand(token: string | undefined): CliCommand {
         token === "restart" ||
         token === "logs" ||
         token === "project" ||
-        token === "exit" ||
-        token === "daemon"
+        token === "daemon" ||
+        token === "controller"
     ) {
         return token;
     }
@@ -297,8 +275,6 @@ function defaults(command: CliCommand): CliFlags {
         noTunnel: false,
         tunnelLogs: false,
         runtimeIntentSpecified: false,
-        foreground: false,
-        all: false,
         json: false,
         fix: false,
         follow: false,

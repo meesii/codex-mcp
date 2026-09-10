@@ -39,7 +39,7 @@ export async function configureCapabilitySources(
     );
 
     if (detected.length === 0) {
-        printInfo("没有检测到 Codex、Claude Code 或 Agent Skills；保持兼容默认设置，不写入额外配置。");
+        printInfo("没有检测到 Codex、Claude Code 或 Agent Skills；保持默认设置，不写入额外配置。");
         return { detections, changed: false };
     }
 

@@ -85,13 +85,13 @@ async function bindProject(deps: ProjectToolDeps, projectId?: string, projectPat
         await deps.runtimes.shutdownOwner(existing.projectId, ownerKey);
     }
     deps.runtimes.get(selected.id, selected.path);
-    deps.bindings.bind(ownerKey, selected.id);
+    await deps.bindings.bind(ownerKey, selected.id);
 }
 
 async function unbindProject(deps: ProjectToolDeps, ownerKey: string): Promise<void> {
     const existing = deps.bindings.resolve(ownerKey);
     if (existing) await deps.runtimes.shutdownOwner(existing.projectId, ownerKey);
-    deps.bindings.unbind(ownerKey);
+    await deps.bindings.unbind(ownerKey);
 }
 
 function selectByPath(registry: ProjectRegistry, path: string): RegisteredProject | undefined {

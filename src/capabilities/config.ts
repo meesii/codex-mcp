@@ -18,7 +18,7 @@ export interface ResolvedCapabilitiesConfig {
     sources: Record<CapabilitySourceId, ResolvedCapabilitySourceConfig>;
 }
 
-const LEGACY_DEFAULTS: ResolvedCapabilitiesConfig = {
+const DEFAULT_CAPABILITIES: ResolvedCapabilitiesConfig = {
     sync: "watch",
     priority: ["agents", "codex", "claude"],
     sources: {
@@ -31,9 +31,9 @@ const LEGACY_DEFAULTS: ResolvedCapabilitiesConfig = {
 export function resolveCapabilitiesConfig(
     config?: UserCapabilitiesConfig,
 ): ResolvedCapabilitiesConfig {
-    const priority = normalizePriority(config?.priority ?? LEGACY_DEFAULTS.priority);
+    const priority = normalizePriority(config?.priority ?? DEFAULT_CAPABILITIES.priority);
     return {
-        sync: config?.sync ?? LEGACY_DEFAULTS.sync,
+        sync: config?.sync ?? DEFAULT_CAPABILITIES.sync,
         priority,
         sources: {
             agents: resolveSource("agents", config?.sources?.agents),
@@ -58,7 +58,7 @@ function resolveSource(
     source: CapabilitySourceId,
     override?: CapabilitySourceConfig,
 ): ResolvedCapabilitySourceConfig {
-    const defaults = LEGACY_DEFAULTS.sources[source];
+    const defaults = DEFAULT_CAPABILITIES.sources[source];
     const enabled = override?.enabled ?? defaults.enabled;
     return {
         enabled,
@@ -72,7 +72,7 @@ function normalizePriority(priority: CapabilitySourceId[]): CapabilitySourceId[]
     for (const source of priority) {
         if (!result.includes(source)) result.push(source);
     }
-    for (const source of LEGACY_DEFAULTS.priority) {
+    for (const source of DEFAULT_CAPABILITIES.priority) {
         if (!result.includes(source)) result.push(source);
     }
     return result;

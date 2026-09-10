@@ -5,7 +5,6 @@ import {
     realpathSync,
     statSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const MAX_SKILL_FILE_CHARS = 80_000;
@@ -55,14 +54,6 @@ export class SkillRegistry {
 
     static empty(): SkillRegistry {
         return new SkillRegistry([]);
-    }
-
-    /** Compatibility default used by tests/embedders that do not create a CapabilityManager. */
-    static discoverDefault(): SkillRegistry {
-        return SkillRegistry.discover([
-            { path: join(homedir(), ".agents", "skills"), source: "agents", scope: "user" },
-            { path: join(homedir(), ".codex", "skills"), source: "codex", scope: "user" },
-        ]);
     }
 
     static discover(roots: SkillRoot[]): SkillRegistry {

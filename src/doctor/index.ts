@@ -5,8 +5,6 @@ import { runSubprocess } from "../lib/util/subprocess.js";
 import { suggestCloudflaredBin, probeCloudflaredVersion } from "../tunnel/bin.js";
 import {
     getCloudflareOriginCertPath,
-    getLegacyCloudflareOriginCertPath,
-    getLegacyTunnelCredentialsPath,
     hasManagedCloudflareLogin,
     readManagedCloudflareOriginToken,
     readTunnelCredentialIdentity,
@@ -134,11 +132,6 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             }
         }
 
-        const legacyTunnelStatePending = Boolean(
-            publicAccess.tunnelId &&
-            canRead(getLegacyCloudflareOriginCertPath()) &&
-            canRead(getLegacyTunnelCredentialsPath(publicAccess.tunnelId)),
-        );
         const managedLoginPath = getCloudflareOriginCertPath();
         const managedLogin = hasManagedCloudflareLogin();
         checks.push({
@@ -146,9 +139,7 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             level: managedLogin ? "ok" : "warn",
             detail: managedLogin
                 ? `codex-mcp 私有登录：${managedLoginPath}`
-                : legacyTunnelStatePending
-                  ? "检测到旧 ~/.cloudflared 登录和 Tunnel 凭据；下次 setup 会在账号匹配后安全迁移"
-                  : "没有可用的 codex-mcp 私有登录；Tunnel 仍可运行，但修改或远端诊断时需要重新登录",
+                : "没有可用的 codex-mcp 私有登录；Tunnel 仍可运行，但修改或远端诊断时需要重新登录",
         });
 
         const credentialsPath = getCredentialsPath(publicAccess.tunnelId);
@@ -157,15 +148,13 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             try {
                 const identity = readTunnelCredentialIdentity(credentialsPath);
                 const mismatch = identity.tunnelId !== publicAccess.tunnelId ||
-                    (publicAccess.accountId !== undefined && identity.accountId !== publicAccess.accountId);
+                    identity.accountId !== publicAccess.accountId;
                 checks.push({
                     label: "Tunnel 凭据",
                     level: mismatch ? "error" : "ok",
                     detail: mismatch
                         ? "credential 的 TunnelID / AccountTag 与已提交配置不一致"
-                        : publicAccess.accountId
-                          ? `${credentialsPath} · Tunnel / 账号一致`
-                          : `${credentialsPath} · Tunnel ID 一致（旧配置未记录账号 ID）`,
+                        : `${credentialsPath} · Tunnel / 账号一致`,
                 });
             } catch (error) {
                 checks.push({ label: "Tunnel 凭据", level: "error", detail: readableError(error) });
@@ -173,10 +162,8 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
         } else {
             checks.push({
                 label: "Tunnel 凭据",
-                level: legacyTunnelStatePending ? "warn" : "error",
-                detail: legacyTunnelStatePending
-                    ? "检测到旧 ~/.cloudflared Tunnel 凭据；下次 setup 会在账号匹配后迁移"
-                    : `缺少本机凭据：${credentialsPath}`,
+                level: "error",
+                detail: `缺少本机凭据：${credentialsPath}`,
             });
         }
 
@@ -188,7 +175,7 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             checks.push({ label: "Tunnel 配置一致性", level: "error", detail: readableError(error) });
         }
 
-        if (managedLogin && publicAccess.accountId && publicAccess.zoneId) {
+        if (managedLogin) {
             try {
                 const login = readManagedCloudflareOriginToken();
                 if (login.accountID !== publicAccess.accountId) {
@@ -234,7 +221,7 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             checks.push({
                 label: "Cloudflare 远端诊断",
                 level: "warn",
-                detail: "旧配置缺少 accountId / zoneId，运行一次 setup 后可启用远端一致性检查",
+                detail: "没有可用的 codex-mcp 私有登录；运行 setup 重新登录后可启用远端一致性检查",
             });
         }
     }

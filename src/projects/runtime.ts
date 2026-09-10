@@ -71,8 +71,6 @@ export class ProjectRuntimeManager {
         const runtime = this.runtimes.get(id);
         const capability = this.capabilityRuntimes.get(id);
         if (!runtime && !capability) return;
-        this.runtimes.delete(id);
-        this.capabilityRuntimes.delete(id);
         const errors: unknown[] = [];
         if (runtime) {
             try { await runtime.processOwners.shutdown(); }
@@ -92,12 +90,19 @@ export class ProjectRuntimeManager {
                 project: id, error: error instanceof Error ? error.message : String(error),
             });
         }
+        if (errors.length > 0) {
+            throw new AggregateError(errors, `项目 ${id} 的运行资源清理未完成，可重试 project remove`);
+        }
+        if (this.runtimes.get(id) === runtime) this.runtimes.delete(id);
+        if (this.capabilityRuntimes.get(id) === capability) this.capabilityRuntimes.delete(id);
         writeRuntimeLog("info", "project_runtime_removed", { project: id });
     }
 
     async shutdownAll(): Promise<void> {
         const ids = new Set([...this.runtimes.keys(), ...this.capabilityRuntimes.keys()]);
-        await Promise.all([...ids].map((id) => this.remove(id)));
+        const results = await Promise.allSettled([...ids].map((id) => this.remove(id)));
+        const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+        if (errors.length) throw new AggregateError(errors, "部分项目运行资源清理失败");
     }
 
     private async createCapabilities(id: string, canonicalPath: string): Promise<ProjectCapabilityRuntime> {

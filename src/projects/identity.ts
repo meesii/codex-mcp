@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { expandHomePath } from "../config/loader.js";
 
-const ID_HASH_LENGTH = 8;
+const ID_HASH_LENGTH = 16;
 
 /**
  * Canonical absolute project path. Fails when the directory is missing so a

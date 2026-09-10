@@ -1,3 +1,4 @@
+import { loopbackHost } from "../lib/http/listen-address.js";
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -12,7 +13,7 @@ export interface ServerConfig {
     oauthRequired: boolean;
     /** Public MCP resource URL used by OAuth (e.g. https://mcp.example.com/mcp). */
     publicMcpUrl?: string;
-    /** Absolute primary project directory bound at process start. */
+    /** Standalone project root; daemon mode uses this only as a non-project capability anchor. */
     projectRoot: string;
     /**
      * Hostnames allowed in the HTTP Host header (for tunnels / public DNS).
@@ -91,8 +92,7 @@ export function resolveWidgetDomain(
     if (allowedHosts.length > 0) {
         return `https://codex-mcp.${allowedHosts[0]}`;
     }
-    const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-    return `http://${localHost}:${port}`;
+    return `http://${loopbackHost(host)}:${port}`;
 }
 
 function assertProjectDirectory(pathValue: string): string {

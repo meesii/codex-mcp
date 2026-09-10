@@ -16,13 +16,8 @@ async function main(argv: string[]): Promise<void> {
         tools = ["ripgrep", "cloudflared"];
     } else if (command === "bootstrap") {
         tools = ["ripgrep"];
-        try {
-            if (loadUserConfig().publicAccess?.kind === "cloudflare") {
-                tools.push("cloudflared");
-            }
-        } catch {
-            // Installation must not mutate or reject an existing invalid config.
-            // `codex-mcp doctor` will report that separately.
+        if (loadUserConfig().publicAccess?.kind === "cloudflare") {
+            tools.push("cloudflared");
         }
     } else {
         throw new Error(`未知组件安装模式：${command}`);

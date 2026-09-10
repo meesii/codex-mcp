@@ -3,7 +3,7 @@ import { safeHttpRequest } from "../lib/http/safe-http.js";
 import { normalizeTunnelId } from "./id.js";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
-const API_TIMEOUT_MS = 120_000;
+const API_TIMEOUT_MS = 30_000;
 const MAX_API_BODY_CHARS = 2 * 1024 * 1024;
 const DNS_TYPES_WITH_DATA = new Set([
     "CAA", "CERT", "DNSKEY", "DS", "HTTPS", "LOC", "NAPTR",

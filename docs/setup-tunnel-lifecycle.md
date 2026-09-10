@@ -4,7 +4,7 @@
 
 让公网配置、Cloudflare 远端资源和 daemon 运行态拥有清晰的唯一 owner。配置命令负责交互和变更，检查命令保持只读，daemon 只消费已经提交的配置。
 
-保留单 daemon、多项目注册模型。公网 route 验证默认允许最多 5 分钟，并支持 Ctrl+C 立即取消，不恢复测试目录。
+保留单 daemon、多项目注册模型。公网 route 验证采用单一 30 秒预算，支持中断取消；命令、事务补偿和安全边界均有回归测试。
 
 ## 状态边界
 
@@ -26,12 +26,12 @@ Cloudflare 状态分为：
 
 | 入口 | 职责 |
 |---|---|
-| `setup check` | 只读检查 committed config、运行态和公网实例 |
-| `setup public` | 唯一公网 mutation 入口 |
-| `tunnel` | `setup public` 的兼容别名 |
-| daemon/foreground start | 只读取 committed config；不 prompt、不登录、不改 DNS |
+| `setup` → 检查当前配置 | 只读检查 committed config、运行态和公网实例 |
+| `setup` → 修改公网连接 | 唯一公网 mutation 入口 |
+| `setup` | 唯一公网配置和变更入口 |
+| daemon start | 只读取 committed config；不 prompt、不登录、不改 DNS |
 | `status` | 展示 daemon 与 sidecar observed state，并比较公网/本机 instance |
-| `doctor` | 只读 reconcile config、YAML、credential、Tunnel、DNS、connector |
+| `doctor` | 默认只读 reconcile config、YAML、credential、Tunnel、DNS、connector；`--fix` 仅执行白名单本机修复（目录、stale daemon state），不修改 DNS/OAuth/password/projects |
 
 ## Managed Tunnel 配置顺序
 
@@ -48,7 +48,7 @@ Cloudflare 状态分为：
 → 启动 candidate connector 并等待 ready
 → 通过 Cloudflare API snapshot 旧 DNS record
 → 切换 DNS 到 candidate Tunnel
-→ 在默认 5 分钟兜底窗口内验证公网随机 probe；Ctrl+C 可立即取消并进入补偿
+→ 在单一 30 秒预算内验证公网随机 probe；Ctrl+C 可立即取消并进入补偿
 → 原子提交本地配置与 runtime YAML revision
 → 恢复此前 daemon 完整运行意图
 → 比较 local/public instance

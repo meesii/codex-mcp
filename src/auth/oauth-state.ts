@@ -1,3 +1,4 @@
+import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type {
@@ -11,13 +12,15 @@ import {
     InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { getUserConfigDir } from "../config/user-config.js";
-import { AsyncMutex, readJsonFile, writePrivateJson } from "./storage.js";
+import { readJsonFile, writePrivateJson } from "./storage.js";
+import { AsyncMutex } from "../lib/util/mutex.js";
 
 export const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1000;
 export const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
 export const REFRESH_TOKEN_IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const RETIRED_REFRESH_RETENTION_MS = 45 * 24 * 60 * 60 * 1000;
-const STATE_VERSION = 1;
+// 1.0 intentionally invalidates all pre-1.0 OAuth clients and grants.
+const STATE_VERSION = 2;
 
 interface AuthorizationCodeRecord {
     clientId: string;
@@ -51,7 +54,7 @@ interface RefreshTokenRecord {
 }
 
 interface PersistedOAuthState {
-    version: 1;
+    version: 2;
     clients: Record<string, OAuthClientInformationFull>;
     clientIssuers: Record<string, string>;
     authorizationCodes: Record<string, AuthorizationCodeRecord>;
@@ -91,11 +94,10 @@ export class OAuthStateStore {
             refreshTokens: {},
             revokedFamilies: {},
         };
-        const state = await readJsonFile<PersistedOAuthState>(path, fallback);
-        if (state.version !== STATE_VERSION) {
+        const state = await readJsonFile<unknown>(path, fallback);
+        if (!isPersistedOAuthState(state)) {
             throw new Error(`Unsupported OAuth state version in ${path}`);
         }
-        state.clientIssuers ??= {};
         const store = new OAuthStateStore(state, path);
         await store.cleanup();
         return store;
@@ -119,15 +121,17 @@ export class OAuthStateStore {
         issuer: string,
         options?: { maxClients?: number; protectRecentMs?: number },
     ): Promise<OAuthClientInformationFull> {
-        return this.mutex.run(async () => {
+        return this.mutex.runExclusive(async () => {
+            const state = structuredClone(this.state);
             const now = Date.now();
-            this.prune(now);
+            this.prune(state, now);
             const maxClients = options?.maxClients;
             if (
                 maxClients !== undefined &&
-                Object.keys(this.state.clients).length >= maxClients
+                Object.keys(state.clients).length >= maxClients
             ) {
                 this.evictInactiveClients(
+                    state,
                     maxClients,
                     options?.protectRecentMs ?? 0,
                     now,
@@ -135,23 +139,24 @@ export class OAuthStateStore {
             }
             if (
                 maxClients !== undefined &&
-                Object.keys(this.state.clients).length >= maxClients
+                Object.keys(state.clients).length >= maxClients
             ) {
                 throw new Error(`OAuth client capacity reached (${maxClients})`);
             }
 
-            this.state.clients[client.client_id] = structuredClone(client);
-            this.state.clientIssuers[client.client_id] = issuer;
-            await this.persist();
+            state.clients[client.client_id] = structuredClone(client);
+            state.clientIssuers[client.client_id] = issuer;
+            await this.persist(state);
             return structuredClone(client);
         });
     }
 
     async createAuthorizationCode(input: AuthorizationCodeInput): Promise<string> {
-        return this.mutex.run(async () => {
-            this.prune(Date.now());
+        return this.mutex.runExclusive(async () => {
+            const state = structuredClone(this.state);
+            this.prune(state, Date.now());
             const code = randomToken();
-            this.state.authorizationCodes[tokenDigest(code)] = {
+            state.authorizationCodes[tokenDigest(code)] = {
                 clientId: input.clientId,
                 redirectUri: input.redirectUri,
                 codeChallenge: input.codeChallenge,
@@ -160,7 +165,7 @@ export class OAuthStateStore {
                 credentialGeneration: input.credentialGeneration,
                 expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_MS,
             };
-            await this.persist();
+            await this.persist(state);
             return code;
         });
     }
@@ -180,11 +185,12 @@ export class OAuthStateStore {
         resource?: URL;
         credentialGeneration: string;
     }): Promise<OAuthTokens> {
-        return this.mutex.run(async () => {
+        return this.mutex.runExclusive(async () => {
+            const state = structuredClone(this.state);
             const now = Date.now();
-            this.prune(now);
+            this.prune(state, now);
             const digest = tokenDigest(input.code);
-            const record = this.state.authorizationCodes[digest];
+            const record = state.authorizationCodes[digest];
             if (!record || record.clientId !== input.clientId || record.expiresAt <= now) {
                 throw new InvalidGrantError("Invalid or expired authorization code");
             }
@@ -195,14 +201,14 @@ export class OAuthStateStore {
                 throw new InvalidGrantError("resource is required and must match the authorization request");
             }
             if (input.credentialGeneration !== record.credentialGeneration) {
-                delete this.state.authorizationCodes[digest];
-                await this.persist();
+                delete state.authorizationCodes[digest];
+                await this.persist(state);
                 throw new InvalidGrantError("Administrator credential changed; restart authorization");
             }
 
-            delete this.state.authorizationCodes[digest];
+            delete state.authorizationCodes[digest];
             const familyId = randomUUID();
-            const tokens = this.issueTokenPair({
+            const tokens = this.issueTokenPair(state, {
                 clientId: record.clientId,
                 scopes: record.scopes,
                 resource: record.resource,
@@ -210,7 +216,7 @@ export class OAuthStateStore {
                 credentialGeneration: record.credentialGeneration,
                 now,
             });
-            await this.persist();
+            await this.persist(state);
             return tokens;
         });
     }
@@ -222,28 +228,29 @@ export class OAuthStateStore {
         resource?: URL;
         credentialGeneration: string;
     }): Promise<OAuthTokens> {
-        return this.mutex.run(async () => {
+        return this.mutex.runExclusive(async () => {
+            const state = structuredClone(this.state);
             const now = Date.now();
-            this.prune(now);
+            this.prune(state, now);
             const digest = tokenDigest(input.refreshToken);
-            const record = this.state.refreshTokens[digest];
+            const record = state.refreshTokens[digest];
             if (!record) {
                 throw new InvalidGrantError("Invalid refresh token");
             }
             if (!record.active) {
-                this.revokeFamily(record.familyId, now);
-                await this.persist();
+                this.revokeFamily(state, record.familyId, now);
+                await this.persist(state);
                 throw new InvalidGrantError("Refresh token reuse detected; token family revoked");
             }
             if (
                 record.clientId !== input.clientId ||
                 record.credentialGeneration !== input.credentialGeneration ||
                 record.lastUsedAt + REFRESH_TOKEN_IDLE_TTL_MS <= now ||
-                this.state.revokedFamilies[record.familyId] !== undefined
+                state.revokedFamilies[record.familyId] !== undefined
             ) {
                 record.active = false;
                 record.retiredAt = now;
-                await this.persist();
+                await this.persist(state);
                 throw new InvalidGrantError("Invalid or expired refresh token");
             }
 
@@ -258,7 +265,7 @@ export class OAuthStateStore {
             record.active = false;
             record.retiredAt = now;
             record.lastUsedAt = now;
-            const tokens = this.issueTokenPair({
+            const tokens = this.issueTokenPair(state, {
                 clientId: record.clientId,
                 scopes: requestedScopes,
                 resource: record.resource,
@@ -266,7 +273,7 @@ export class OAuthStateStore {
                 credentialGeneration: record.credentialGeneration,
                 now,
             });
-            await this.persist();
+            await this.persist(state);
             return tokens;
         });
     }
@@ -294,48 +301,51 @@ export class OAuthStateStore {
     }
 
     async revokeToken(token: string, clientId: string): Promise<void> {
-        await this.mutex.run(async () => {
+        await this.mutex.runExclusive(async () => {
+            const state = structuredClone(this.state);
             const now = Date.now();
             const digest = tokenDigest(token);
-            const access = this.state.accessTokens[digest];
+            const access = state.accessTokens[digest];
             if (access?.clientId === clientId) {
-                delete this.state.accessTokens[digest];
-                await this.persist();
+                delete state.accessTokens[digest];
+                await this.persist(state);
                 return;
             }
 
-            const refresh = this.state.refreshTokens[digest];
+            const refresh = state.refreshTokens[digest];
             if (refresh?.clientId === clientId) {
-                this.revokeFamily(refresh.familyId, now);
-                await this.persist();
+                this.revokeFamily(state, refresh.familyId, now);
+                await this.persist(state);
             }
         });
     }
 
     async cleanup(): Promise<void> {
-        await this.mutex.run(async () => {
-            this.prune(Date.now());
-            await this.persist();
+        await this.mutex.runExclusive(async () => {
+            const state = structuredClone(this.state);
+            this.prune(state, Date.now());
+            await this.persist(state);
         });
     }
 
     private evictInactiveClients(
+        state: PersistedOAuthState,
         maxClients: number,
         protectRecentMs: number,
         now: number,
     ): void {
         const activeClientIds = new Set<string>();
-        for (const record of Object.values(this.state.authorizationCodes)) {
+        for (const record of Object.values(state.authorizationCodes)) {
             activeClientIds.add(record.clientId);
         }
-        for (const record of Object.values(this.state.accessTokens)) {
+        for (const record of Object.values(state.accessTokens)) {
             activeClientIds.add(record.clientId);
         }
-        for (const record of Object.values(this.state.refreshTokens)) {
+        for (const record of Object.values(state.refreshTokens)) {
             if (record.active) activeClientIds.add(record.clientId);
         }
 
-        const removable = Object.values(this.state.clients)
+        const removable = Object.values(state.clients)
             .filter((client) => {
                 if (activeClientIds.has(client.client_id)) return false;
                 const issuedAtMs = (client.client_id_issued_at ?? 0) * 1000;
@@ -347,16 +357,16 @@ export class OAuthStateStore {
             );
 
         while (
-            Object.keys(this.state.clients).length >= maxClients &&
+            Object.keys(state.clients).length >= maxClients &&
             removable.length > 0
         ) {
             const client = removable.shift()!;
-            delete this.state.clients[client.client_id];
-            delete this.state.clientIssuers[client.client_id];
+            delete state.clients[client.client_id];
+            delete state.clientIssuers[client.client_id];
         }
     }
 
-    private issueTokenPair(input: {
+    private issueTokenPair(state: PersistedOAuthState, input: {
         clientId: string;
         scopes: string[];
         resource?: string;
@@ -366,7 +376,7 @@ export class OAuthStateStore {
     }): OAuthTokens {
         const accessToken = randomToken();
         const refreshToken = randomToken();
-        this.state.accessTokens[tokenDigest(accessToken)] = {
+        state.accessTokens[tokenDigest(accessToken)] = {
             clientId: input.clientId,
             scopes: [...input.scopes],
             resource: input.resource,
@@ -374,7 +384,7 @@ export class OAuthStateStore {
             credentialGeneration: input.credentialGeneration,
             expiresAt: input.now + ACCESS_TOKEN_TTL_MS,
         };
-        this.state.refreshTokens[tokenDigest(refreshToken)] = {
+        state.refreshTokens[tokenDigest(refreshToken)] = {
             clientId: input.clientId,
             scopes: [...input.scopes],
             resource: input.resource,
@@ -393,26 +403,26 @@ export class OAuthStateStore {
         };
     }
 
-    private revokeFamily(familyId: string, now: number): void {
-        this.state.revokedFamilies[familyId] = now;
-        for (const [digest, record] of Object.entries(this.state.accessTokens)) {
-            if (record.familyId === familyId) delete this.state.accessTokens[digest];
+    private revokeFamily(state: PersistedOAuthState, familyId: string, now: number): void {
+        state.revokedFamilies[familyId] = now;
+        for (const [digest, record] of Object.entries(state.accessTokens)) {
+            if (record.familyId === familyId) delete state.accessTokens[digest];
         }
-        for (const record of Object.values(this.state.refreshTokens)) {
+        for (const record of Object.values(state.refreshTokens)) {
             if (record.familyId !== familyId) continue;
             record.active = false;
             record.retiredAt = record.retiredAt ?? now;
         }
     }
 
-    private prune(now: number): void {
-        for (const [digest, record] of Object.entries(this.state.authorizationCodes)) {
-            if (record.expiresAt <= now) delete this.state.authorizationCodes[digest];
+    private prune(state: PersistedOAuthState, now: number): void {
+        for (const [digest, record] of Object.entries(state.authorizationCodes)) {
+            if (record.expiresAt <= now) delete state.authorizationCodes[digest];
         }
-        for (const [digest, record] of Object.entries(this.state.accessTokens)) {
-            if (record.expiresAt <= now) delete this.state.accessTokens[digest];
+        for (const [digest, record] of Object.entries(state.accessTokens)) {
+            if (record.expiresAt <= now) delete state.accessTokens[digest];
         }
-        for (const [digest, record] of Object.entries(this.state.refreshTokens)) {
+        for (const [digest, record] of Object.entries(state.refreshTokens)) {
             if (record.active && record.lastUsedAt + REFRESH_TOKEN_IDLE_TTL_MS <= now) {
                 record.active = false;
                 record.retiredAt = now;
@@ -422,19 +432,121 @@ export class OAuthStateStore {
                 record.retiredAt !== undefined &&
                 record.retiredAt + RETIRED_REFRESH_RETENTION_MS <= now
             ) {
-                delete this.state.refreshTokens[digest];
+                delete state.refreshTokens[digest];
             }
         }
-        for (const [familyId, revokedAt] of Object.entries(this.state.revokedFamilies)) {
+        for (const [familyId, revokedAt] of Object.entries(state.revokedFamilies)) {
             if (revokedAt + RETIRED_REFRESH_RETENTION_MS <= now) {
-                delete this.state.revokedFamilies[familyId];
+                delete state.revokedFamilies[familyId];
             }
         }
     }
 
-    private async persist(): Promise<void> {
-        await writePrivateJson(this.path, this.state);
+    private async persist(state: PersistedOAuthState): Promise<void> {
+        await writePrivateJson(this.path, state);
+        this.state = state;
     }
+}
+
+function isPersistedOAuthState(value: unknown): value is PersistedOAuthState {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const state = value as Record<string, unknown>;
+    const keys = [
+        "version", "clients", "clientIssuers", "authorizationCodes", "accessTokens",
+        "refreshTokens", "revokedFamilies",
+    ];
+    if (!hasExactKeys(state, keys) ||
+        state.version !== STATE_VERSION ||
+        !isRecord(state.clients) || !isStringRecord(state.clientIssuers) ||
+        !isRecord(state.authorizationCodes) || !isRecord(state.accessTokens) ||
+        !isRecord(state.refreshTokens) || !isNumberRecord(state.revokedFamilies)) {
+        return false;
+    }
+    const clientIds = Object.keys(state.clients);
+    const issuerIds = Object.keys(state.clientIssuers);
+    return clientIds.length === issuerIds.length &&
+        clientIds.every((id) => Object.prototype.hasOwnProperty.call(state.clientIssuers, id)) &&
+        Object.entries(state.clients).every(([id, client]) => isOAuthClientRecord(client) && client.client_id === id) &&
+        Object.values(state.authorizationCodes).every(isAuthorizationCodeRecord) &&
+        Object.values(state.accessTokens).every(isAccessTokenRecord) &&
+        Object.values(state.refreshTokens).every(isRefreshTokenRecord);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+    return isRecord(value) && Object.values(value).every((item) => typeof item === "string" && item.length > 0);
+}
+
+function isNumberRecord(value: unknown): value is Record<string, number> {
+    return isRecord(value) && Object.values(value).every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+function hasExactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+    return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function isOAuthClientRecord(value: unknown): value is OAuthClientInformationFull {
+    return OAuthClientInformationFullSchema.safeParse(value).success;
+}
+
+function isAuthorizationCodeRecord(value: unknown): value is AuthorizationCodeRecord {
+    if (!isRecord(value) || !hasExactKeys(value, [
+        "clientId", "redirectUri", "codeChallenge", "scopes", "resource", "credentialGeneration", "expiresAt",
+    ])) return false;
+    return typeof value.clientId === "string" && value.clientId.length > 0 &&
+        typeof value.redirectUri === "string" && value.redirectUri.length > 0 &&
+        typeof value.codeChallenge === "string" && value.codeChallenge.length > 0 &&
+        isStringArray(value.scopes) &&
+        isResource(value.resource) &&
+        typeof value.credentialGeneration === "string" && value.credentialGeneration.length > 0 &&
+        isFiniteNumber(value.expiresAt);
+}
+
+function isAccessTokenRecord(value: unknown): value is AccessTokenRecord {
+    if (!isRecord(value) || !hasExactKeys(value, [
+        "clientId", "scopes", "resource", "familyId", "credentialGeneration", "expiresAt",
+    ])) return false;
+    return typeof value.clientId === "string" && value.clientId.length > 0 &&
+        isStringArray(value.scopes) &&
+        isResource(value.resource) &&
+        typeof value.familyId === "string" && value.familyId.length > 0 &&
+        typeof value.credentialGeneration === "string" && value.credentialGeneration.length > 0 &&
+        isFiniteNumber(value.expiresAt);
+}
+
+function isRefreshTokenRecord(value: unknown): value is RefreshTokenRecord {
+    if (!isRecord(value) || !hasExactKeys(value, [
+        "clientId", "scopes", "resource", "familyId", "credentialGeneration", "issuedAt", "lastUsedAt", "active", "retiredAt",
+    ])) return false;
+    return typeof value.clientId === "string" && value.clientId.length > 0 &&
+        isStringArray(value.scopes) &&
+        isResource(value.resource) &&
+        typeof value.familyId === "string" && value.familyId.length > 0 &&
+        typeof value.credentialGeneration === "string" && value.credentialGeneration.length > 0 &&
+        isFiniteNumber(value.issuedAt) && isFiniteNumber(value.lastUsedAt) &&
+        typeof value.active === "boolean" &&
+        (value.retiredAt === undefined || isFiniteNumber(value.retiredAt));
+}
+
+function isStringArray(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+
+function isResource(value: unknown): value is string {
+    if (typeof value !== "string") return false;
+    try {
+        const url = new URL(value);
+        return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+    } catch {
+        return false;
+    }
+}
+
+function isFiniteNumber(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value);
 }
 
 export function tokenDigest(token: string): string {

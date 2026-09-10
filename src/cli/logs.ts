@@ -1,59 +1,67 @@
-import { existsSync, openSync, closeSync, readFileSync, readSync, statSync, watchFile, unwatchFile } from "node:fs";
-import { join } from "node:path";
-import { getUserLogDir } from "../config/user-config.js";
+import { existsSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { getCurrentLogPath } from "../lib/log-reader.js";
 
-export function getCurrentLogPath(): string {
-    return join(getUserLogDir(), "codex-mcp.jsonl");
-}
+export { getCurrentLogPath, readRecentLogLines } from "../lib/log-reader.js";
 
-export function readRecentLogLines(lines: number): { path: string; text: string } {
-    const path = getCurrentLogPath();
-    if (!existsSync(path)) return { path, text: "" };
-    const content = readFileSync(path, "utf8");
-    const rows = content.split(/\r?\n/);
-    if (rows.at(-1) === "") rows.pop();
-    return { path, text: rows.slice(-lines).join("\n") };
-}
+const MAX_FOLLOW_BYTES = 512 * 1024;
+const CHUNK_BYTES = 64 * 1024;
 
-/** Follow appended bytes until SIGINT/SIGTERM. The file must already exist. */
-export async function followLogFile(path: string): Promise<void> {
-    if (!existsSync(path)) {
-        throw new Error(`还没有运行日志：${path}`);
-    }
-    let offset = statSync(path).size;
-    let reading = false;
-
-    const readAppended = () => {
-        if (reading || !existsSync(path)) return;
-        reading = true;
-        try {
-            const size = statSync(path).size;
-            if (size < offset) offset = 0;
-            if (size <= offset) return;
-            const length = size - offset;
-            const buffer = Buffer.alloc(length);
-            const fd = openSync(path, "r");
+/** Follow the current log across rotation, with bounded reads and stdout backpressure. */
+export async function followLogFile(initialPath: string): Promise<void> {
+    if (!existsSync(initialPath)) throw new Error(`还没有运行日志：${initialPath}`);
+    const controller = new AbortController();
+    const finish = () => controller.abort();
+    process.once("SIGINT", finish);
+    process.once("SIGTERM", finish);
+    let path = initialPath;
+    let offset: number | undefined;
+    let identity: string | undefined;
+    const buffer = Buffer.alloc(CHUNK_BYTES);
+    try {
+        while (!controller.signal.aborted) {
             try {
-                readSync(fd, buffer, 0, length, offset);
-            } finally {
-                closeSync(fd);
+                const file = await open(path, "r");
+                try {
+                    const info = await file.stat();
+                    const nextIdentity = `${info.dev}:${info.ino}`;
+                    if (offset === undefined) offset = info.size;
+                    else if (identity !== nextIdentity || info.size < offset) offset = 0;
+                    identity = nextIdentity;
+                    if (info.size - offset > MAX_FOLLOW_BYTES) {
+                        offset = info.size - MAX_FOLLOW_BYTES;
+                        process.stderr.write("日志增长过快，已跳过较早内容。\n");
+                    }
+                    while (offset < info.size && !controller.signal.aborted) {
+                        const { bytesRead } = await file.read(buffer, 0, Math.min(CHUNK_BYTES, info.size - offset), offset);
+                        if (bytesRead === 0) break;
+                        offset += bytesRead;
+                        // Copy before reusing the read buffer: stdout may retain the chunk.
+                        if (!process.stdout.write(Buffer.from(buffer.subarray(0, bytesRead)))) {
+                            await once(process.stdout, "drain", { signal: controller.signal });
+                        }
+                    }
+                } finally {
+                    await file.close();
+                }
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
             }
-            offset = size;
-            process.stdout.write(buffer);
-        } finally {
-            reading = false;
+            const currentPath = getCurrentLogPath();
+            if (currentPath !== path) {
+                path = currentPath;
+                offset = 0;
+                identity = undefined;
+                continue;
+            }
+            await delay(250, undefined, { signal: controller.signal });
         }
-    };
-
-    await new Promise<void>((resolve) => {
-        const finish = () => {
-            unwatchFile(path, readAppended);
-            process.off("SIGINT", finish);
-            process.off("SIGTERM", finish);
-            resolve();
-        };
-        watchFile(path, { interval: 250 }, readAppended);
-        process.once("SIGINT", finish);
-        process.once("SIGTERM", finish);
-    });
+    } catch (error) {
+        if (!controller.signal.aborted) throw error;
+    } finally {
+        process.off("SIGINT", finish);
+        process.off("SIGTERM", finish);
+    }
 }

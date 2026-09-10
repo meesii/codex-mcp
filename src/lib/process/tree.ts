@@ -81,8 +81,10 @@ async function waitForChildClose(child: ChildProcess, timeoutMs: number): Promis
             child.removeListener("close", onClose);
             resolve(closed);
         };
+        // This promise is explicitly awaited by lifecycle cleanup. Keep the
+        // bounded timeout referenced so detached/unref children cannot let the
+        // Node process exit before cleanup settles (notably on Node 22).
         timer = setTimeout(() => finish(false), timeoutMs);
-        timer.unref();
         child.once("close", onClose);
     });
 }

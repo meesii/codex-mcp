@@ -1,8 +1,6 @@
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
 import type { ServerConfig } from "../config/loader.js";
-import { TOOL_NAMES, type ToolName } from "../tools/names.js";
 import {
-    TOOL_CARD_LEGACY_TEMPLATE,
     TOOL_CARD_MIME,
     TOOL_CARD_URI,
     SUMMARY_CARD_URI,
@@ -18,7 +16,6 @@ import {
 
 const SHARED_TOOL_CARD_HTML = toolCardHtml();
 const SUMMARY_CARD_HTML = summaryCardHtml();
-const legacyToolCardHtmlCache = new Map<ToolName | undefined, string>();
 const serverUiPreferences = new WeakMap<object, UiPreferences>();
 
 export function configureServerUiPreferences(
@@ -72,23 +69,6 @@ export function summaryCardResourceMeta(config: ServerConfig): Record<string, un
     };
 }
 
-export function toolNameFromCardPath(pathName: string): ToolName | undefined {
-    const base = pathName.replace(/\.html$/i, "");
-    const withoutVersion = base.replace(/[@-]v\d+$/i, "");
-    if ((TOOL_NAMES as readonly string[]).includes(withoutVersion)) {
-        return withoutVersion as ToolName;
-    }
-    return undefined;
-}
-
-function cachedLegacyToolCardHtml(toolName: ToolName | undefined): string {
-    const cached = legacyToolCardHtmlCache.get(toolName);
-    if (cached !== undefined) return cached;
-    const html = toolCardHtml(toolName);
-    legacyToolCardHtmlCache.set(toolName, html);
-    return html;
-}
-
 export function registerToolCardResource(server: McpServer, config: ServerConfig): void {
     const resourceMeta = toolCardResourceMeta(config);
     const summaryMeta = summaryCardResourceMeta(config);
@@ -137,31 +117,6 @@ export function registerToolCardResource(server: McpServer, config: ServerConfig
         }),
     );
 
-    // Compatibility for connectors that still request the old per-tool URIs.
-    server.registerResource(
-        "tool-card-legacy",
-        new ResourceTemplate(TOOL_CARD_LEGACY_TEMPLATE, { list: undefined }),
-        {
-            description:
-                "Legacy alias for the shared tool card (old per-tool URI cache).",
-            mimeType: TOOL_CARD_MIME,
-            _meta: resourceMeta,
-        },
-        async (uri, variables) => {
-            const pathName = String(variables.name ?? "");
-            const toolName = toolNameFromCardPath(pathName);
-            return {
-                contents: [
-                    {
-                        uri: uri.href,
-                        mimeType: TOOL_CARD_MIME,
-                        text: cachedLegacyToolCardHtml(toolName),
-                        _meta: resourceMeta,
-                    },
-                ],
-            };
-        },
-    );
 }
 
 export function toolUiMeta(server: object, toolName: string): Record<string, unknown> {

@@ -49,10 +49,10 @@ export interface CloudflarePublicAccessConfig {
     tunnelName: string;
     tunnelId: string;
     /** Versioned generated YAML selected by the committed config. */
-    configRevision?: string;
+    configRevision: string;
     /** Non-secret Cloudflare ownership metadata used for consistency checks. */
-    accountId?: string;
-    zoneId?: string;
+    accountId: string;
+    zoneId: string;
 }
 
 export type PublicAccessConfig =
@@ -62,9 +62,9 @@ export type PublicAccessConfig =
 export interface UserConfig {
     host?: string;
     port?: number;
-    /** Tagged committed public entry. Legacy flat fields are migrated on read. */
+    /** Tagged committed public entry. Only the 1.0 shape is accepted. */
     publicAccess?: PublicAccessConfig;
-    /** Optional per-client tool registration policy; omitted means full compatibility. */
+    /** Optional per-client tool registration policy; omitted means all tools. */
     clientCapabilities?: ClientCapabilitiesConfig;
     /** External MCP / Skill sources consumed at runtime without copying them. */
     capabilities?: UserCapabilitiesConfig;
@@ -106,6 +106,9 @@ export function loadUserConfig(): UserConfig {
         return normalizeUserConfig(raw as Record<string, unknown>);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("不支持的字段")) {
+            throw new Error(`${message}；1.0 不会自动迁移旧配置`);
+        }
         throw new Error(`配置文件有问题：${path}：${message}`);
     }
 }
@@ -131,8 +134,9 @@ export function saveUserConfig(patch: UserConfigPatch): UserConfig {
     if (patch.ui !== undefined) {
         merged.ui = normalizeUserUiConfig({ ...(merged.ui ?? {}), ...patch.ui });
     }
-    writePrivateFileAtomic(getUserConfigPath(), `${JSON.stringify(merged, null, 4)}\n`);
-    return merged;
+    const normalized = normalizeUserConfig(merged as unknown as Record<string, unknown>);
+    writePrivateFileAtomic(getUserConfigPath(), `${JSON.stringify(normalized, null, 4)}\n`);
+    return normalized;
 }
 
 export function ensureStarterUserConfig(host: string, port: number): UserConfig {
@@ -186,25 +190,36 @@ function invalidDomainError(value: string): Error {
 }
 
 function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
+    const supportedKeys = new Set([
+        "host",
+        "port",
+        "publicAccess",
+        "clientCapabilities",
+        "capabilities",
+        "ui",
+    ]);
+    const unknownKeys = Object.keys(raw).filter((key) => !supportedKeys.has(key));
+    if (unknownKeys.length > 0) {
+        throw new Error(
+            `配置包含 1.0 不支持的字段：${unknownKeys.join(", ")}；请重新运行 codex-mcp setup`,
+        );
+    }
     const config: UserConfig = {};
-    if (typeof raw.host === "string" && raw.host.trim()) {
-        config.host = raw.host.trim();
+    if (Object.prototype.hasOwnProperty.call(raw, "host")) {
+        config.host = normalizeListenHost(raw.host);
     }
-    if (typeof raw.port === "number" && Number.isFinite(raw.port)) {
-        config.port = raw.port;
-    } else if (typeof raw.port === "string" && raw.port.trim()) {
-        const port = Number.parseInt(raw.port, 10);
-        if (Number.isFinite(port)) {
-            config.port = port;
+    if (Object.prototype.hasOwnProperty.call(raw, "port")) {
+        config.port = normalizePort(raw.port);
+    }
+    if (raw.publicAccess !== undefined) {
+        if (!raw.publicAccess || typeof raw.publicAccess !== "object" || Array.isArray(raw.publicAccess)) {
+            throw new Error("publicAccess must be an object");
         }
+        config.publicAccess = normalizePublicAccess(raw.publicAccess as PublicAccessConfig);
     }
-    config.publicAccess = normalizePublicAccessFromRaw(raw);
     if (raw.clientCapabilities !== undefined) {
         config.clientCapabilities = normalizeClientCapabilities(raw.clientCapabilities);
     }
-    // Legacy `workspaces` and `permissions` keys are intentionally ignored. Project
-    // scope is owned by ProjectRegistry/BindingStore/ProjectRuntime now; retaining a
-    // second configuration model would make old files appear authoritative when they are not.
     if (raw.capabilities !== undefined) {
         config.capabilities = normalizeCapabilitiesConfig(raw.capabilities);
     }
@@ -214,59 +229,57 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
     return config;
 }
 
-function normalizePublicAccessFromRaw(
-    raw: Record<string, unknown>,
-): PublicAccessConfig | undefined {
-    if (raw.publicAccess !== undefined) {
-        if (!raw.publicAccess || typeof raw.publicAccess !== "object" || Array.isArray(raw.publicAccess)) {
-            throw new Error("publicAccess must be an object");
-        }
-        return normalizePublicAccess(raw.publicAccess as PublicAccessConfig);
-    }
-
-    // Read-only compatibility with v0.9.0 and earlier. Any later save writes
-    // only the tagged shape and naturally removes these legacy flat fields.
-    const domain = typeof raw.domain === "string" && raw.domain.trim()
-        ? normalizeHostname(raw.domain)
-        : undefined;
-    if (!domain) return undefined;
-    if (raw.useCloudflared === false) return { kind: "external", domain };
-    if (
-        typeof raw.cloudflaredBin === "string" && raw.cloudflaredBin.trim() &&
-        typeof raw.tunnelName === "string" && raw.tunnelName.trim() &&
-        typeof raw.tunnelId === "string" && raw.tunnelId.trim()
-    ) {
-        return normalizePublicAccess({
-            kind: "cloudflare",
-            domain,
-            cloudflaredBin: raw.cloudflaredBin,
-            tunnelName: raw.tunnelName,
-            tunnelId: raw.tunnelId,
-        });
-    }
-    return undefined;
-}
-
 function normalizePublicAccess(input: PublicAccessConfig): PublicAccessConfig {
-    if (input.kind === "external") {
-        return { kind: "external", domain: normalizeHostname(input.domain) };
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+        throw new Error("publicAccess must be an object");
     }
-    if (input.kind !== "cloudflare") {
+    const raw = input as unknown as Record<string, unknown>;
+    const kind = raw.kind;
+    assertObjectKeys(raw, "publicAccess", kind === "cloudflare"
+        ? ["kind", "domain", "cloudflaredBin", "tunnelName", "tunnelId", "configRevision", "accountId", "zoneId"]
+        : ["kind", "domain"]);
+    if (kind === "external") {
+        return { kind: "external", domain: normalizeHostname(requireNonEmpty(raw.domain, "publicAccess.domain")) };
+    }
+    if (kind !== "cloudflare") {
         throw new Error("publicAccess.kind must be external or cloudflare");
     }
-    const cloudflaredBin = expandHomePath(requireNonEmpty(input.cloudflaredBin, "publicAccess.cloudflaredBin"));
-    const tunnelName = requireNonEmpty(input.tunnelName, "publicAccess.tunnelName");
-    const tunnelId = normalizeTunnelId(input.tunnelId, "publicAccess.tunnelId");
+    const cloudflaredBin = expandHomePath(requireNonEmpty(raw.cloudflaredBin, "publicAccess.cloudflaredBin"));
+    const tunnelName = requireNonEmpty(raw.tunnelName, "publicAccess.tunnelName");
+    const tunnelId = normalizeTunnelId(requireNonEmpty(raw.tunnelId, "publicAccess.tunnelId"), "publicAccess.tunnelId");
+    const configRevision = requireNonEmpty(raw.configRevision, "publicAccess.configRevision");
+    if (!/^[A-Za-z0-9_-]{8,80}$/.test(configRevision)) {
+        throw new Error("publicAccess.configRevision has an invalid format");
+    }
+    const accountId = requireNonEmpty(raw.accountId, "publicAccess.accountId");
+    const zoneId = requireNonEmpty(raw.zoneId, "publicAccess.zoneId");
     return {
         kind: "cloudflare",
-        domain: normalizeHostname(input.domain),
+        domain: normalizeHostname(requireNonEmpty(raw.domain, "publicAccess.domain")),
         cloudflaredBin,
         tunnelName,
         tunnelId,
-        ...(input.configRevision ? { configRevision: requireNonEmpty(input.configRevision, "publicAccess.configRevision") } : {}),
-        ...(input.accountId ? { accountId: requireNonEmpty(input.accountId, "publicAccess.accountId") } : {}),
-        ...(input.zoneId ? { zoneId: requireNonEmpty(input.zoneId, "publicAccess.zoneId") } : {}),
+        configRevision,
+        accountId,
+        zoneId,
     };
+}
+
+function normalizeListenHost(value: unknown): string {
+    if (typeof value !== "string") throw new Error("host 必须是本机监听地址");
+    const host = value.trim().toLowerCase();
+    if (host === "localhost") return "127.0.0.1";
+    if (!["127.0.0.1", "::1", "0.0.0.0", "::"].includes(host)) {
+        throw new Error("host 只支持 127.0.0.1、::1、0.0.0.0 或 ::，确保本机控制接口可达");
+    }
+    return host;
+}
+
+function normalizePort(value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 65535) {
+        throw new Error("port must be an integer between 0 and 65535");
+    }
+    return value;
 }
 
 function requireNonEmpty(value: unknown, name: string): string {
@@ -281,6 +294,7 @@ function normalizeCapabilitiesConfig(value: unknown): UserCapabilitiesConfig {
         throw new Error("capabilities must be an object");
     }
     const raw = value as Record<string, unknown>;
+    assertObjectKeys(raw, "capabilities", ["sync", "priority", "sources"]);
     const result: UserCapabilitiesConfig = {};
     if (raw.sync !== undefined) {
         if (raw.sync !== "watch" && raw.sync !== "startup") {
@@ -316,6 +330,7 @@ function normalizeCapabilitiesConfig(value: unknown): UserCapabilitiesConfig {
                 throw new Error(`capabilities.sources.${sourceId} must be an object`);
             }
             const sourceRaw = sourceValue as Record<string, unknown>;
+            assertObjectKeys(sourceRaw, `capabilities.sources.${sourceId}`, ["enabled", "mcp", "skills"]);
             const source: CapabilitySourceConfig = {};
             for (const key of ["enabled", "mcp", "skills"] as const) {
                 if (sourceRaw[key] === undefined) continue;
@@ -336,6 +351,7 @@ function normalizeUserUiConfig(value: unknown): UserUiConfig {
         throw new Error("ui must be an object");
     }
     const raw = value as Record<string, unknown>;
+    assertObjectKeys(raw, "ui", ["tools", "status"]);
     const result: UserUiConfig = {};
     if (raw.tools !== undefined) {
         if (typeof raw.tools !== "boolean") throw new Error("ui.tools must be a boolean");
@@ -353,6 +369,7 @@ function normalizeClientCapabilities(value: unknown): ClientCapabilitiesConfig {
         throw new Error("clientCapabilities must be an object");
     }
     const raw = value as Record<string, unknown>;
+    assertObjectKeys(raw, "clientCapabilities", ["default", "clients"]);
     const result: ClientCapabilitiesConfig = {};
     if (raw.default !== undefined) {
         result.default = normalizeToolPatterns(raw.default, "clientCapabilities.default");
@@ -374,6 +391,16 @@ function normalizeClientCapabilities(value: unknown): ClientCapabilitiesConfig {
         result.clients = clients;
     }
     return result;
+}
+
+function assertObjectKeys(value: unknown, label: string, allowed: readonly string[]): void {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+    }
+    const unknown = Object.keys(value as Record<string, unknown>).filter((key) => !allowed.includes(key));
+    if (unknown.length > 0) {
+        throw new Error(`${label} 包含 1.0 不支持的字段：${unknown.join(", ")}`);
+    }
 }
 
 function normalizeToolPatterns(value: unknown, label: string): string[] {

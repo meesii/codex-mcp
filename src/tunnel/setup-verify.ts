@@ -50,9 +50,13 @@ export async function verifySetupPublicRoute(
     const listenHost = localServiceHost(host);
     const server = createProbeServer(probe);
     let sidecar: CloudflaredSidecar | undefined;
+    const cancel = () => { void sidecar?.stop().catch(() => undefined); };
+    options.signal?.addEventListener("abort", cancel, { once: true });
 
     try {
+        options.signal?.throwIfAborted();
         await listenProbeServer(server, listenHost, port);
+        options.signal?.throwIfAborted();
 
         let tunnel: SetupPublicVerificationResult["tunnel"];
         if (route.useCloudflared) {
@@ -65,18 +69,20 @@ export async function verifySetupPublicRoute(
                 configPath: route.configPath,
             });
             tunnel = await sidecar.start();
+            options.signal?.throwIfAborted();
         }
 
         await options.beforePublicVerify?.();
         const publicMcpUrl = `https://${route.domain}/mcp`;
         await verifyTunnelRoute(publicMcpUrl, probe, {
-            totalTimeoutMs: options.totalTimeoutMs ?? 300_000,
+            totalTimeoutMs: options.totalTimeoutMs,
             signal: options.signal,
         });
         return { publicMcpUrl, tunnel };
     } finally {
-        await sidecar?.stop().catch(() => undefined);
-        await closeProbeServer(server);
+        options.signal?.removeEventListener("abort", cancel);
+        try { await sidecar?.stop(); }
+        finally { await closeProbeServer(server); }
     }
 }
 
@@ -114,13 +120,13 @@ export async function assertSetupPortAvailable(
     if (state === "codex-mcp") {
         throw new Error(
             `本机端口 ${port} 上有 codex-mcp 在运行，但缺少可用的 daemon 状态，无法安全停止。` +
-            "请先结束这个旧进程，再重新运行 setup；尚未修改 Cloudflare。",
+            "请先结束这个已有进程，再重新运行 setup；尚未修改 Cloudflare。",
         );
     }
     throw new Error(`本机端口 ${port} 已被其它程序占用；尚未修改 Cloudflare`);
 }
 
-/** Read-only classification used to recognize a supported foreground instance. */
+/** Read-only classification used to recognize an existing local codex-mcp instance. */
 export async function inspectSetupPort(
     host: string,
     port: number,
@@ -175,13 +181,13 @@ async function readHealthInstance(
         typeof (payload as { instance?: unknown }).instance !== "string" ||
         (payload as { instance: string }).instance.length < 16
     ) {
-        throw new Error(`端口上的服务不是支持 setup 验证的当前版 codex-mcp：${url}。如果是升级前启动的旧进程，请重启后再检查。`);
+        throw new Error(`端口上的服务不是支持 setup 验证的当前版 codex-mcp：${url}。请重启该服务后再检查。`);
     }
     return (payload as { instance: string }).instance;
 }
 
 export function localServiceHost(host: string): string {
-    return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+    return host === "::" ? "::1" : host === "0.0.0.0" ? "127.0.0.1" : host;
 }
 
 function formatHost(host: string): string {

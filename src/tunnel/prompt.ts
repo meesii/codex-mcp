@@ -104,7 +104,7 @@ export async function withSpinner<T>(
     successMessage: string,
     action: () => Promise<T>,
 ): Promise<T> {
-    requireInteractiveTerminal();
+    if (!canPromptInteractively()) return await action();
     const progress = spinner();
     progress.start(message);
     try {

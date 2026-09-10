@@ -1,6 +1,6 @@
 import { safeHttpGet } from "../lib/http/safe-http.js";
 
-const DEFAULT_TOTAL_TIMEOUT_MS = 300_000;
+export const TUNNEL_ROUTE_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 512;
 
 export interface TunnelProbe {
@@ -44,7 +44,7 @@ export async function verifyTunnelRoute(
 
     const target = new URL(probe.path, mcpUrl);
     const totalTimeoutMs = positiveSafeInteger(
-        options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS,
+        options.totalTimeoutMs ?? TUNNEL_ROUTE_TIMEOUT_MS,
         1_000,
         "totalTimeoutMs",
     );

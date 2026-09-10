@@ -1,3 +1,4 @@
+import { PACKAGE_VERSION } from "../server/version.js";
 import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -549,7 +550,7 @@ function readyInfo(name: string, client: Client): DownstreamServerInfo {
 }
 
 async function openConnection(config: McpServerConfig): Promise<DownstreamConnection> {
-    const client = new Client({ name: "codex-mcp", version: "0.1.0" });
+    const client = new Client({ name: "codex-mcp", version: PACKAGE_VERSION });
     const state = createTransportState(config);
     const connection: DownstreamConnection = {
         client,

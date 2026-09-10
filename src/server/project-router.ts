@@ -9,6 +9,7 @@ import type { RegisteredProject } from "../daemon/state.js";
 import type { BindingStore } from "../projects/bindings.js";
 import type { ProjectRegistry } from "../projects/registry.js";
 import type { ProjectRuntimeManager, ProjectRuntime } from "../projects/runtime.js";
+import { writeRuntimeLog } from "../lib/runtime-log.js";
 
 /**
  * Everything a project-level tool needs for one tool call. Resolved at call
@@ -56,7 +57,7 @@ export function currentBindingOwnerKey(fallbackOwnerId: string): string {
 export function unboundProjectMessage(activeProjects: RegisteredProject[]): string {
     if (activeProjects.length === 0) {
         return [
-            "这个会话还没有绑定项目，而且当前没有已注册的项目。请让用户先在项目目录里运行 codex-mcp 注册项目。",
+            "这个会话还没有绑定项目，而且当前没有已注册的项目。请让用户先在项目目录里运行 codex-mcp start 注册项目。",
             "注册后调用 project_control(action=select, project_id=...)。",
             "如果 project_control 不在 ChatGPT 已批准的 action snapshot 中，请 Refresh 或重新发布 MCP app actions。",
         ].join("\n");
@@ -108,7 +109,11 @@ export class BindingProjectScopeProvider {
 
         // A stale or deactivated binding must fail closed, never route anywhere.
         if (binding && !project) {
-            this.bindings.unbind(ownerKey);
+            void this.bindings.unbind(ownerKey).catch((error: unknown) => {
+                writeRuntimeLog("error", "stale_binding_cleanup_failed", {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            });
         }
         if (!project) {
             const activeProjects = this.registry.listActive();
@@ -126,13 +131,17 @@ export class BindingProjectScopeProvider {
             const detail = error instanceof Error ? error.message : String(error);
             throw new UnboundProjectError(
                 [
-                    `已绑定的项目当前不可用（${detail}）。请让用户重新运行 codex-mcp 注册项目，或明确选择其他项目。`,
+                    `已绑定的项目当前不可用（${detail}）。请让用户重新运行 codex-mcp start 注册项目，或明确选择其他项目。`,
                     unboundProjectMessage(activeProjects),
                 ].join("\n"),
                 activeProjects,
             );
         }
-        this.bindings.touch(ownerKey);
+        void this.bindings.touch(ownerKey).catch((error: unknown) => {
+            writeRuntimeLog("error", "binding_touch_failed", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+        });
         return runtime;
     }
 

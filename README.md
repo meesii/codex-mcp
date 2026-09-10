@@ -40,9 +40,9 @@ codex-mcp 后台服务
 
 你只需要运行 **一个 codex-mcp 后台服务**。
 
-不同项目不需要分别启动服务器，也不需要分别创建 Cloudflare Tunnel。进入每个项目目录运行一次 `codex-mcp`，它就会把这个项目注册到同一个后台服务里。
+不同项目不需要分别启动服务器，也不需要分别创建 Cloudflare Tunnel。进入每个项目目录运行一次 `codex-mcp start`，它就会把这个项目注册到同一个后台服务里。
 
-每个 ChatGPT 对话只会绑定一个项目。这样你可以在不同对话里分别处理不同项目，也可以明确切换当前对话使用的项目。
+每个 ChatGPT 对话只会绑定一个项目。这样你可以在不同对话里分别处理不同项目，也可以明确切换当前对话使用的项目。ChatGPT 会提供稳定的对话级 session 标识；其它 MCP 客户端如果既不提供对话元数据也不维持 MCP session，绑定会退化为该 OAuth client 的共享绑定，因此这类客户端应保持独立 MCP session。
 
 ---
 
@@ -202,7 +202,7 @@ codex-mcp auth
 
 ```bash
 cd /path/to/your-project
-codex-mcp
+codex-mcp start
 ```
 
 第一次运行时，codex-mcp 会启动后台服务，然后注册当前项目。
@@ -212,7 +212,7 @@ codex-mcp
 你也可以从其他目录指定项目：
 
 ```bash
-codex-mcp --root /path/to/your-project
+codex-mcp start --root /path/to/your-project
 ```
 
 查看当前状态：
@@ -267,7 +267,7 @@ https://codex-mcp.example.com/mcp
 
 先区分两个概念：
 
-- **注册项目（Registered Project）**：你运行 `codex-mcp` 注册的主项目。一个 ChatGPT 对话同一时间只绑定一个注册项目。
+- **注册项目（Registered Project）**：你运行 `codex-mcp start` 注册的主项目。一个 ChatGPT 对话同一时间只绑定一个注册项目。
 - **会话绑定（Conversation Binding）**：ChatGPT 对话当前选择的注册项目；文件和命令工具只能在这个项目目录内运行。
 
 项目注册由本地 CLI 完成；模型只通过 `project_control` 选择已经注册的项目，不会自行注册项目或扩大路径边界。
@@ -286,13 +286,13 @@ https://codex-mcp.example.com/mcp
 
 ```bash
 cd ~/code/api
-codex-mcp
+codex-mcp start
 
 cd ~/code/web
-codex-mcp
+codex-mcp start
 
 cd ~/code/mobile
-codex-mcp
+codex-mcp start
 ```
 
 它们会全部注册到同一个 codex-mcp 后台服务。
@@ -353,9 +353,7 @@ codex-mcp project remove <项目 ID、项目名或目录>
 codex-mcp project remove
 ```
 
-旧的 `codex-mcp exit` 仍然保留，等价于停用当前项目。
-
-这只会停用目标项目；后台服务、Cloudflare Tunnel 和其他项目仍然继续运行。重新启用时，再运行 `codex-mcp` 或 `codex-mcp project add <目录>`。
+这只会停用目标项目；后台服务、Cloudflare Tunnel 和其他项目仍然继续运行。重新启用时，再运行 `codex-mcp start` 或 `codex-mcp project add <目录>`。
 
 ---
 
@@ -373,7 +371,7 @@ codex-mcp stop
 codex-mcp restart
 ```
 
-`stop` 会关闭所有项目运行时、codex-mcp 后台服务和 Cloudflare Tunnel，但**保留项目注册和 active 状态**。需要再次启动时，进入项目目录运行 `codex-mcp`（本机模式用 `codex-mcp --local`）。`restart` 只用于重启当前正在运行的后台服务，因此能可靠保留原来的本机/公网模式。旧的 `codex-mcp exit -a` 仍作为 `stop` 的兼容入口。
+`stop` 会关闭所有项目运行时、codex-mcp 后台服务和 Cloudflare Tunnel，但**保留项目注册和 active 状态**。需要再次启动时，进入项目目录运行 `codex-mcp start`（本机模式用 `codex-mcp start --local`）。`restart` 只用于重启当前正在运行的后台服务，因此能可靠保留原来的本机/公网模式。
 
 ---
 
@@ -431,7 +429,7 @@ ChatGPT 会先用 `project_control` 查看并绑定一个已注册项目，再�
 
 ```bash
 cd ~/code/my-project
-codex-mcp
+codex-mcp start
 ```
 
 那么：
@@ -507,11 +505,13 @@ codex-mcp setup
 
 | 命令 | 作用 |
 |---|---|
-| `codex-mcp` | 注册 / 启动当前项目，并确保后台服务运行 |
-| `codex-mcp status` | 查看后台服务、CLI/daemon 版本、Tunnel 和所有项目 |
-| `codex-mcp status --json` | 输出稳定的机器可读状态 |
-| `codex-mcp restart` | 重启后台服务，保留项目注册状态 |
-| `codex-mcp stop` | 停止后台服务和 Tunnel，保留项目注册状态 |
+| `codex-mcp` | 显示帮助，不隐式启动服务 |
+| `codex-mcp start` | 注册 / 启动当前项目，并确保后台服务运行 |
+| `codex-mcp status` | 查看 Controller、MCP Runtime、Tunnel 和所有项目 |
+| `codex-mcp status --json` | 输出稳定的机器可读状态，其中包含本机 Web Console 地址 |
+| `http://127.0.0.1:<Controller端口>/` | 打开完整本机 Web Console；可执行 CLI 的用户级操作 |
+| `codex-mcp restart` | 重启 MCP Runtime，保留 Controller 和项目注册状态 |
+| `codex-mcp stop` | 停止 MCP Runtime 和 Tunnel；Controller / Web Console 保持在线 |
 | `codex-mcp project list` | 查看已注册项目 |
 | `codex-mcp project add [目录]` | 注册项目，默认当前目录 |
 | `codex-mcp project remove [项目]` | 停用项目，默认当前目录 |
@@ -523,14 +523,10 @@ codex-mcp setup
 | `codex-mcp doctor --fix` | 创建缺失本机目录、清理失效 daemon 状态等安全修复 |
 | `codex-mcp auth` | 修改 ChatGPT 连接密码 |
 | `codex-mcp update` | 更新到最新版本 |
-| `codex-mcp tunnel` | 重新配置公网连接（兼容快捷入口） |
-| `codex-mcp exit` | 兼容入口：停用当前项目 |
-| `codex-mcp exit -a` | 兼容入口：停止后台服务 |
-| `codex-mcp --root <目录>` | 注册指定目录，而不是当前目录 |
-| `codex-mcp --local` | 仅本机模式，不开放公网 |
-| `codex-mcp --no-tunnel` | 不自动启动 Cloudflare Tunnel |
-| `codex-mcp --tunnel-logs` | 把 Tunnel 日志同时输出到运行日志 |
-| `codex-mcp serve --foreground` | 前台运行服务，用于调试 |
+| `codex-mcp start --root <目录>` | 注册指定目录，而不是当前目录 |
+| `codex-mcp start --local` | 仅本机模式，不开放公网 |
+| `codex-mcp start --no-tunnel` | 不自动启动 Cloudflare Tunnel |
+| `codex-mcp start --tunnel-logs` | 把 Tunnel 日志同时输出到运行日志 |
 | `codex-mcp --version` | 查看版本 |
 | `codex-mcp help` | 查看帮助 |
 
@@ -574,6 +570,7 @@ codex-mcp 的用户数据默认保存在：
 
 ```text
 ~/.codex-mcp/config.json
+~/.codex-mcp/controller.json
 ~/.codex-mcp/daemon.json
 ~/.codex-mcp/projects.json
 ~/.codex-mcp/session-bindings.json
@@ -582,8 +579,9 @@ codex-mcp 的用户数据默认保存在：
 
 其中：
 
-- `config.json`：公网地址、工作区、权限、外部能力等设置
-- `daemon.json`：当前后台服务状态
+- `config.json`：监听地址、公网连接、外部能力、客户端工具策略和 UI 设置
+- `controller.json`：仅本机 Controller 的 PID、loopback 端口和随机控制凭据；Web Console 由它提供
+- `daemon.json`：当前 MCP Runtime 状态；执行 `stop` 后会移除，而 Controller 继续运行
 - `projects.json`：注册过的项目
 - `session-bindings.json`：ChatGPT 会话和项目的绑定关系
 
@@ -719,7 +717,7 @@ codex-mcp 会在临时目录完成新登录并验证凭据，然后才替换自�
 重新运行：
 
 ```bash
-codex-mcp tunnel
+codex-mcp setup
 ```
 
 codex-mcp 会检查本机 Tunnel 凭据和 Cloudflare 上的 Tunnel 是否匹配。
@@ -757,7 +755,7 @@ codex-mcp 会检查本机 Tunnel 凭据和 Cloudflare 上的 Tunnel 是否匹配
 每个项目只需要运行一次：
 
 ```bash
-codex-mcp
+codex-mcp start
 ```
 
 用来把它注册到同一个后台服务。
@@ -770,7 +768,7 @@ codex-mcp
 
 默认不会。
 
-正常的 `codex-mcp` 会启动后台守护进程，终端命令完成后服务继续运行。
+正常的 `codex-mcp start` 会启动后台守护进程，终端命令完成后服务继续运行。
 
 查看：
 
@@ -784,23 +782,27 @@ codex-mcp status
 codex-mcp stop
 ```
 
-旧的 `codex-mcp exit -a` 仍然兼容。
-
-如果你是开发调试，希望服务一直占用当前终端，可以使用：
-
-```bash
-codex-mcp serve --foreground
-```
-
 ---
 
 # 更新
+
+## 1.0 干净基线
+
+1.0 是一次 breaking release，不读取旧版命令、旧版配置字段或旧 OAuth 状态。升级前请用已安装的旧版 CLI 停止服务，备份 `~/.codex-mcp`，再移走其中的 `config.json`、`oauth-state.json`、`daemon.json`、`projects.json` 和 `session-bindings.json`，然后重新运行：
+
+```bash
+codex-mcp setup
+```
+
+请保留安装目录 `~/.codex-mcp/npm`、托管组件、连接密码和 Cloudflare 凭据。重新 setup 会选择新的已提交配置；旧 OAuth 会话与项目绑定不会恢复，项目需要重新注册。不要删除整个 `~/.codex-mcp`，否则脚本安装的 CLI 也会被删除。
+
+旧的 `tunnel`、`exit` 和 `serve --foreground` 入口已删除；分别使用 `setup`、`stop` / `project remove` 和后台 `start`。
 
 ```bash
 codex-mcp update
 ```
 
-更新会保留你的配置和连接密码。
+1.0 之后的常规更新会保留配置和连接密码；从旧版首次升级仍须完成上面的基线重置。
 
 更新后运行：
 
@@ -890,7 +892,7 @@ npm run dev
 npm run dev:once -- --local
 ```
 
-发布版本要求 Node.js 22。日常 CI 在 Linux 上检查，发版时再验证 Linux、macOS 和 Windows。
+发布版本要求 Node.js 22。日常 CI 和发版验收都会在 Linux、macOS、Windows 上运行类型检查、完整测试和真实 tarball 隔离安装 smoke；发布流程只分发已经通过 smoke 的同一个 tarball artifact。
 
 ---
 

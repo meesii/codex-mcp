@@ -49,8 +49,8 @@ export function registerSkillTools(server: McpServer, capabilityScope: Capabilit
                 name: z.string().min(1).describe("Skill name from skills_list."),
             },
             outputSchema: {
-                text: z.string(), name: z.string(),
-                description: z.string(), source: z.enum(["agents", "codex", "claude"]),
+                ...skillInfoSchema.shape,
+                text: z.string(),
                 path: z.string(),
                 content: z.string(),
                 truncated: z.boolean(),

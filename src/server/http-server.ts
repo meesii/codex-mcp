@@ -1,3 +1,4 @@
+import { loopbackHost } from "../lib/http/listen-address.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Server as NodeHttpServer } from "node:http";
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
@@ -28,7 +29,8 @@ import type { ProjectRegistry } from "../projects/registry.js";
 import type { BindingStore } from "../projects/bindings.js";
 import type { ProjectRuntimeManager } from "../projects/runtime.js";
 import type { RuntimeIntent } from "../daemon/state.js";
-import type { TunnelObservedStatus } from "../daemon/control.js";
+import { DAEMON_CONTROL_API_VERSION, type TunnelObservedStatus } from "../daemon/control.js";
+import { readRecentLogLines } from "../lib/log-reader.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { RoundChangeStore } from "../lib/tool/round-changes.js";
 
@@ -72,7 +74,6 @@ export interface DaemonServerOptions {
 
 export interface RunningHttpServer {
     config: ServerConfig;
-    project: ProjectContext;
     hub: DownstreamMcpHub;
     skills: SkillRegistry;
     capabilities?: CapabilityManager;
@@ -81,6 +82,8 @@ export interface RunningHttpServer {
     close: () => Promise<void>;
     /** Bound URL after listen, e.g. http://127.0.0.1:3920/mcp */
     getMcpUrl: () => string;
+    /** Actual TCP port after listen; supports ephemeral port 0 configuration. */
+    getPort: () => number;
     /** Unpredictable public-route probe used only for end-to-end tunnel verification. */
     getTunnelProbe: () => { path: string; expectedBody: string };
 }
@@ -109,7 +112,7 @@ export function createHttpServer(
     const daemonOptions = options.daemon;
     const hub = options.hub ?? DownstreamMcpHub.empty();
     const skills = options.skills ?? SkillRegistry.empty();
-    const project = new ProjectContext(config.projectRoot);
+    const standaloneProject = daemonOptions ? undefined : new ProjectContext(config.projectRoot);
     const uiPreferences = options.uiPreferences ?? uiPreferencesFromUserConfig(loadUserConfig());
     const allowedToolsResolver = options.allowedToolsResolver ?? (() => undefined);
     const publicHttpHostnames =
@@ -135,18 +138,15 @@ export function createHttpServer(
               }
             : {}),
     });
-    const rootProcesses = new ProcessSessionManager();
-    const processOwners = new ProcessOwnerPool(rootProcesses);
-    const roundChanges = new RoundChangeStore();
+    const standaloneRootProcesses = daemonOptions ? undefined : new ProcessSessionManager();
+    const standaloneProcessOwners = standaloneRootProcesses
+        ? new ProcessOwnerPool(standaloneRootProcesses)
+        : undefined;
+    const standaloneRoundChanges = daemonOptions ? undefined : new RoundChangeStore();
     const mcpHandler = createMcpHandler(
         (context) => {
             const authClientId = config.oauthRequired ? context.authInfo?.clientId : undefined;
             const processOwnerId = resolveProcessOwnerId(config.oauthRequired, authClientId);
-            const processes = new CurrentOwnerProcessSessions(
-                rootProcesses,
-                processOwners,
-                processOwnerId,
-            );
             if (daemonOptions) {
                 const provider = new BindingProjectScopeProvider(
                     daemonOptions.registry,
@@ -187,10 +187,26 @@ export function createHttpServer(
                     },
                 });
             }
+            if (!standaloneProject || !standaloneRootProcesses || !standaloneProcessOwners || !standaloneRoundChanges) {
+                throw new Error("Standalone MCP runtime was not initialized");
+            }
+            const processes = new CurrentOwnerProcessSessions(
+                standaloneRootProcesses,
+                standaloneProcessOwners,
+                processOwnerId,
+            );
             return createMcpServer({
                 config,
-                scope: () => ({ project, processes, roundChanges: roundChanges.forOwner(processOwnerId) }),
-                tryScope: () => ({ project, processes, roundChanges: roundChanges.forOwner(processOwnerId) }),
+                scope: () => ({
+                    project: standaloneProject,
+                    processes,
+                    roundChanges: standaloneRoundChanges.forOwner(processOwnerId),
+                }),
+                tryScope: () => ({
+                    project: standaloneProject,
+                    processes,
+                    roundChanges: standaloneRoundChanges.forOwner(processOwnerId),
+                }),
                 hub,
                 skills,
                 uiPreferences,
@@ -214,7 +230,7 @@ export function createHttpServer(
     let httpServer: NodeHttpServer | undefined;
     let boundPort = config.port;
     let oauthRuntimePromise: Promise<OAuthRuntime> | undefined;
-    const localMcpUrl = (): string => `http://${urlHost(config.host)}:${boundPort}/mcp`;
+    const localMcpUrl = (): string => `http://${loopbackHost(config.host)}:${boundPort}/mcp`;
     const instanceId = randomBytes(18).toString("base64url");
     const tunnelProbe = {
         path: `/.well-known/codex-mcp-tunnel-check/${randomBytes(24).toString("base64url")}`,
@@ -337,12 +353,12 @@ export function createHttpServer(
 
     return {
         config,
-        project,
         hub,
         skills,
         ...(options.capabilities ? { capabilities: options.capabilities } : {}),
         uiPreferences,
         getMcpUrl: localMcpUrl,
+        getPort: () => boundPort,
         getTunnelProbe: () => ({ ...tunnelProbe }),
         listen: async () => {
             if (config.oauthRequired && !(await hasAdminPassword())) {
@@ -378,14 +394,16 @@ export function createHttpServer(
             return listening;
         },
         close: async () => {
-            await mcpHandler.close();
-            await processOwners.shutdown();
-            await hub.close();
-            if (daemonOptions) {
-                await daemonOptions.runtimes.shutdownAll();
-            }
-            await closeNodeServer(httpServer);
+            const results = await Promise.allSettled([
+                mcpHandler.close(),
+                ...(standaloneProcessOwners ? [standaloneProcessOwners.shutdown()] : []),
+                hub.close(),
+                ...(daemonOptions ? [daemonOptions.runtimes.shutdownAll()] : []),
+                closeNodeServer(httpServer),
+            ]);
             httpServer = undefined;
+            const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+            if (errors.length) throw new AggregateError(errors, "服务资源清理未完成");
         },
     };
 }
@@ -396,22 +414,24 @@ function registerDaemonControlRoutes(
     daemon: DaemonServerOptions,
     boundPort: () => number,
 ): void {
-    // Loopback-only + control token gate for every /daemon/* route.
+    // Loopback-only + control token gate for every /daemon/* route. The user-facing
+    // Web Console is hosted by the independent local Controller, never by this Runtime.
     app.use("/daemon", (req, res, next) => {
-        const remote = req.socket.remoteAddress ?? "";
-        if (!isLoopbackAddress(remote)) {
+        if (!isLocalDaemonRequest(req, boundPort())) {
             res.status(403).json({ error: "forbidden" });
             return;
         }
-        const token = req.header("x-codex-control-token");
-        if (token !== daemon.controlToken) {
+        const controlToken = req.header("x-codex-control-token");
+        if (controlToken !== daemon.controlToken) {
             res.status(401).json({ error: "unauthorized" });
             return;
         }
+        res.setHeader("cache-control", "no-store");
+        res.setHeader("x-content-type-options", "nosniff");
         next();
     });
 
-    app.get("/daemon/status", (_req, res) => {
+    app.get("/daemon/status", async (_req, res) => {
         const now = Date.now();
         const projects = daemon.registry
             .list()
@@ -420,19 +440,35 @@ function registerDaemonControlRoutes(
                 boundSessions: daemon.bindings.countForProject(project.id),
             }))
             .sort((left, right) => left.name.localeCompare(right.name));
-        res.json({
-            ok: true,
-            version: PACKAGE_VERSION,
-            mode: config.local ? "local" : "public",
-            pid: process.pid,
-            startedAt: DAEMON_STARTED_AT_ISO,
-            uptimeMs: now - DAEMON_STARTED_AT,
-            localUrl: `http://${urlHost(config.host)}:${boundPort()}/mcp`,
-            ...(config.publicMcpUrl ? { publicMcpUrl: config.publicMcpUrl } : {}),
-            runtimeIntent: daemon.runtimeIntent,
-            tunnel: daemon.tunnelStatus(),
-            projects,
-        });
+        try {
+            res.json({
+                controlApiVersion: DAEMON_CONTROL_API_VERSION,
+                ok: true,
+                version: PACKAGE_VERSION,
+                mode: config.local ? "local" : "public",
+                pid: process.pid,
+                startedAt: DAEMON_STARTED_AT_ISO,
+                uptimeMs: now - DAEMON_STARTED_AT,
+                localUrl: `http://${loopbackHost(config.host)}:${boundPort()}/mcp`,
+                auth: { required: config.oauthRequired, configured: await hasAdminPassword() },
+                ...(config.publicMcpUrl ? { publicMcpUrl: config.publicMcpUrl } : {}),
+                runtimeIntent: daemon.runtimeIntent,
+                tunnel: daemon.tunnelStatus(),
+                projects,
+            });
+        } catch (error) {
+            res.status(500).json({ error: errorMessage(error) });
+        }
+    });
+
+    app.get("/daemon/logs", (req, res) => {
+        try {
+            const raw = Number.parseInt(String(req.query.lines ?? "100"), 10);
+            const lines = readRecentLogLines(Number.isInteger(raw) ? Math.max(1, Math.min(5000, raw)) : 100);
+            res.json({ ok: true, ...lines });
+        } catch (error) {
+            res.status(500).json({ error: errorMessage(error) });
+        }
     });
 
     app.post("/daemon/projects", async (req, res) => {
@@ -443,7 +479,7 @@ function registerDaemonControlRoutes(
                 return;
             }
             const name = typeof body.name === "string" ? body.name : undefined;
-            const project = daemon.registry.register({ path: body.path, name });
+            const project = await daemon.registry.register({ path: body.path, name });
             logMcpEvent("daemon_project_registered", { project: project.id });
             res.json({ ok: true, project, projects: daemon.registry.list() });
         } catch (error) {
@@ -453,18 +489,23 @@ function registerDaemonControlRoutes(
 
     app.delete("/daemon/projects/:id", async (req, res) => {
         try {
-            const id = decodeURIComponent(req.params.id);
+            const id = req.params.id;
             const byPath =
-                typeof req.query.path === "string" ? decodeURIComponent(req.query.path) : undefined;
+                typeof req.query.path === "string" ? req.query.path : undefined;
             const target = daemon.registry.getById(id) ?? (byPath ? daemon.registry.getByPath(byPath) : undefined);
             if (!target) {
                 res.status(404).json({ error: `project not found: ${id}` });
                 return;
             }
-            const removed = daemon.registry.deactivateById(target.id);
-            if (removed) {
-                const invalidated = daemon.bindings.invalidateProject(target.id);
-                await daemon.runtimes.remove(target.id);
+            const removed = await daemon.registry.deactivateById(target.id);
+            // Cleanup is retryable even if a previous attempt already deactivated the project.
+            {
+                let invalidated: number;
+                try {
+                    invalidated = await daemon.bindings.invalidateProject(target.id);
+                } finally {
+                    await daemon.runtimes.remove(target.id);
+                }
                 logMcpEvent("daemon_project_deactivated", {
                     project: target.id,
                     bindingsInvalidated: invalidated,
@@ -486,8 +527,25 @@ function registerDaemonControlRoutes(
     });
 }
 
-function urlHost(host: string): string {
-    return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+function isLocalDaemonRequest(
+    req: { socket: { remoteAddress?: string | undefined }; header(name: string): string | undefined },
+    port: number,
+): boolean {
+    if (!isLoopbackAddress(req.socket.remoteAddress ?? "")) return false;
+    const rawHost = req.header("host")?.trim().toLowerCase();
+    if (!rawHost) return false;
+    const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+    const hostWithoutPort = rawHost.startsWith("[")
+        ? rawHost.slice(0, rawHost.indexOf("]") + 1)
+        : rawHost.split(":")[0]!;
+    const normalizedHost = hostWithoutPort.replace(/^\[|\]$/g, "");
+    if (!localHosts.has(normalizedHost)) return false;
+    const expectedPort = port > 0 ? port : undefined;
+    if (expectedPort === undefined) return true;
+    const portPart = rawHost.startsWith("[")
+        ? rawHost.slice(rawHost.indexOf("]") + 1).replace(/^:/, "")
+        : rawHost.includes(":") ? rawHost.slice(rawHost.lastIndexOf(":") + 1) : "";
+    return portPart === "" || portPart === String(expectedPort);
 }
 
 function isLoopbackAddress(remote: string): boolean {
