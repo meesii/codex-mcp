@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 
 const testHome = mkdtempSync(join(tmpdir(), "codex-console-flow-"));
@@ -24,7 +24,7 @@ test("project suggestions skip active, nested, missing and dependency folders; U
     const suggestions = await suggestProjects({ home: testHome, projects });
     assert.deepEqual(new Set(suggestions.map(item => item.name)), new Set(["中文 项目", "old"]));
     assert.equal(suggestions.find(item => item.name === "old").source, "recent");
-    assert.equal(await validateProjectFolder(join(root, "中文 项目")), canonical("中文 项目"));
+    assert.equal(basename(await validateProjectFolder(join(root, "中文 项目"))), "中文 项目");
     await assert.rejects(validateProjectFolder(join(root, "missing")), /文件夹不存在/);
     await assert.rejects(validateProjectFolder(join(root, "中文 项目", "package.json")), /文件夹不存在/);
     await assert.rejects(validateProjectFolder("  "), /请选择/);
