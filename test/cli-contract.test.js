@@ -230,21 +230,43 @@ test("persistent local Controller exposes writable Web Console and survives Runt
         const panel = await fetch(panelUrl);
         const panelHtml = await panel.text();
         assert.equal(panel.status, 200);
-        assert.match(panelHtml, /codex-mcp 本机控制台/);
+        assert.match(panelHtml, /codex-mcp 本机工作区/);
+        assert.match(panelHtml, /data-csrf-token="[A-Za-z0-9_-]+"/);
+        assert.match(panelHtml, /src="\/console\/app\.js"/);
+        assert.match(panelHtml, /href="\/console\/app\.css"/);
         assert.equal(panel.headers.get("cache-control"), "no-store");
         assert.equal(panel.headers.get("x-content-type-options"), "nosniff");
         assert.equal(panel.headers.get("referrer-policy"), "no-referrer");
-        assert.match(panel.headers.get("content-security-policy") ?? "", /script-src 'nonce-[^']+'/);
+        assert.match(panel.headers.get("content-security-policy") ?? "", /script-src 'self' 'nonce-[^']+'/);
         assert.doesNotMatch(panel.headers.get("content-security-policy") ?? "", /unsafe-inline/);
         assert.doesNotMatch(panelHtml, new RegExp(daemonState.controlToken));
         assert.doesNotMatch(panelHtml, new RegExp(controllerState.controlToken));
-        const csrf = panelHtml.match(/const CSRF="([A-Za-z0-9_-]+)"/)?.[1];
+        const csrf = panelHtml.match(/data-csrf-token="([A-Za-z0-9_-]+)"/)?.[1];
         assert.ok(csrf);
+        const scriptAsset = await fetch(new URL("/console/app.js", panelUrl));
+        const styleAsset = await fetch(new URL("/console/app.css", panelUrl));
+        assert.equal(scriptAsset.status, 200);
+        assert.equal(styleAsset.status, 200);
+        assert.match(scriptAsset.headers.get("content-type") ?? "", /javascript/);
+        assert.match(styleAsset.headers.get("content-type") ?? "", /text\/css/);
         const setCookie = panel.headers.get("set-cookie") ?? "";
         assert.match(setCookie, /codex_console=[A-Za-z0-9_-]+/);
         const panelCookie = setCookie.split(";", 1)[0];
         const origin = new URL(panelUrl).origin;
         const browserHeaders = { cookie: panelCookie, origin, "x-csrf-token": csrf, "content-type": "application/json" };
+
+        for (const path of ["/api/project-folder", "/api/connection-check"]) {
+            assert.equal((await fetch(new URL(path, panelUrl), { method: "POST", headers: { cookie: panelCookie, "content-type": "application/json" }, body: "{}" })).status, 403);
+        }
+        const toolCheck = await fetch(new URL("/api/connection-check", panelUrl), { method: "POST", headers: browserHeaders, body: "{}" });
+        assert.equal(toolCheck.status, 200);
+        const checked = await toolCheck.json();
+        assert.equal(checked.ready, false, "a local-only service must not claim ChatGPT readiness");
+        assert.equal(checked.checks.find((item) => item.id === "tools")?.state, "passed", JSON.stringify(checked));
+        const conversations = await fetch(new URL("/api/project-conversations", panelUrl), { headers: { cookie: panelCookie } });
+        assert.deepEqual((await conversations.json()).conversations, [], "read-only check must not create a project binding");
+        const invalidProject = await fetch(new URL("/api/projects", panelUrl), { method: "POST", headers: browserHeaders, body: JSON.stringify({ path: join(project, "missing") }) });
+        assert.equal(invalidProject.status, 400);
 
         const statusUrl = new URL("/api/controller/status", panelUrl);
         assert.equal((await fetch(statusUrl)).status, 401);

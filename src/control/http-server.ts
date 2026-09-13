@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { Server as NodeHttpServer } from "node:http";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { controllerPanelUrl, type ControllerState } from "./state.js";
@@ -28,6 +29,9 @@ import {
 import { spawnReplacementController } from "./control.js";
 import { localConsoleHtml } from "../ui/local-console.js";
 import { PACKAGE_VERSION } from "../server/version.js";
+import { chooseProjectFolder, presentBindings, suggestProjects, validateProjectFolder } from "./project-selection.js";
+import { loadBindingsFile } from "../daemon/state.js";
+import { checkConnection } from "./connection-check.js";
 
 const SESSION_COOKIE = "codex_console";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -78,13 +82,21 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
         const nonce = randomBytes(18).toString("base64url");
         res.setHeader(
             "content-security-policy",
-            `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+            `default-src 'none'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         );
         res.setHeader(
             "set-cookie",
             `${SESSION_COOKIE}=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
         );
         res.type("html").send(localConsoleHtml({ nonce, csrfToken: session.csrf, version: PACKAGE_VERSION }));
+    });
+
+    app.get("/console/app.js", (_req, res) => {
+        res.type("text/javascript").send(readConsoleAsset("app.js"));
+    });
+
+    app.get("/console/app.css", (_req, res) => {
+        res.type("text/css").send(readConsoleAsset("app.css"));
     });
 
     app.use("/api", (req, res, next) => {
@@ -156,6 +168,25 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
         catch (error) { sendError(res, error); }
     });
 
+    app.get("/api/project-suggestions", async (_req, res) => {
+        try { res.json({ suggestions: await suggestProjects() }); }
+        catch (error) { sendError(res, error); }
+    });
+    app.get("/api/project-conversations", (_req, res) => {
+        try { res.json({ conversations: presentBindings(loadBindingsFile()) }); }
+        catch (error) { sendError(res, error); }
+    });
+    app.post("/api/project-folder", async (_req, res) => {
+        const controller = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) controller.abort(); });
+        try { res.json(await chooseProjectFolder(controller.signal)); }
+        catch (error) { sendError(res, error, 400); }
+    });
+    app.post("/api/connection-check", async (_req, res) => {
+        try { res.json(await checkConnection()); }
+        catch (error) { sendError(res, error, 400); }
+    });
+
     app.get("/api/projects/:target", async (req, res) => {
         try {
             const project = await getProject(req.params.target);
@@ -167,8 +198,10 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
     app.post("/api/projects", async (req, res) => {
         try {
             const body = asRecord(req.body);
-            const path = requiredString(body.path, "path");
-            const intent = parseIntent(body);
+            const path = await validateProjectFolder(requiredString(body.path, "path"));
+            const intent = body.intentSpecified === true ? { ...parseIntent(body), intentSpecified: true } : {
+                local: true, noTunnel: true, tunnelLogs: false, intentSpecified: false,
+            };
             const project = await addProject(path, intent);
             res.json({ ok: true, project, projects: await listProjects() });
         } catch (error) { sendError(res, error, 400); }
@@ -420,6 +453,10 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
             server = undefined;
         },
     };
+}
+
+function readConsoleAsset(name: "app.js" | "app.css"): Buffer {
+    return readFileSync(new URL(`../../dist/ui/console/${name}`, import.meta.url));
 }
 
 interface AuthenticatedRequest extends Request {

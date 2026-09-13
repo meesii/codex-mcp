@@ -1,0 +1,199 @@
+@import "tailwindcss";
+@source "./**/*.{ts,tsx}";
+
+@theme inline {
+    --font-sans: var(--font-body);
+    --font-mono: var(--font-code);
+}
+
+:root {
+    --background: #ffffff;
+    --sidebar: #f9f9f9;
+    --surface: #ffffff;
+    --surface-muted: #f2f2f2;
+    --surface-hover: #ececec;
+    --foreground: #0d0d0d;
+    --muted-foreground: #6f6f6f;
+    --placeholder: #9b9b9b;
+    --border: #e5e5e5;
+    --border-strong: #c9c9c9;
+    --primary: #0d0d0d;
+    --primary-hover: #2f2f2f;
+    --primary-foreground: #ffffff;
+    --success: #087f64;
+    --success-soft: #e8f7f2;
+    --warning: #9a6700;
+    --warning-soft: #fff5d6;
+    --danger: #b42318;
+    --danger-soft: #fff0ee;
+    --danger-border: #f1c6c2;
+    --focus: #0d0d0d;
+    --focus-soft: rgba(13, 13, 13, .08);
+    --switch-off: #c9c9c9;
+    --font-display: "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    --font-body: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-code: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --background: #212121;
+        --sidebar: #171717;
+        --surface: #2f2f2f;
+        --surface-muted: #383838;
+        --surface-hover: #414141;
+        --foreground: #ececec;
+        --muted-foreground: #aaa;
+        --placeholder: #7f7f7f;
+        --border: #424242;
+        --border-strong: #5a5a5a;
+        --primary: #ececec;
+        --primary-hover: #d7d7d7;
+        --primary-foreground: #171717;
+        --success: #6de1be;
+        --success-soft: #183e34;
+        --warning: #f0c566;
+        --warning-soft: #453a1d;
+        --danger: #ff918b;
+        --danger-soft: #4a2927;
+        --danger-border: #6b3c39;
+        --focus: #ececec;
+        --focus-soft: rgba(236, 236, 236, .1);
+        --switch-off: #626262;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#console-root {
+    min-height: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-body);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+    font: inherit;
+}
+
+button {
+    cursor: pointer;
+}
+
+.font-display {
+    font-family: var(--font-display);
+}
+
+.app-shell {
+    min-height: 100vh;
+    background: var(--background);
+}
+
+.sidebar-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+}
+
+.sidebar-scrollbar:hover {
+    scrollbar-color: var(--border-strong) transparent;
+}
+
+.technical-code {
+    font-family: var(--font-code);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.status-orb {
+    position: relative;
+    display: grid;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--success-soft);
+    color: var(--success);
+}
+
+.status-orb::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border: 1px solid color-mix(in srgb, var(--success) 24%, transparent);
+    border-radius: inherit;
+}
+
+.status-orb.warning {
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.status-orb.warning::after {
+    border-color: color-mix(in srgb, var(--warning) 24%, transparent);
+}
+
+.status-orb.danger {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+.status-orb.danger::after {
+    border-color: color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+.log-view {
+    min-height: 360px;
+    max-height: 58vh;
+    overflow: auto;
+    border-radius: 16px;
+    background: #171717;
+    color: #e7e7e7;
+    padding: 18px;
+    font: 12px/1.7 var(--font-code);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+@keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes dialog-in {
+    from { opacity: 0; transform: translate(-50%, -48%) scale(.98); }
+    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes sheet-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+}
+
+@keyframes sheet-in-left {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+    }
+}

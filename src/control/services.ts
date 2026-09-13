@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { validateProjectFolder } from "./project-selection.js";
 import { generateAdminPassword, hasAdminPassword, setAdminPassword, verifyAdminPassword } from "../auth/password-store.js";
 import { CapabilityManager } from "../capabilities/manager.js";
 import { resolveCapabilitiesConfig } from "../capabilities/config.js";
@@ -101,7 +102,7 @@ export async function listProjects(): Promise<Array<RegisteredProject & { boundS
 }
 
 export async function addProject(pathValue: string, input: Omit<RuntimeStartInput, "projectPath">): Promise<RegisteredProject> {
-    const projectPath = canonicalProjectPath(resolve(pathValue));
+    const projectPath = await validateProjectFolder(pathValue);
     const daemon = await ensureRuntime(
         { local: input.local, noTunnel: input.noTunnel, tunnelLogs: input.tunnelLogs },
         input.intentSpecified === true,

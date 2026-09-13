@@ -89,6 +89,10 @@ export class DaemonControlClient {
         return normalizeDaemonStatusPayload(data);
     }
 
+    async checkTools(): Promise<{ toolCount: number; projectCount: number }> {
+        return await this.request("/daemon/check-tools", { method: "POST" }) as { toolCount: number; projectCount: number };
+    }
+
     async registerProject(input: { path: string; name?: string }): Promise<RegisteredProject> {
         const data = await this.request("/daemon/projects", {
             method: "POST",

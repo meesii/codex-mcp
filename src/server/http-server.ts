@@ -33,6 +33,7 @@ import { DAEMON_CONTROL_API_VERSION, type TunnelObservedStatus } from "../daemon
 import { readRecentLogLines } from "../lib/log-reader.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { RoundChangeStore } from "../lib/tool/round-changes.js";
+import { probeMcpHandler } from "./connection-probe.js";
 
 const INITIALIZE_RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_INITIALIZES_PER_WINDOW = 60;
@@ -279,6 +280,10 @@ export function createHttpServer(
 
     if (daemonOptions) {
         registerDaemonControlRoutes(app, config, daemonOptions, () => boundPort);
+        app.post("/daemon/check-tools", async (_req, res) => {
+            try { res.json(await probeMcpHandler(mcpHandler, localMcpUrl(), config.oauthRequired)); }
+            catch { res.status(500).json({ error: "工具检查未通过" }); }
+        });
     }
 
     // Observe the complete /mcp surface before bearer auth/rate limiting so

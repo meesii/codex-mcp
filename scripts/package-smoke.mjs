@@ -98,7 +98,13 @@ try {
     assert.equal(stopped.controller.pid, status.controller.pid);
     const panel = await fetch(stopped.controller.panelUrl);
     assert.equal(panel.status, 200);
-    assert.match(await panel.text(), /codex-mcp 本机控制台/);
+    assert.match(await panel.text(), /codex-mcp 本机工作区/);
+    const consoleScript = await fetch(new URL("/console/app.js", stopped.controller.panelUrl));
+    const consoleStyle = await fetch(new URL("/console/app.css", stopped.controller.panelUrl));
+    assert.equal(consoleScript.status, 200);
+    assert.equal(consoleStyle.status, 200);
+    assert.match(consoleScript.headers.get("content-type") ?? "", /javascript/);
+    assert.match(consoleStyle.headers.get("content-type") ?? "", /text\/css/);
     const controllerStatePath = join(home, ".codex-mcp", "controller.json");
     const controllerState = JSON.parse(readFileSync(controllerStatePath, "utf8"));
     const shutdown = await fetch(`http://127.0.0.1:${controllerState.port}/api/controller/shutdown`, {
