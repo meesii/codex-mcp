@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, opendir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
 import { detectProjectDisplayName } from "../projects/identity.js";
 import { expandHomePath } from "../config/loader.js";
@@ -61,13 +61,18 @@ export interface ProjectSuggestion { name: string; path: string; source: "recent
 export async function suggestProjects(options: { home?: string; projects?: RegisteredProject[] } = {}): Promise<ProjectSuggestion[]> {
     const home = options.home ?? homedir();
     const projects = options.projects ?? loadProjectsFile();
-    const known = new Set(projects.filter((item) => item.active).map((item) => item.path));
+    const pathKey = (path: string) => process.platform === "win32" ? normalize(path).toLocaleLowerCase("en-US") : path;
+    const known = new Set<string>();
+    await Promise.all(projects.filter((item) => item.active).map(async (item) => {
+        try { known.add(pathKey(await realpath(item.path))); } catch { /* Stale active entries do not block discovery. */ }
+    }));
     const suggestions: ProjectSuggestion[] = [];
     async function append(path: string, source: ProjectSuggestion["source"]): Promise<void> {
         try {
             const canonical = await realpath(path);
-            if (known.has(canonical) || !(await stat(canonical)).isDirectory()) return;
-            known.add(canonical);
+            const key = pathKey(canonical);
+            if (known.has(key) || !(await stat(canonical)).isDirectory()) return;
+            known.add(key);
             suggestions.push({ name: detectProjectDisplayName(canonical), path: canonical, source });
         } catch { /* A stale or inaccessible candidate is not actionable. */ }
     }
