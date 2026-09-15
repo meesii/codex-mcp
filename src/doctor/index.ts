@@ -75,12 +75,18 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
         checks.push(await checkCommand("Codex", "codex", ["--version"], false));
     }
 
+    const publicAccess = userConfig?.publicAccess;
+    const publicModeExpected = userConfig?.runtime?.mode === "public" || publicAccess !== undefined;
     try {
         const configured = await hasAdminPassword();
         checks.push({
             label: "连接密码",
-            level: configured ? "ok" : "error",
-            detail: configured ? "已设置" : "未设置，运行 `codex-mcp setup` 即可",
+            level: configured ? "ok" : publicModeExpected ? "error" : "warn",
+            detail: configured
+                ? "已设置"
+                : publicModeExpected
+                  ? "未设置；公网连接需要连接密码，请在 Web Console 的“连接”页面设置，或运行 `codex-mcp auth`"
+                  : "未设置；仅本机模式不需要，连接 ChatGPT 时再设置即可",
         });
     } catch (error) {
         checks.push({
@@ -90,7 +96,6 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
         });
     }
 
-    const publicAccess = userConfig?.publicAccess;
     if (publicAccess) {
         checks.push({
             label: "公网地址",
@@ -100,8 +105,10 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
     } else {
         checks.push({
             label: "公网地址",
-            level: "error",
-            detail: "未设置。要从 ChatGPT 连接，需要先运行 `codex-mcp setup`",
+            level: userConfig?.runtime?.mode === "public" ? "error" : "warn",
+            detail: userConfig?.runtime?.mode === "public"
+                ? "未设置；当前默认启动是公网模式，请在 Web Console 的“连接”页面配置，或运行 `codex-mcp setup`"
+                : "未设置；当前仍可仅本机使用，需要连接 ChatGPT 时再配置即可",
         });
     }
 
@@ -298,7 +305,7 @@ async function checkRipgrep(): Promise<DoctorCheck> {
         return {
             label: "文件搜索",
             level: "error",
-            detail: "文件搜索组件缺失；重新运行安装脚本可以自动恢复",
+            detail: "文件搜索组件缺失；运行 `codex-mcp doctor --fix` 可以自动恢复",
         };
     }
     try {

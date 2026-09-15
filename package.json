@@ -1,6 +1,6 @@
 {
     "name": "@meesii/codex-mcp",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "Lean local coding MCP server for ChatGPT with embedded OAuth and Streamable HTTP.",
     "type": "module",
     "main": "dist/cli.js",
@@ -33,7 +33,7 @@
         "test:package": "node scripts/package-smoke.mjs",
         "prepack": "npm run build",
         "start": "node dist/cli.js",
-        "typecheck": "tsc -p tsconfig.json --noEmit"
+        "typecheck": "tsc -p tsconfig.json --noEmit && vue-tsc -p tsconfig.console.json --noEmit"
     },
     "keywords": [
         "mcp",
@@ -73,22 +73,17 @@
         "zod": "^4.4.3"
     },
     "devDependencies": {
-        "@tailwindcss/cli": "^4.3.3",
+        "@element-plus/icons-vue": "^2.3.2",
         "@types/express": "^5.0.6",
         "@types/node": "^22.19.0",
-        "@types/react": "^19.3.0",
-        "@types/react-dom": "^19.3.0",
-        "class-variance-authority": "^0.7.1",
-        "clsx": "^2.1.1",
+        "@vitejs/plugin-vue": "^6.0.9",
+        "element-plus": "^2.14.5",
         "esbuild": "^0.28.2",
-        "lucide-react": "^1.44.0",
-        "radix-ui": "^1.6.7",
-        "react": "^19.3.0",
-        "react-dom": "^19.3.0",
-        "sonner": "^2.0.8",
-        "tailwind-merge": "^3.6.0",
-        "tailwindcss": "^4.3.3",
         "tsx": "^4.21.0",
-        "typescript": "^5.9.3"
+        "typescript": "^5.9.3",
+        "unplugin-vue-components": "^32.1.0",
+        "vite": "^8.3.0",
+        "vue": "^3.5.42",
+        "vue-tsc": "^3.3.11"
     }
 }

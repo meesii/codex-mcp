@@ -97,6 +97,7 @@ if [ "${CODEX_MCP_UPDATE:-}" = "1" ]; then
   success "更新完成。配置、连接密码和 Tunnel 信息保持不变。"
   warn "如果 codex-mcp 服务正在运行，请重启它；现有进程不会自动加载更新后的 core tool schema。"
 else
-  info "第一次使用请运行：codex-mcp setup"
+  info "第一次使用推荐运行：codex-mcp open"
+  info "也可以进入项目目录直接运行：codex-mcp start"
   warn "如果当前终端还找不到 codex-mcp，请重新打开一个终端窗口。"
 fi

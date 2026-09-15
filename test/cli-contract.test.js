@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,6 +53,18 @@ function request(url, options = {}) {
     });
 }
 
+async function shutdownIsolatedController(home) {
+    try {
+        const state = JSON.parse(readFileSync(join(home, ".codex-mcp", "controller.json"), "utf8"));
+        await fetch(`http://127.0.0.1:${state.port}/api/controller/shutdown`, {
+            method: "POST",
+            headers: { "x-codex-controller-token": state.controlToken },
+        });
+    } catch {
+        // best-effort cleanup for isolated test homes
+    }
+}
+
 test("1.0 exposes the explicit start command and rejects removed commands", () => {
     const help = run(["help"]);
     assert.equal(help.code, 0);
@@ -76,6 +88,126 @@ test("1.0 rejects removed flags and keeps -f scoped to logs", () => {
     const invalidFollow = run(["status", "-f"]);
     assert.notEqual(invalidFollow.code, 0);
     assert.match(invalidFollow.output, /只适用于 `logs`/);
+    const conflictingMode = run(["start", "--local", "--public"]);
+    assert.notEqual(conflictingMode.code, 0);
+    assert.match(conflictingMode.output, /不能同时/);
+    const projectMode = run(["project", "add", ".", "--local"]);
+    assert.notEqual(projectMode.code, 0);
+    assert.match(projectMode.output, /不适用于/);
+});
+
+test("Web Console keeps Element Plus component-scoped imports and a focused information architecture", () => {
+    const mainSource = readFileSync(fileURLToPath(new URL("src/ui/console/main.ts", root)), "utf8");
+    const viteSource = readFileSync(fileURLToPath(new URL("vite.console.config.mjs", root)), "utf8");
+    const stylesSource = readFileSync(fileURLToPath(new URL("src/ui/console/styles.css", root)), "utf8");
+    const connectSource = readFileSync(fileURLToPath(new URL("src/ui/console/views/ConnectView.vue", root)), "utf8");
+    const systemSource = readFileSync(fileURLToPath(new URL("src/ui/console/views/MaintenanceView.vue", root)), "utf8");
+    const homeSource = readFileSync(fileURLToPath(new URL("src/ui/console/views/HomeView.vue", root)), "utf8");
+    const projectsSource = readFileSync(fileURLToPath(new URL("src/ui/console/views/ProjectsView.vue", root)), "utf8");
+    assert.doesNotMatch(mainSource, /import\s+ElementPlus\s+from\s+["']element-plus["']/);
+    assert.doesNotMatch(mainSource, /element-plus\/dist\/index\.css/);
+    assert.doesNotMatch(mainSource, /\.use\(ElementPlus/);
+    assert.match(viteSource, /ElementPlusResolver/);
+    assert.match(viteSource, /importStyle:\s*["']css["']/);
+    assert.match(stylesSource, /\.console-mobile-nav\s*\{[^}]*display:\s*none\s*!important/s);
+    assert.match(stylesSource, /\.console-sidebar\s*\{[^}]*width:\s*228px/s);
+    assert.match(stylesSource, /\.is-sidebar-collapsed \.console-sidebar\s*\{\s*width:\s*64px/s);
+    assert.match(stylesSource, /\.console-topbar\s*\{[^}]*height:\s*64px/s);
+    assert.match(stylesSource, /\.console-content\s*\{[^}]*width:\s*100%[^}]*padding:\s*var\(--space-xl\)/s);
+    assert.match(stylesSource, /\.page-heading h1\s*\{\s*display:\s*none/s);
+    assert.match(connectSource, /1\. 公网地址/);
+    assert.match(connectSource, /2\. 连接密码/);
+    assert.match(connectSource, /3\. 检查连接/);
+    assert.doesNotMatch(connectSource, /工具与技能/);
+    assert.match(systemSource, /CapabilitiesPanel/);
+    const capabilitySource = readFileSync(fileURLToPath(new URL("src/ui/console/components/CapabilitiesPanel.vue", root)), "utf8");
+    assert.doesNotMatch(capabilitySource, /structuredClone\(value\)/);
+    assert.match(capabilitySource, /const dirty = ref\(false\)/);
+    assert.match(capabilitySource, /放弃修改/);
+    const appSource = readFileSync(fileURLToPath(new URL("src/ui/console/App.vue", root)), "utf8");
+    assert.match(appSource, /cloudflare\/discover[^\n]*forceLogin:\s*false/);
+    assert.match(appSource, /\/api\/console\/snapshot/);
+    assert.match(appSource, /LIVE_SYNC_MS\s*=\s*2_000/);
+    assert.match(appSource, /visibilitychange/);
+    assert.match(appSource, /busyOwners/);
+    assert.match(appSource, /sidebarCollapsed/);
+    assert.match(appSource, /收起导航/);
+    assert.match(projectsSource, /重新启用/);
+    assert.match(homeSource, /还有检查项需要处理/);
+    assert.doesNotMatch(homeSource, /还有项目要处理/);
+    assert.match(systemSource, /实时日志连接暂时中断，正在自动重连/);
+    assert.match(systemSource, /logs\/stream\?lines=/);
+});
+
+test("Cloudflare tunnel identity canonicalizes equivalent home path spellings and symlink aliases", async () => {
+    const { defaultTunnelName } = await import(new URL("dist/tunnel/setup.js", root).href);
+    const host = "e2e-host";
+    assert.equal(
+        defaultTunnelName(host, "/tmp/codex-home"),
+        defaultTunnelName(host, "/tmp//codex-home/./"),
+    );
+    if (process.platform === "win32") return;
+    const physical = mkdtempSync(join(tmpdir(), "codex-mcp-tunnel-home-"));
+    const alias = `${physical}-alias`;
+    symlinkSync(physical, alias, "dir");
+    assert.equal(defaultTunnelName(host, physical), defaultTunnelName(host, alias));
+});
+
+test("PowerShell installer is UTF-8 without BOM for irm pipe execution", () => {
+    const bytes = readFileSync(fileURLToPath(new URL("scripts/install.ps1", root)));
+    assert.notDeepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+    assert.ok(bytes.toString("utf8").startsWith("$ErrorActionPreference"));
+});
+
+test("ripgrep lookup revalidates same-process repairs and later binary removal", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-rg-cache-"));
+    const script = `
+        process.env.HOME = ${JSON.stringify(home)};
+        process.env.USERPROFILE = ${JSON.stringify(home)};
+        process.env.PATH = "";
+        const fs = await import("node:fs");
+        const path = await import("node:path");
+        const { findRipgrep } = await import(${JSON.stringify(new URL("dist/lib/search/ripgrep.js", root).href)});
+        const { getManagedToolPath } = await import(${JSON.stringify(new URL("dist/managed-tools/paths.js", root).href)});
+        if (await findRipgrep() !== null) process.exit(2);
+        const target = getManagedToolPath("ripgrep");
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(process.execPath, target);
+        if (process.platform !== "win32") fs.chmodSync(target, 0o755);
+        if (await findRipgrep() !== target) process.exit(3);
+        fs.unlinkSync(target);
+        if (await findRipgrep() !== null) process.exit(4);
+        fs.copyFileSync(process.execPath, target);
+        if (process.platform !== "win32") fs.chmodSync(target, 0o755);
+        if (await findRipgrep() !== target) process.exit(5);
+    `;
+    execFileSync(process.execPath, ["--input-type=module", "-e", script], { stdio: "pipe" });
+});
+
+test("Controller lifecycle requests use Runtime deadlines instead of the probe timeout", async t => {
+    const { LocalControllerClient } = await import(new URL("dist/control/control.js", root).href);
+    const server = createServer((req, res) => {
+        const reply = () => {
+            res.setHeader("content-type", "application/json");
+            if (req.url === "/api/runtime/stop") {
+                res.end(JSON.stringify({ ok: true, stopped: true, status: { running: false, projects: [] } }));
+                return;
+            }
+            res.end(JSON.stringify({ ok: true, status: { running: true, projects: [] } }));
+        };
+        setTimeout(reply, 60);
+    });
+    await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+    });
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const client = new LocalControllerClient({ host: "127.0.0.1", port: address.port, controlToken: "test" }, 10);
+    assert.equal((await client.start({ local: true, noTunnel: true, tunnelLogs: false })).ok, true);
+    assert.equal((await client.stop()).stopped, true);
+    assert.equal((await client.restart()).ok, true);
 });
 
 test("read-only commands work from a clean home", () => {
@@ -93,6 +225,141 @@ test("read-only commands work from a clean home", () => {
     const projects = run(["project", "list"], home);
     assert.equal(projects.code, 0);
     assert.match(projects.output, /还没有注册项目/);
+});
+
+test("project add changes durable project state without starting Controller or Runtime", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-project-only-"));
+    const project = mkdtempSync(join(tmpdir(), "codex-mcp-project-only-root-"));
+    const result = run(["project", "add", project], home, project);
+    assert.equal(result.code, 0, result.output);
+    const configDir = join(home, ".codex-mcp");
+    assert.equal(existsSync(join(configDir, "controller.json")), false);
+    assert.equal(existsSync(join(configDir, "daemon.json")), false);
+    const projects = JSON.parse(readFileSync(join(configDir, "projects.json"), "utf8"));
+    assert.equal(projects.projects.length, 1);
+    assert.equal(projects.projects[0].path, realpathSync(project));
+});
+
+test("plain start defaults to local mode, persists the actual intent, and reuses it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-start-intent-"));
+    const project = mkdtempSync(join(tmpdir(), "codex-mcp-start-intent-root-"));
+    const configDir = join(home, ".codex-mcp");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.json"), JSON.stringify({
+        port: 0,
+        capabilities: { sources: { codex: { enabled: false }, agents: { enabled: false }, claude: { enabled: false } } },
+    }));
+    try {
+        const first = run(["start"], home, project);
+        assert.equal(first.code, 0, first.output);
+        let status = JSON.parse(run(["status", "--json"], home, project).output);
+        assert.equal(status.daemon.mode, "local");
+        const saved = JSON.parse(readFileSync(join(configDir, "config.json"), "utf8"));
+        assert.deepEqual(saved.runtime, { mode: "local", noTunnel: true, tunnelLogs: false });
+
+        assert.equal(run(["stop"], home, project).code, 0);
+        const second = run(["start"], home, project);
+        assert.equal(second.code, 0, second.output);
+        status = JSON.parse(run(["status", "--json"], home, project).output);
+        assert.equal(status.daemon.mode, "local");
+        assert.equal(run(["stop"], home, project).code, 0);
+    } finally {
+        await shutdownIsolatedController(home);
+    }
+});
+
+test("explicit public start persists the requested mode even when prerequisites are missing", async () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-public-intent-"));
+    const project = mkdtempSync(join(tmpdir(), "codex-mcp-public-intent-root-"));
+    const configDir = join(home, ".codex-mcp");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.json"), JSON.stringify({ port: 0 }));
+    try {
+        const result = run(["start", "--public"], home, project);
+        assert.notEqual(result.code, 0, result.output);
+        assert.match(result.output, /Web Console|连接.*页面/);
+        const saved = JSON.parse(readFileSync(join(configDir, "config.json"), "utf8"));
+        assert.deepEqual(saved.runtime, { mode: "public", noTunnel: false, tunnelLogs: false });
+        const status = JSON.parse(run(["status", "--json"], home, project).output);
+        assert.equal(status.preferredRuntimeIntent.local, false);
+    } finally {
+        await shutdownIsolatedController(home);
+    }
+});
+
+test("open starts only the local control plane and exposes the Web Console", async () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-open-"));
+    try {
+        const result = run(["open"], home, home, { CODEX_MCP_NO_BROWSER: "1" });
+        assert.equal(result.code, 0, result.output);
+        const controller = JSON.parse(readFileSync(join(home, ".codex-mcp", "controller.json"), "utf8"));
+        assert.equal(existsSync(join(home, ".codex-mcp", "daemon.json")), false);
+        const panelUrl = `http://127.0.0.1:${controller.port}/`;
+        assert.ok(result.output.includes(panelUrl), result.output);
+        const panel = await fetch(panelUrl);
+        assert.equal(panel.status, 200);
+        assert.match(await panel.text(), /codex-mcp 本机工作区/);
+        const cliProject = mkdtempSync(join(tmpdir(), "codex-mcp-open-cli-project-"));
+        const webProject = mkdtempSync(join(tmpdir(), "codex-mcp-open-web-project-"));
+        const snapshotHeaders = { "x-codex-controller-token": controller.controlToken };
+        const initialSnapshot = await fetch(new URL("/api/console/snapshot", panelUrl), { headers: snapshotHeaders });
+        assert.equal(initialSnapshot.status, 200, await initialSnapshot.clone().text());
+        assert.deepEqual((await initialSnapshot.json()).status.runtime.projects, []);
+
+        const cliAdd = run(["project", "add", cliProject], home, cliProject);
+        assert.equal(cliAdd.code, 0, cliAdd.output);
+        const afterCliAdd = await fetch(new URL("/api/console/snapshot", panelUrl), { headers: snapshotHeaders });
+        const afterCliAddJson = await afterCliAdd.json();
+        assert.equal(afterCliAddJson.status.runtime.projects.length, 1, "Web snapshot must observe CLI project changes without restarting Controller");
+        assert.equal(afterCliAddJson.status.runtime.projects[0].path, realpathSync(cliProject));
+
+        const generatedPassword = await fetch(new URL("/api/auth/generate", panelUrl), {
+            method: "POST",
+            headers: { ...snapshotHeaders, "content-type": "application/json" },
+            body: "{}",
+        });
+        assert.equal(generatedPassword.status, 200, await generatedPassword.clone().text());
+        const afterPassword = await fetch(new URL("/api/console/snapshot", panelUrl), { headers: snapshotHeaders });
+        assert.equal((await afterPassword.json()).setup.passwordConfigured, true, "Web snapshot must observe password changes");
+
+        const webAdd = await fetch(new URL("/api/projects", panelUrl), {
+            method: "POST",
+            headers: { "x-codex-controller-token": controller.controlToken, "content-type": "application/json" },
+            body: JSON.stringify({ path: webProject }),
+        });
+        assert.equal(webAdd.status, 200, await webAdd.clone().text());
+        assert.equal(existsSync(join(home, ".codex-mcp", "daemon.json")), false, "adding a project from Web must not start Runtime");
+        const shutdown = run(["shutdown"], home, home);
+        assert.equal(shutdown.code, 0, shutdown.output);
+        assert.equal(existsSync(join(home, ".codex-mcp", "controller.json")), false);
+    } finally {
+        await shutdownIsolatedController(home);
+    }
+});
+
+test("start registers the project before Runtime validation and leaves Web recovery available", async () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-start-recovery-"));
+    const project = mkdtempSync(join(tmpdir(), "codex-mcp-start-recovery-root-"));
+    const configDir = join(home, ".codex-mcp");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.json"), JSON.stringify({
+        port: 0,
+        runtime: { mode: "public", noTunnel: false, tunnelLogs: false },
+        capabilities: { sources: { codex: { enabled: false }, agents: { enabled: false }, claude: { enabled: false } } },
+    }));
+    try {
+        const result = run(["start"], home, project);
+        assert.notEqual(result.code, 0);
+        assert.match(result.output, /还没有配置公网连接/);
+        assert.match(result.output, /Web Console/);
+        const projects = JSON.parse(readFileSync(join(configDir, "projects.json"), "utf8"));
+        assert.equal(projects.projects.length, 1);
+        assert.equal(projects.projects[0].path, realpathSync(project));
+        assert.equal(existsSync(join(configDir, "controller.json")), true);
+        assert.equal(existsSync(join(configDir, "daemon.json")), false);
+    } finally {
+        await shutdownIsolatedController(home);
+    }
 });
 
 test("corrupt durable state fails closed", () => {
@@ -237,8 +504,10 @@ test("persistent local Controller exposes writable Web Console and survives Runt
         assert.equal(panel.headers.get("cache-control"), "no-store");
         assert.equal(panel.headers.get("x-content-type-options"), "nosniff");
         assert.equal(panel.headers.get("referrer-policy"), "no-referrer");
-        assert.match(panel.headers.get("content-security-policy") ?? "", /script-src 'self' 'nonce-[^']+'/);
-        assert.doesNotMatch(panel.headers.get("content-security-policy") ?? "", /unsafe-inline/);
+        const csp = panel.headers.get("content-security-policy") ?? "";
+        assert.match(csp, /script-src 'self' 'nonce-[^']+'/);
+        assert.doesNotMatch(csp.match(/script-src[^;]*/)?.[0] ?? "", /unsafe-inline/);
+        assert.match(csp, /style-src-attr 'unsafe-inline'/);
         assert.doesNotMatch(panelHtml, new RegExp(daemonState.controlToken));
         assert.doesNotMatch(panelHtml, new RegExp(controllerState.controlToken));
         const csrf = panelHtml.match(/data-csrf-token="([A-Za-z0-9_-]+)"/)?.[1];
@@ -314,6 +583,32 @@ test("persistent local Controller exposes writable Web Console and survives Runt
         assert.equal((await stoppedStatus.json()).runtime.running, false);
         assert.equal(JSON.parse(readFileSync(join(configDir, "controller.json"), "utf8")).pid, controllerState.pid);
 
+        const primaryProject = initialStatus.projects[0];
+        const now = "2026-09-15T00:00:00.000Z";
+        writeFileSync(join(configDir, "session-bindings.json"), JSON.stringify({
+            schemaVersion: 1,
+            bindings: [{
+                ownerKey: "oauth:web-test|openai-session:cleanup-me",
+                projectId: primaryProject.id,
+                boundAt: now,
+                lastSeenAt: now,
+            }],
+        }));
+        const conversationResponse = await fetch(new URL("/api/project-conversations", panelUrl), { headers: { cookie: panelCookie } });
+        const conversationPayload = await conversationResponse.json();
+        assert.equal(conversationPayload.conversations.length, 1);
+        assert.doesNotMatch(JSON.stringify(conversationPayload), /cleanup-me|ownerKey/);
+        const cleanupResponse = await fetch(new URL(`/api/projects/${encodeURIComponent(primaryProject.id)}/conversations/cleanup`, panelUrl), {
+            method: "POST",
+            headers: browserHeaders,
+            body: JSON.stringify({ conversationIds: [conversationPayload.conversations[0].id] }),
+        });
+        assert.equal(cleanupResponse.status, 200, await cleanupResponse.clone().text());
+        const cleanupPayload = await cleanupResponse.json();
+        assert.equal(cleanupPayload.removed, 1);
+        assert.deepEqual(cleanupPayload.conversations, []);
+        assert.deepEqual(JSON.parse(readFileSync(join(configDir, "session-bindings.json"), "utf8")).bindings, []);
+
         const restartFromWeb = await fetch(new URL("/api/runtime/start", panelUrl), {
             method: "POST",
             headers: browserHeaders,
@@ -335,9 +630,31 @@ test("persistent local Controller exposes writable Web Console and survives Runt
         assert.equal(afterRemove.projects.length, 2);
         assert.equal(afterRemove.projects.filter((item) => item.active).length, 1);
 
+        const reactivateResponse = await fetch(new URL("/api/projects", panelUrl), {
+            method: "POST",
+            headers: browserHeaders,
+            body: JSON.stringify({ path: secondProject }),
+        });
+        assert.equal(reactivateResponse.status, 200, await reactivateResponse.clone().text());
+        const afterReactivate = await fetch(new URL("/api/console/snapshot", panelUrl), { headers: { cookie: panelCookie } });
+        const afterReactivateJson = await afterReactivate.json();
+        assert.equal(afterReactivateJson.status.runtime.projects.find((item) => item.id === webAddedProject.id)?.active, true);
+
         const logs = await fetch(new URL("/api/logs?lines=20", panelUrl), { headers: { cookie: panelCookie } });
         assert.equal(logs.status, 200);
         assert.match((await logs.json()).text, /daemon_started/);
+
+        const browserShutdown = await fetch(new URL("/api/controller/shutdown", panelUrl), {
+            method: "POST",
+            headers: browserHeaders,
+            body: "{}",
+        });
+        assert.equal(browserShutdown.status, 200, await browserShutdown.clone().text());
+        runtimeStarted = false;
+        for (let attempt = 0; attempt < 100 && existsSync(join(configDir, "controller.json")); attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        assert.equal(existsSync(join(configDir, "controller.json")), false, "browser shutdown should stop the Controller");
     } finally {
         if (runtimeStarted) run(["stop"], home, project);
         try {
@@ -409,6 +726,8 @@ test("state stores publish changes only after persistence succeeds", async () =>
     });
     await assert.rejects(() => bindings.pruneStale(1, Date.parse("2021-01-01T00:00:00.000Z")), /disk full/);
     assert.deepEqual(bindings.list(), [stale]);
+    await assert.rejects(() => bindings.removeFromProject("project-1", [stale.ownerKey]), /disk full/);
+    assert.deepEqual(bindings.list(), [stale]);
 });
 
 test("binding touch persists at most once per coarse activity interval", async () => {
@@ -473,6 +792,9 @@ test("interactive commands fail clearly without a terminal; internal daemon entr
         assert.notEqual(result.code, 0, result.output);
         assert.match(result.output, /终端/);
     }
+    const bindings = run(["bindings", "clean"]);
+    assert.notEqual(bindings.code, 0);
+    assert.match(bindings.output, /终端/);
     const daemon = run(["daemon", "--local"]);
     assert.notEqual(daemon.code, 0);
     assert.match(daemon.output, /内部入口/);
@@ -481,8 +803,8 @@ test("interactive commands fail clearly without a terminal; internal daemon entr
     assert.match(controller.output, /内部入口/);
     assert.notEqual(run(["project", "list", "unexpected"]).code, 0);
     const doctor = run(["doctor"]);
-    assert.notEqual(doctor.code, 0, doctor.output);
-    assert.match(doctor.output, /检查/);
+    assert.equal(doctor.code, 0, doctor.output);
+    assert.match(doctor.output, /可以正常使用|安装和配置看起来都正常/);
     const stopped = run(["stop"]);
     assert.equal(stopped.code, 0, stopped.output);
     assert.notEqual(run(["restart"]).code, 0);

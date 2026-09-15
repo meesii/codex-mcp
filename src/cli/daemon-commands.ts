@@ -1,14 +1,13 @@
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolveProjectRoot } from "../config/loader.js";
-import { loadUserConfig } from "../config/user-config.js";
 import type { DaemonStatusPayload, TunnelObservedStatus } from "../daemon/control.js";
 import { writeRuntimeLog } from "../lib/runtime-log.js";
 import {
     contactRunningController,
     ensureControllerRunning,
-    type ControllerContact,
 } from "../control/control.js";
-import { getControlStatus } from "../control/services.js";
+import { addProject, getControlStatus, preferredRuntimeIntent, restartRuntime, stopRuntime } from "../control/services.js";
 import {
     printInfo,
     printIntro,
@@ -18,28 +17,31 @@ import {
     printWarning,
 } from "../lib/util/terminal.js";
 import { canonicalProjectPath } from "../projects/identity.js";
-import { ensureAdminPasswordConfigured } from "./setup-commands.js";
-import { configurePublicAccess } from "../tunnel/public-access-manager.js";
 import { verifyRunningPublicRoute } from "../tunnel/setup-verify.js";
 import type { CliFlags } from "./args.js";
 
-/** Ensure the Controller exists, then register/start the selected project through its shared service. */
+/** Register the selected project first, then ensure the control plane and Runtime are ready. */
 export async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
     const projectRoot = resolveProjectRoot(flags.root);
-    const controller = await ensureControllerForRuntime(flags);
-    printInfo("正在通过本机 Controller 准备 Runtime…");
-    const result = await controller.client.start({
-        local: flags.local,
-        noTunnel: flags.noTunnel,
-        tunnelLogs: flags.tunnelLogs,
-        intentSpecified: flags.runtimeIntentSpecified,
-        projectPath: projectRoot,
-    });
+    const registered = await addProject(projectRoot);
+    const controller = await ensureControllerRunning();
+    printInfo("项目已注册，正在通过本机 Controller 准备 Runtime…");
+    let result: Awaited<ReturnType<typeof controller.client.start>>;
+    try {
+        result = await controller.client.start({
+            local: flags.local,
+            noTunnel: flags.noTunnel,
+            tunnelLogs: flags.tunnelLogs,
+            intentSpecified: flags.runtimeIntentSpecified,
+        });
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`${detail}\n项目已注册。可打开 Web Console 继续处理：http://127.0.0.1:${controller.state.port}/`);
+    }
     const status = result.status.runtime;
     if (!status) throw new Error("Runtime 启动后没有返回运行状态");
     const canonicalRoot = canonicalProjectPath(projectRoot);
-    const project = status.projects.find((item) => item.path === canonicalRoot);
-    if (!project) throw new Error(`Runtime 已启动，但没有找到刚注册的项目：${projectRoot}`);
+    const project = status.projects.find((item) => item.path === canonicalRoot) ?? registered;
     printRegistrationBanner(status, project, controller.state.port);
     writeRuntimeLog("info", "project_registered_cli", {
         project: project.id,
@@ -48,19 +50,13 @@ export async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
     });
 }
 
-/** Start the persistent local Controller and preserve the old CLI first-run setup behavior. */
-export async function ensureControllerForRuntime(
-    flags: Pick<CliFlags, "local" | "noTunnel" | "tunnelLogs" | "runtimeIntentSpecified">,
-): Promise<ControllerContact> {
+/** Ensure the persistent local control plane exists and open its Web Console. */
+export async function runOpen(): Promise<void> {
     const controller = await ensureControllerRunning();
-    const current = await controller.client.status();
-    if (!current.runtime.running || flags.runtimeIntentSpecified) {
-        if (!flags.local && !loadUserConfig().publicAccess) {
-            await configurePublicAccess({ forceWizard: false });
-        }
-        if (!flags.local) await ensureAdminPasswordConfigured();
-    }
-    return controller;
+    const url = `http://127.0.0.1:${controller.state.port}/`;
+    printSuccess(`Web Console：${url}`);
+    if (process.env.CODEX_MCP_NO_BROWSER === "1") return;
+    tryOpenBrowser(url);
 }
 
 export async function runStatus(flags: CliFlags): Promise<void> {
@@ -69,6 +65,7 @@ export async function runStatus(flags: CliFlags): Promise<void> {
     const controllerStatus = controller ? await controller.client.status() : undefined;
     const control = controllerStatus?.runtime ?? await getControlStatus();
     const status = control.runtime;
+    const preferredIntent = preferredRuntimeIntent();
     const daemonVersion = status?.version ?? null;
     const versionMismatch = Boolean(
         (daemonVersion && daemonVersion !== cliVersion) ||
@@ -90,6 +87,7 @@ export async function runStatus(flags: CliFlags): Promise<void> {
             cliVersion,
             daemonVersion,
             versionMismatch,
+            preferredRuntimeIntent: preferredIntent,
             controller: controllerJson,
             daemon: status ? {
                 controlApiVersion: status.controlApiVersion,
@@ -115,10 +113,11 @@ export async function runStatus(flags: CliFlags): Promise<void> {
         if (controllerStatus) {
             printInfo(`本机 Controller 仍在运行：pid ${controllerStatus.pid} · ${controllerStatus.panelUrl}`);
         } else {
-            printInfo("本机 Controller 尚未运行；执行 codex-mcp start 后会自动启动。");
+            printInfo("本机 Controller 尚未运行；运行 codex-mcp open 打开控制台，或运行 codex-mcp start 启动当前项目。");
         }
+        printInfo(`下次启动模式：${describeRuntimeIntent(preferredIntent)}`);
         if (control.projects.length > 0) {
-            printInfo(`已保存 ${control.projects.length} 个项目注册记录；Runtime 重启后可继续使用。`);
+            printInfo(`已保存 ${control.projects.length} 个项目注册记录；Runtime 启动后可继续使用。`);
         }
         printOutro("状态检查完成");
         return;
@@ -128,6 +127,7 @@ export async function runStatus(flags: CliFlags): Promise<void> {
         { label: "Controller", value: controllerStatus ? `pid ${controllerStatus.pid} · ${controllerStatus.version}` : "未运行" },
         { label: "Web Console", value: controllerStatus?.panelUrl ?? "未运行" },
         { label: "Runtime", value: `pid ${status.pid} · ${status.mode === "local" ? "本机" : "公网"}` },
+        { label: "默认启动", value: describeRuntimeIntent(preferredIntent) },
         { label: "运行时长", value: formatUptime(status.uptimeMs) },
         { label: "CLI 版本", value: cliVersion },
         { label: "Runtime 版本", value: status.version },
@@ -160,16 +160,17 @@ export async function runStatus(flags: CliFlags): Promise<void> {
 
 /** Stop only the MCP Runtime; the persistent local Controller and Web Console stay online. */
 export async function runStop(): Promise<void> {
-    let controller = await contactRunningController();
+    const controller = await contactRunningController();
+    printInfo("正在停止 MCP Runtime（Tunnel、托管进程和 MCP 服务会一起关闭）…");
     if (!controller) {
-        const control = await getControlStatus();
-        if (!control.running) {
+        const stopped = await stopRuntime();
+        if (!stopped) {
             printWarning("MCP Runtime 没有在运行；本机 Controller 也未启动。");
             return;
         }
-        controller = await ensureControllerRunning();
+        printSuccess("MCP Runtime 已停止；项目注册状态已保留。Controller 原本没有运行。");
+        return;
     }
-    printInfo("正在停止 MCP Runtime（Tunnel、托管进程和 MCP 服务会一起关闭）…");
     const result = await controller.client.stop();
     if (!result.stopped) {
         printWarning("MCP Runtime 没有在运行；本机 Controller 保持在线。");
@@ -178,12 +179,33 @@ export async function runStop(): Promise<void> {
     printSuccess(`MCP Runtime 已停止；项目注册状态已保留。Web Console：http://127.0.0.1:${controller.state.port}/`);
 }
 
+/** Stop the whole local control plane, including any running Runtime. */
+export async function runShutdown(): Promise<void> {
+    const controller = await contactRunningController();
+    if (!controller) {
+        const control = await getControlStatus();
+        if (control.running) {
+            await stopRuntime();
+            printSuccess("MCP Runtime 已停止；没有运行中的 Controller。");
+        } else {
+            printWarning("Controller 和 MCP Runtime 都没有在运行。");
+        }
+        return;
+    }
+    printInfo("正在关闭 MCP Runtime 和本机 Controller…");
+    await controller.client.shutdown();
+    await waitForProcessExit(controller.state.pid, 30_000);
+    printSuccess("codex-mcp 已完全关闭。");
+}
+
 /** Restart a running Runtime in the same mode through the persistent Controller. */
 export async function runRestart(): Promise<void> {
-    const controller = await ensureControllerRunning();
-    printInfo("正在通过本机 Controller 按原运行参数重启 Runtime…");
-    const result = await controller.client.restart();
-    const status = result.status.runtime;
+    const existing = await contactRunningController();
+    printInfo("正在按原运行参数重启 Runtime…");
+    const control = existing
+        ? (await (await ensureControllerRunning()).client.restart()).status
+        : await restartRuntime();
+    const status = control.runtime;
     if (!status) throw new Error("Runtime 重启后没有返回运行状态");
     printSuccess(`Runtime 已重启：pid ${status.pid} · ${status.version} · ${status.projects.filter((item) => item.active).length} 个活动项目。`);
 }
@@ -206,16 +228,16 @@ function printRegistrationBanner(
 ): void {
     printIntro("codex-mcp");
     printSummary("已就绪", [
-        { label: "守护进程", value: `pid ${status.pid} · 已运行 ${formatUptime(status.uptimeMs)}` },
+        { label: "MCP Runtime", value: `pid ${status.pid} · 已运行 ${formatUptime(status.uptimeMs)}` },
+        { label: "运行方式", value: status.mode === "local" ? "仅本机" : "公网" },
         { label: "本机地址", value: status.localUrl },
         { label: "Web Console", value: `http://127.0.0.1:${controllerPort}/` },
         { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
-        { label: "公网连接", value: describeTunnelStatus(status.tunnel) },
-        { label: "当前项目", value: `${project.name}（${project.path}）` },
+        { label: "当前项目", value: project.name },
         { label: "已注册项目", value: `${status.projects.length} 个` },
     ]);
-    printInfo(`在 ChatGPT 中使用 project_control(action=select, project_id=${project.id}) 绑定这个项目；升级后请 Refresh / 重新发布 MCP app actions。`);
-    printOutro("如需停止后台服务：codex-mcp stop");
+    printInfo(`在 ChatGPT 里说“切换到 ${project.name} 项目”即可开始使用。`);
+    printOutro("管理和排查：codex-mcp open · 停止服务：codex-mcp stop");
 }
 
 function formatUptime(uptimeMs: number): string {
@@ -237,6 +259,44 @@ async function checkPublicHealthz(
         return true;
     } catch {
         return false;
+    }
+}
+
+function describeRuntimeIntent(intent: { local: boolean; noTunnel: boolean; tunnelLogs: boolean }): string {
+    if (intent.local) return "本机模式";
+    return intent.noTunnel ? "公网模式（外部入口）" : "公网模式（托管 Tunnel）";
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            process.kill(pid, 0);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+            if ((error as NodeJS.ErrnoException).code !== "EPERM") return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Controller pid ${pid} 在 ${timeoutMs}ms 内没有退出`);
+}
+
+function tryOpenBrowser(url: string): void {
+    const command = process.platform === "darwin"
+        ? { bin: "open", args: [url] }
+        : process.platform === "win32"
+          ? { bin: "cmd.exe", args: ["/c", "start", "", url] }
+          : { bin: "xdg-open", args: [url] };
+    try {
+        const child = spawn(command.bin, command.args, {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+        });
+        child.once("error", () => undefined);
+        child.unref();
+    } catch {
+        printInfo("浏览器没有自动打开，请复制上面的 Web Console 地址。");
     }
 }
 

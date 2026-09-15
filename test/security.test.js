@@ -7,7 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { safeHttpGet, safeHttpRequest, assertPublicAddress } from "../dist/lib/http/safe-http.js";
+import {
+    safeHttpGet,
+    safeHttpRequest,
+    assertPublicAddress,
+    proxyRequestHostname,
+    proxyHostnameRoutingSurvivesRedirect,
+} from "../dist/lib/http/safe-http.js";
 import { assertAllowedPath } from "../dist/lib/fs/path-guard.js";
 import { writePrivateFileAtomic } from "../dist/lib/fs/atomic-file.js";
 import { verifyTunnelRoute } from "../dist/tunnel/verify.js";
@@ -39,6 +45,25 @@ test("socket DNS lookup rejects a rebinding response containing any private addr
     t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
     await assert.rejects(safeHttpGet("http://rebind.example/", { useProxy: false, timeoutMs: 1000 }), /private|blocked|public/i);
     assert.equal(lookups, 1);
+});
+
+test("domain-aware proxy routing uses a validated hostname only when explicitly enabled and stops across hosts", () => {
+    assert.equal(proxyRequestHostname("chatgpt.com", "1.1.1.1", false), "1.1.1.1");
+    assert.equal(proxyRequestHostname("chatgpt.com", "1.1.1.1", true), "chatgpt.com");
+    assert.equal(
+        proxyHostnameRoutingSurvivesRedirect(
+            new URL("https://chatgpt.com/oauth/client.json"),
+            new URL("https://chatgpt.com/oauth/next.json"),
+        ),
+        true,
+    );
+    assert.equal(
+        proxyHostnameRoutingSurvivesRedirect(
+            new URL("https://chatgpt.com/oauth/client.json"),
+            new URL("https://example.com/next.json"),
+        ),
+        false,
+    );
 });
 
 test("HTTP enforces redirect, response, request-size and total timeout budgets", async t => {

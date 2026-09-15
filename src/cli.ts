@@ -52,11 +52,13 @@ import {
 import {
     ensureDaemonAndRegister,
     getPackageVersion,
+    runOpen,
     runRestart,
+    runShutdown,
     runStatus,
     runStop,
 } from "./cli/daemon-commands.js";
-import { runProjectCommand } from "./cli/project-commands.js";
+import { runBindingsCommand, runProjectCommand } from "./cli/project-commands.js";
 import { runControllerProcess } from "./control/process.js";
 import { runDoctorService, selfUpdate } from "./control/services.js";
 
@@ -67,13 +69,16 @@ function printUsage(): void {
         "常用命令",
         [
             "codex-mcp start                   注册当前项目并确保后台服务运行",
-            "codex-mcp status                  查看服务、版本、Tunnel 和项目状态",
-            "codex-mcp restart                 重启后台服务并保留项目注册状态",
-            "codex-mcp stop                    停止后台服务",
+            "codex-mcp open                    打开本机 Web Console（不启动 Runtime）",
+            "codex-mcp status                  查看控制面、Runtime、Tunnel 和项目状态",
+            "codex-mcp restart                 重启 MCP Runtime 并保留项目注册状态",
+            "codex-mcp stop                    停止 MCP Runtime；Web Console 保持在线",
+            "codex-mcp shutdown                完全关闭 Runtime 和 Web Console",
             "codex-mcp project list            查看已注册项目",
             "codex-mcp project add [目录]      注册项目（默认当前目录）",
             "codex-mcp project remove [项目]   停用项目（默认当前目录）",
             "codex-mcp project info [项目]     查看项目详情",
+            "codex-mcp bindings clean [项目]   清理项目的会话绑定",
             "codex-mcp logs [--lines N]        查看最近运行日志",
             "codex-mcp logs -f                 持续跟随运行日志",
             "codex-mcp setup                   设置 / 管理公网连接",
@@ -86,13 +91,14 @@ function printUsage(): void {
         "其他",
         [
             "codex-mcp status --json           输出机器可读状态",
-            "codex-mcp start --local           注册当前项目并以本机模式启动",
+            "codex-mcp start --local           注册当前项目并切换为本机模式",
+            "codex-mcp start --public          注册当前项目并切换为公网模式",
             "codex-mcp start --root <目录>     指定 start 的项目目录",
             "codex-mcp --version               查看版本",
         ].join("\n"),
     );
-    printInfo("多数情况下：进入项目目录运行 codex-mcp start；排查问题先看 status 和 logs。");
-    printOutro("首次使用：运行 codex-mcp setup");
+    printInfo("多数情况下：进入项目目录运行 codex-mcp start；想用图形界面则运行 codex-mcp open。");
+    printOutro("未配置公网连接时，start 默认使用本机模式；需要连接 ChatGPT 再运行 setup 或在 Web Console 配置");
 }
 
 /**
@@ -137,8 +143,18 @@ async function main(argv: string[]): Promise<void> {
         return;
     }
 
+    if (flags.command === "open") {
+        await runOpen();
+        return;
+    }
+
     if (flags.command === "stop") {
         await runStop();
+        return;
+    }
+
+    if (flags.command === "shutdown") {
+        await runShutdown();
         return;
     }
 
@@ -154,6 +170,11 @@ async function main(argv: string[]): Promise<void> {
 
     if (flags.command === "project") {
         await runProjectCommand(flags);
+        return;
+    }
+
+    if (flags.command === "bindings") {
+        await runBindingsCommand(flags);
         return;
     }
 
@@ -533,6 +554,7 @@ async function printDoctorReport(fix: boolean): Promise<void> {
 
     const result = await runDoctorService(fix);
     for (const fixMessage of result.fixes) printSuccess(fixMessage);
+    for (const warning of result.warnings) printWarning(warning);
     if (fix) printInfo("--fix 不会修改 Cloudflare DNS、OAuth 身份、连接密码或项目文件。");
 
     const report = result.report;

@@ -6,13 +6,16 @@ import { controllerPanelUrl, type ControllerState } from "./state.js";
 import { OperationManager } from "./operations.js";
 import {
     addProject,
+    cleanupProjectConversations,
     configureCloudflarePublicAccess,
     configureExternalPublicAccess,
     discoverCloudflareForSetup,
     generateConnectionPassword,
+    getConsoleSyncState,
     getControlStatus,
     getProject,
     getSetupSummary,
+    listProjectConversations,
     listProjects,
     readLogs,
     removeProject,
@@ -29,8 +32,7 @@ import {
 import { spawnReplacementController } from "./control.js";
 import { localConsoleHtml } from "../ui/local-console.js";
 import { PACKAGE_VERSION } from "../server/version.js";
-import { chooseProjectFolder, presentBindings, suggestProjects, validateProjectFolder } from "./project-selection.js";
-import { loadBindingsFile } from "../daemon/state.js";
+import { chooseProjectFolder, suggestProjects, validateProjectFolder } from "./project-selection.js";
 import { checkConnection } from "./connection-check.js";
 
 const SESSION_COOKIE = "codex_console";
@@ -82,7 +84,7 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
         const nonce = randomBytes(18).toString("base64url");
         res.setHeader(
             "content-security-policy",
-            `default-src 'none'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+            `default-src 'none'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         );
         res.setHeader(
             "set-cookie",
@@ -121,19 +123,30 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
         next();
     });
 
+    const readControllerStatus = async () => ({
+        apiVersion: options.state.apiVersion,
+        ok: true,
+        pid: process.pid,
+        version: PACKAGE_VERSION,
+        startedAt: options.state.startedAt,
+        uptimeMs: Date.now() - Date.parse(options.state.startedAt),
+        panelUrl: controllerPanelUrl({ host: options.state.host, port }),
+        runtime: await getControlStatus(),
+    });
+
     app.get("/api/controller/status", async (_req, res) => {
+        try { res.json(await readControllerStatus()); }
+        catch (error) { sendError(res, error); }
+    });
+
+    app.get("/api/console/snapshot", async (_req, res) => {
         try {
-            const runtime = await getControlStatus();
-            res.json({
-                apiVersion: options.state.apiVersion,
-                ok: true,
-                pid: process.pid,
-                version: PACKAGE_VERSION,
-                startedAt: options.state.startedAt,
-                uptimeMs: Date.now() - Date.parse(options.state.startedAt),
-                panelUrl: controllerPanelUrl({ host: options.state.host, port }),
-                runtime,
-            });
+            const [status, setup, conversations] = await Promise.all([
+                readControllerStatus(),
+                getConsoleSyncState(),
+                listProjectConversations(),
+            ]);
+            res.json({ ok: true, status, setup, conversations: conversations.conversations });
         } catch (error) {
             sendError(res, error);
         }
@@ -172,8 +185,8 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
         try { res.json({ suggestions: await suggestProjects() }); }
         catch (error) { sendError(res, error); }
     });
-    app.get("/api/project-conversations", (_req, res) => {
-        try { res.json({ conversations: presentBindings(loadBindingsFile()) }); }
+    app.get("/api/project-conversations", async (_req, res) => {
+        try { res.json(await listProjectConversations()); }
         catch (error) { sendError(res, error); }
     });
     app.post("/api/project-folder", async (_req, res) => {
@@ -199,11 +212,21 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
         try {
             const body = asRecord(req.body);
             const path = await validateProjectFolder(requiredString(body.path, "path"));
-            const intent = body.intentSpecified === true ? { ...parseIntent(body), intentSpecified: true } : {
-                local: true, noTunnel: true, tunnelLogs: false, intentSpecified: false,
-            };
-            const project = await addProject(path, intent);
+            const project = await addProject(path);
             res.json({ ok: true, project, projects: await listProjects() });
+        } catch (error) { sendError(res, error, 400); }
+    });
+
+    app.post("/api/projects/:target/conversations/cleanup", async (req, res) => {
+        try {
+            const raw = asRecord(req.body).conversationIds;
+            if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string")) {
+                throw new Error("conversationIds must be an array of conversation ids");
+            }
+            res.json({
+                ok: true,
+                ...(await cleanupProjectConversations(req.params.target, raw as string[])),
+            });
         } catch (error) { sendError(res, error, 400); }
     });
 
@@ -215,19 +238,18 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
     });
 
     app.get("/api/logs", (req, res) => {
-        try {
-            const raw = Number.parseInt(String(req.query.lines ?? "100"), 10);
-            res.json({ ok: true, ...readLogs(Number.isInteger(raw) ? raw : 100) });
-        } catch (error) { sendError(res, error); }
+        try { res.json({ ok: true, ...readLogs(parseLogLines(req.query.lines, 100)) }); }
+        catch (error) { sendError(res, error); }
     });
 
     app.get("/api/logs/stream", async (req, res) => {
         openSse(res);
+        const lines = parseLogLines(req.query.lines, 250);
         let previous = "";
         const heartbeat = setInterval(() => res.write(": keepalive\n\n"), SSE_HEARTBEAT_MS);
         try {
             while (!req.destroyed && !res.destroyed) {
-                const current = readLogs(250);
+                const current = readLogs(lines);
                 if (current.text !== previous) {
                     previous = current.text;
                     writeSse(res, "logs", current);
@@ -409,8 +431,9 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
     });
 
     app.post("/api/controller/shutdown", (req, res) => {
-        if (!(req as AuthenticatedRequest).controllerAuth) {
-            res.status(403).json({ error: "control token required" });
+        const authenticated = req as AuthenticatedRequest;
+        if (!authenticated.controllerAuth && !authenticated.browserSession) {
+            res.status(403).json({ error: "authenticated local session required" });
             return;
         }
         res.json({ ok: true });
@@ -489,6 +512,12 @@ function asRecord(value: unknown): Record<string, unknown> {
 function requiredString(value: unknown, label: string): string {
     if (typeof value !== "string" || !value.trim()) throw new Error(`${label} is required`);
     return value.trim();
+}
+
+function parseLogLines(value: unknown, fallback: number): number {
+    const parsed = Number.parseInt(String(value ?? fallback), 10);
+    if (!Number.isInteger(parsed)) return fallback;
+    return Math.max(1, Math.min(5_000, parsed));
 }
 
 function createBrowserSession(sessions: Map<string, BrowserSession>): BrowserSession {

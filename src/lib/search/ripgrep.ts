@@ -2,13 +2,7 @@ import { spawn } from "node:child_process";
 import { getManagedToolPath } from "../../managed-tools/paths.js";
 import { terminateChildProcess } from "../process/tree.js";
 
-let cachedRgPath: string | null | undefined;
-
 export async function findRipgrep(): Promise<string | null> {
-    if (cachedRgPath !== undefined) {
-        return cachedRgPath;
-    }
-
     const candidates = [
         getManagedToolPath("ripgrep"),
         ...(process.platform === "win32" ? ["rg.exe", "rg"] : ["rg"]),
@@ -36,14 +30,12 @@ export async function findRipgrep(): Promise<string | null> {
                     else reject(new Error(`exit ${code}`));
                 });
             });
-            cachedRgPath = candidate;
             return candidate;
         } catch {
             // try next
         }
     }
 
-    cachedRgPath = null;
     return null;
 }
 

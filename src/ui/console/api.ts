@@ -19,7 +19,7 @@ export interface ControllerStatus {
     pid: number;
     version: string;
     uptimeMs: number;
-    runtime: { running: boolean; runtime?: RuntimeInfo };
+    runtime: { running: boolean; runtime?: RuntimeInfo; projects: Project[] };
 }
 
 export interface Project {
@@ -50,13 +50,22 @@ export interface CapabilityConfig {
     sources: Record<string, CapabilitySource>;
 }
 
+export interface SetupConfigState {
+    publicAccess?: { kind: "external" | "cloudflare"; domain: string };
+    runtime?: { mode: "local" | "public"; noTunnel?: boolean; tunnelLogs?: boolean };
+}
+
 export interface SetupSummary {
-    config: {
-        publicAccess?: { kind: "external" | "cloudflare"; domain: string };
-    };
+    config: SetupConfigState;
     passwordConfigured: boolean;
     capabilities: CapabilityConfig;
     detections: Array<{ id?: string; label: string; detected: boolean }>;
+}
+
+export interface ConsoleSnapshot {
+    status: ControllerStatus;
+    setup: { config: SetupConfigState; passwordConfigured: boolean };
+    conversations: Conversation[];
 }
 
 export interface OperationSnapshot {
@@ -107,6 +116,9 @@ export function friendlyError(error: unknown): string {
     if (/password.*12|至少 12/i.test(message)) return "连接密码至少需要 12 个字符。";
     if (/not configured|还没有配置公网/i.test(message)) return "请先完成 ChatGPT 连接设置。";
     if (/timeout|超时/i.test(message)) return "操作等待超时，请检查网络后重试。";
+    if (/failed to fetch|fetch failed|networkerror|network request failed/i.test(message)) {
+        return "Web Console 与本机 Controller 的连接已中断；如果刚执行了 shutdown，请运行 codex-mcp open 重新打开。";
+    }
     return message;
 }
 
@@ -115,15 +127,51 @@ export function followOperation(
     onUpdate: (snapshot: OperationSnapshot) => void,
     onDone?: (snapshot: OperationSnapshot) => void,
 ): () => void {
-    onUpdate(operation);
+    let closed = false;
+    let finished = false;
+    let fallbackTimer: number | undefined;
     const source = new EventSource(`/api/operations/${encodeURIComponent(operation.id)}/events`);
-    source.addEventListener("operation", (event) => {
-        const snapshot = JSON.parse((event as MessageEvent).data) as OperationSnapshot;
+    const clearFallback = (): void => {
+        if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
+        fallbackTimer = undefined;
+    };
+    const accept = (snapshot: OperationSnapshot): void => {
+        if (closed || finished) return;
         onUpdate(snapshot);
         if (snapshot.state !== "running") {
+            finished = true;
+            clearFallback();
             source.close();
             onDone?.(snapshot);
         }
+    };
+    const pollFallback = async (): Promise<void> => {
+        fallbackTimer = undefined;
+        if (closed || finished || source.readyState === EventSource.OPEN) return;
+        try {
+            const payload = await api<{ operation: OperationSnapshot }>(`/api/operations/${encodeURIComponent(operation.id)}`);
+            accept(payload.operation);
+        } catch {
+            // EventSource keeps reconnecting; the ordinary console sync surfaces a Controller outage.
+        }
+        if (!closed && !finished && source.readyState !== EventSource.OPEN && fallbackTimer === undefined) {
+            fallbackTimer = window.setTimeout(() => { void pollFallback(); }, 1_000);
+        }
+    };
+
+    accept(operation);
+    source.onopen = clearFallback;
+    source.onerror = () => {
+        if (!closed && !finished && fallbackTimer === undefined) {
+            fallbackTimer = window.setTimeout(() => { void pollFallback(); }, 500);
+        }
+    };
+    source.addEventListener("operation", (event) => {
+        accept(JSON.parse((event as MessageEvent).data) as OperationSnapshot);
     });
-    return () => source.close();
+    return () => {
+        closed = true;
+        clearFallback();
+        source.close();
+    };
 }

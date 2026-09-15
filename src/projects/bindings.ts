@@ -95,6 +95,23 @@ export class BindingStore {
         return this.bindings.filter((item) => item.projectId === projectId).length;
     }
 
+    /** Remove only the requested owner keys from one project, preserving bindings created later. */
+    async removeFromProject(projectId: string, ownerKeys: Iterable<string>): Promise<number> {
+        const targets = new Set(ownerKeys);
+        if (targets.size === 0) return 0;
+        return await this.mutex.runExclusive(async () => {
+            const remaining = this.bindings.filter(
+                (item) => item.projectId !== projectId || !targets.has(item.ownerKey),
+            );
+            const removed = this.bindings.length - remaining.length;
+            if (removed > 0) {
+                await this.persist(remaining);
+                this.bindings = remaining;
+            }
+            return removed;
+        });
+    }
+
     /** Drop every binding that points at a deactivated project. */
     async invalidateProject(projectId: string): Promise<number> {
         return await this.mutex.runExclusive(async () => {

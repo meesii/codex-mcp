@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { loopbackHost } from "../lib/http/listen-address.js";
 import { homedir, hostname as osHostname } from "node:os";
 import { printInfo, printSuccess, printWarning } from "../lib/util/terminal.js";
@@ -44,6 +45,8 @@ export interface TunnelSetupResult {
     configRevision?: string;
     previousConfigRevision?: string;
     zoneId?: string;
+    /** Previous managed route, retained only long enough to retire its exact DNS hostname after commit. */
+    previousManagedAccess?: CloudflarePublicAccessConfig;
     /** Present only for artifacts prepared by the current uncommitted wizard session. */
     candidateSession?: { createdTunnel: boolean };
 }
@@ -119,13 +122,17 @@ export function prepareExternalTunnelSetup(
     const port = options.port ?? userConfig.port ?? 3920;
     const domain = normalizeHostname(domainValue);
     const publicAccess: PublicAccessConfig = { kind: "external", domain };
+    const previousManagedAccess = userConfig.publicAccess?.kind === "cloudflare"
+        ? userConfig.publicAccess
+        : undefined;
     return {
         userConfig: { ...userConfig, host, port, publicAccess },
         publicAccess,
         domain,
         useCloudflared: false,
-        ...(userConfig.publicAccess?.kind === "cloudflare" && userConfig.publicAccess.configRevision
-            ? { previousConfigRevision: userConfig.publicAccess.configRevision }
+        ...(previousManagedAccess ? { previousManagedAccess } : {}),
+        ...(previousManagedAccess?.configRevision
+            ? { previousConfigRevision: previousManagedAccess.configRevision }
             : {}),
     };
 }
@@ -224,6 +231,7 @@ export async function prepareCloudflareTunnelSetup(
             tunnelId: tunnel.id,
             configPath: generated.path,
             configRevision: generated.revision,
+            ...(previousManaged ? { previousManagedAccess: previousManaged } : {}),
             ...(previousManaged?.configRevision ? { previousConfigRevision: previousManaged.configRevision } : {}),
             zoneId,
             candidateSession: { createdTunnel: tunnel.created },
@@ -309,13 +317,17 @@ async function runConfigWizard(
             userConfig.publicAccess?.domain,
         );
         const publicAccess: PublicAccessConfig = { kind: "external", domain };
+        const previousManagedAccess = userConfig.publicAccess?.kind === "cloudflare"
+            ? userConfig.publicAccess
+            : undefined;
         return {
             userConfig: { ...userConfig, host, port, publicAccess },
             publicAccess,
             domain,
             useCloudflared: false,
-            ...(userConfig.publicAccess?.kind === "cloudflare" && userConfig.publicAccess.configRevision
-                ? { previousConfigRevision: userConfig.publicAccess.configRevision }
+            ...(previousManagedAccess ? { previousManagedAccess } : {}),
+            ...(previousManagedAccess?.configRevision
+                ? { previousConfigRevision: previousManagedAccess.configRevision }
                 : {}),
         };
     }
@@ -403,6 +415,7 @@ async function runConfigWizard(
             tunnelId: tunnel.id,
             configPath: generated.path,
             configRevision: generated.revision,
+            ...(previousManaged ? { previousManagedAccess: previousManaged } : {}),
             ...(previousManaged?.configRevision
                 ? { previousConfigRevision: previousManaged.configRevision }
                 : {}),
@@ -504,8 +517,16 @@ export function defaultTunnelName(
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "")
         .slice(0, 28) || "host";
+    const resolvedHome = resolve(homeDirectory);
+    let canonicalHome = resolvedHome;
+    try {
+        canonicalHome = realpathSync.native(resolvedHome);
+    } catch {
+        // A caller may ask for a deterministic name before the home exists.
+        // Syntactic normalization is still better than hashing a raw spelling.
+    }
     const suffix = createHash("sha256")
-        .update(`${machineHostname}\0${homeDirectory}`, "utf8")
+        .update(`${machineHostname}\0${canonicalHome}`, "utf8")
         .digest("hex")
         .slice(0, 6);
     return `codex-mcp-${slug}-${suffix}`;

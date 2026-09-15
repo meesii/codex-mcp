@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Utf8Output = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $Utf8Output
@@ -106,6 +106,7 @@ if ($env:CODEX_MCP_UPDATE -eq "1") {
     Success "更新完成。配置、连接密码和 Tunnel 信息保持不变。"
     Warn "如果 codex-mcp 服务正在运行，请重启它；现有进程不会自动加载更新后的 core tool schema。"
 } else {
-    Info "第一次使用请运行：codex-mcp setup"
+    Info "第一次使用推荐运行：codex-mcp open"
+    Info "也可以进入项目目录直接运行：codex-mcp start"
     Warn "如果其它终端窗口还找不到 codex-mcp，请重新打开终端。"
 }

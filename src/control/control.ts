@@ -15,9 +15,21 @@ import {
 } from "./state.js";
 import type { ControlStatus, RuntimeStartInput } from "./services.js";
 import type { RegisteredProject } from "../daemon/state.js";
+import {
+    DAEMON_LIFECYCLE_LOCK_WAIT_TIMEOUT_MS,
+    DAEMON_START_TIMEOUT_MS,
+    DAEMON_STOP_TIMEOUT_MS,
+} from "../daemon/control.js";
 import { PACKAGE_VERSION } from "../server/version.js";
 
 const CONTROLLER_START_TIMEOUT_MS = 30_000;
+const CONTROLLER_LIFECYCLE_MARGIN_MS = 10_000;
+const RUNTIME_START_REQUEST_TIMEOUT_MS =
+    DAEMON_LIFECYCLE_LOCK_WAIT_TIMEOUT_MS + DAEMON_START_TIMEOUT_MS + CONTROLLER_LIFECYCLE_MARGIN_MS;
+const RUNTIME_STOP_REQUEST_TIMEOUT_MS =
+    DAEMON_LIFECYCLE_LOCK_WAIT_TIMEOUT_MS + DAEMON_STOP_TIMEOUT_MS + CONTROLLER_LIFECYCLE_MARGIN_MS;
+const RUNTIME_RESTART_REQUEST_TIMEOUT_MS =
+    DAEMON_LIFECYCLE_LOCK_WAIT_TIMEOUT_MS + DAEMON_STOP_TIMEOUT_MS + DAEMON_START_TIMEOUT_MS + CONTROLLER_LIFECYCLE_MARGIN_MS;
 const CONTROLLER_LOCK_PATH = join(getUserConfigDir(), "controller.lock");
 const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_TIMEOUT_MS = 30_000;
@@ -44,19 +56,25 @@ export class LocalControllerClient {
     }
 
     start(input: RuntimeStartInput): Promise<{ ok: true; status: ControlStatus }> {
-        return this.request("/api/runtime/start", { method: "POST", body: input }) as Promise<{ ok: true; status: ControlStatus }>;
+        return this.request("/api/runtime/start", {
+            method: "POST",
+            body: input,
+            timeoutMs: RUNTIME_START_REQUEST_TIMEOUT_MS,
+        }) as Promise<{ ok: true; status: ControlStatus }>;
     }
 
     stop(): Promise<{ ok: true; stopped: boolean; status: ControlStatus }> {
-        return this.request("/api/runtime/stop", { method: "POST" }) as Promise<{ ok: true; stopped: boolean; status: ControlStatus }>;
+        return this.request("/api/runtime/stop", {
+            method: "POST",
+            timeoutMs: RUNTIME_STOP_REQUEST_TIMEOUT_MS,
+        }) as Promise<{ ok: true; stopped: boolean; status: ControlStatus }>;
     }
 
     restart(): Promise<{ ok: true; status: ControlStatus }> {
-        return this.request("/api/runtime/restart", { method: "POST" }) as Promise<{ ok: true; status: ControlStatus }>;
-    }
-
-    addProject(input: { path: string; local: boolean; noTunnel: boolean; tunnelLogs: boolean; intentSpecified?: boolean }): Promise<{ ok: true; project: RegisteredProject; projects: RegisteredProject[] }> {
-        return this.request("/api/projects", { method: "POST", body: input }) as Promise<{ ok: true; project: RegisteredProject; projects: RegisteredProject[] }>;
+        return this.request("/api/runtime/restart", {
+            method: "POST",
+            timeoutMs: RUNTIME_RESTART_REQUEST_TIMEOUT_MS,
+        }) as Promise<{ ok: true; status: ControlStatus }>;
     }
 
     removeProject(target: string): Promise<{ ok: true; removed: boolean; project: RegisteredProject; projects: RegisteredProject[] }> {
@@ -79,9 +97,13 @@ export class LocalControllerClient {
         return this.request("/api/controller/retire", { method: "POST" }) as Promise<{ ok: true }>;
     }
 
-    private async request(path: string, options: { method?: string; body?: unknown } = {}): Promise<unknown> {
+    private async request(
+        path: string,
+        options: { method?: string; body?: unknown; timeoutMs?: number } = {},
+    ): Promise<unknown> {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
             const response = await fetch(`http://${loopbackHost(this.state.host)}:${this.state.port}${path}`, {
                 method: options.method ?? "GET",
@@ -115,12 +137,12 @@ export async function contactRunningController(): Promise<ControllerContact | un
     const state = loadControllerState();
     if (!state || !isProcessAlive(state.pid)) return undefined;
     try {
-        const client = new LocalControllerClient(state, 5_000);
-        const status = await client.status();
+        const probe = new LocalControllerClient(state, 5_000);
+        const status = await probe.status();
         if (status.apiVersion !== CONTROLLER_API_VERSION || status.pid !== state.pid) {
             throw new Error("Controller 状态文件与控制接口不一致");
         }
-        return { state, client };
+        return { state, client: new LocalControllerClient(state) };
     } catch (error) {
         if (!isProcessAlive(state.pid)) return undefined;
         throw new Error(`Controller pid ${state.pid} 仍存在，但本机控制接口不可用：${readableError(error)}`);
@@ -226,9 +248,9 @@ async function waitForControllerStart(
         }
         if (state?.pid === pid) {
             try {
-                const client = new LocalControllerClient(state, 2_000);
-                const status = await client.status();
-                if (status.pid === pid) return { state, client };
+                const probe = new LocalControllerClient(state, 2_000);
+                const status = await probe.status();
+                if (status.pid === pid) return { state, client: new LocalControllerClient(state) };
             } catch (error) {
                 lastError = readableError(error);
             }

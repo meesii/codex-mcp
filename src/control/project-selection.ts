@@ -98,9 +98,13 @@ export async function suggestProjects(options: { home?: string; projects?: Regis
     return suggestions;
 }
 
+export function bindingPresentationId(ownerKey: string): string {
+    return createHash("sha256").update(ownerKey).digest("hex").slice(0, 32);
+}
+
 export function presentBindings(bindings: SessionBinding[]) {
     return bindings.map((binding) => ({
-        id: createHash("sha256").update(binding.ownerKey).digest("hex").slice(0, 12),
+        id: bindingPresentationId(binding.ownerKey),
         projectId: binding.projectId,
         label: binding.ownerKey.includes("|openai-session:") ? "ChatGPT 会话" : "客户端会话",
         lastSeenAt: binding.lastSeenAt,

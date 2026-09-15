@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { validateProjectFolder } from "./project-selection.js";
+import { bindingPresentationId, presentBindings, validateProjectFolder } from "./project-selection.js";
 import { generateAdminPassword, hasAdminPassword, setAdminPassword, verifyAdminPassword } from "../auth/password-store.js";
 import { CapabilityManager } from "../capabilities/manager.js";
 import { resolveCapabilitiesConfig } from "../capabilities/config.js";
@@ -11,9 +11,18 @@ import {
     stopDaemonContact,
     withDaemonLifecycleLock,
 } from "../daemon/control.js";
-import { loadProjectsFile, saveProjectsFile, type RegisteredProject, type RuntimeIntent } from "../daemon/state.js";
+import {
+    loadBindingsFile,
+    loadProjectsFile,
+    saveProjectsFile,
+    type RegisteredProject,
+    type RuntimeIntent,
+    type SessionBinding,
+} from "../daemon/state.js";
 import { runDoctorChecks, type DoctorReport } from "../doctor/index.js";
 import { runSelfUpdate } from "../doctor/update.js";
+import { findRipgrep } from "../lib/search/ripgrep.js";
+import { ensureManagedTool } from "../managed-tools/install.js";
 import { BindingStore } from "../projects/bindings.js";
 import { canonicalProjectPath, detectProjectDisplayName } from "../projects/identity.js";
 import { ProjectRegistry } from "../projects/registry.js";
@@ -40,7 +49,19 @@ export interface ControlStatus {
 
 export interface DoctorServiceResult {
     fixes: string[];
+    warnings: string[];
     report: DoctorReport;
+}
+
+export type PresentedConversation = ReturnType<typeof presentBindings>[number];
+
+export interface ProjectConversationsResult {
+    project?: RegisteredProject;
+    conversations: PresentedConversation[];
+}
+
+export interface CleanupProjectConversationsResult extends ProjectConversationsResult {
+    removed: number;
 }
 
 export async function getControlStatus(): Promise<ControlStatus> {
@@ -57,12 +78,17 @@ export async function getControlStatus(): Promise<ControlStatus> {
 }
 
 export async function startRuntime(input: RuntimeStartInput): Promise<ControlStatus> {
-    const desired: RuntimeIntent = {
+    const requested = canonicalRuntimeIntent({
         local: input.local,
         noTunnel: input.noTunnel,
         tunnelLogs: input.tunnelLogs,
-    };
+    });
+    const desired = input.intentSpecified === true
+        ? requested
+        : preferredRuntimeIntent(loadUserConfig());
+    if (input.intentSpecified === true) persistRuntimeIntent(desired);
     const daemon = await ensureRuntime(desired, input.intentSpecified === true);
+    if (input.intentSpecified !== true) persistRuntimeIntent(daemon.state.runtimeIntent);
     if (input.projectPath) {
         const projectPath = canonicalProjectPath(resolve(input.projectPath));
         await daemon.client.registerProject({ path: projectPath, name: detectProjectDisplayName(projectPath) });
@@ -87,7 +113,7 @@ export async function restartRuntime(): Promise<ControlStatus> {
         const existing = await contactRunningDaemon();
         if (!existing) {
             cleanStaleDaemonState();
-            throw new Error("守护进程没有在运行，无法重启");
+            throw new Error("MCP Runtime 没有在运行，无法重启；请使用 `codex-mcp start`");
         }
         const intent = existing.state.runtimeIntent;
         await assertIntentReady(intent);
@@ -101,13 +127,16 @@ export async function listProjects(): Promise<Array<RegisteredProject & { boundS
     return (await getControlStatus()).projects;
 }
 
-export async function addProject(pathValue: string, input: Omit<RuntimeStartInput, "projectPath">): Promise<RegisteredProject> {
+export async function addProject(pathValue: string): Promise<RegisteredProject> {
     const projectPath = await validateProjectFolder(pathValue);
-    const daemon = await ensureRuntime(
-        { local: input.local, noTunnel: input.noTunnel, tunnelLogs: input.tunnelLogs },
-        input.intentSpecified === true,
-    );
-    return await daemon.client.registerProject({ path: projectPath, name: detectProjectDisplayName(projectPath) });
+    return await withDaemonLifecycleLock(async () => {
+        const daemon = await contactRunningDaemon();
+        if (daemon) {
+            return await daemon.client.registerProject({ path: projectPath, name: detectProjectDisplayName(projectPath) });
+        }
+        cleanStaleDaemonState();
+        return await new ProjectRegistry().register({ path: projectPath, name: detectProjectDisplayName(projectPath) });
+    });
 }
 
 export async function removeProject(target: string): Promise<{ removed: boolean; project: RegisteredProject }> {
@@ -133,8 +162,61 @@ export async function getProject(target: string): Promise<(RegisteredProject & {
     return resolveProjectSelection(projects, target);
 }
 
+export async function listProjectConversations(target?: string): Promise<ProjectConversationsResult> {
+    if (!target) {
+        return { conversations: presentBindings(loadBindingsFile()) };
+    }
+    const daemon = await contactRunningDaemon();
+    const projects = daemon ? (await daemon.client.status()).projects : loadProjectsFile();
+    const project = resolveProjectSelection(projects, target);
+    if (!project) throw new Error(`没有找到项目：${target}`);
+    const bindings = daemon
+        ? await daemon.client.listProjectBindings(project.id)
+        : loadBindingsFile().filter((item) => item.projectId === project.id);
+    return { project, conversations: presentBindings(bindings) };
+}
+
+export async function cleanupProjectConversations(
+    target: string,
+    conversationIds: string[],
+): Promise<CleanupProjectConversationsResult> {
+    const requestedIds = new Set(conversationIds);
+    if (
+        conversationIds.length > 1_024 ||
+        conversationIds.some((id) => typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id))
+    ) {
+        throw new Error("会话编号列表无效");
+    }
+    return await withDaemonLifecycleLock(async () => {
+        const daemon = await contactRunningDaemon();
+        const projects = daemon ? (await daemon.client.status()).projects : loadProjectsFile();
+        const project = resolveProjectSelection(projects, target);
+        if (!project) throw new Error(`没有找到项目：${target}`);
+        const bindings = daemon
+            ? await daemon.client.listProjectBindings(project.id)
+            : loadBindingsFile().filter((item) => item.projectId === project.id);
+        const removeOwnerKeys = bindings
+            .filter((binding) => requestedIds.has(bindingPresentationId(binding.ownerKey)))
+            .map((binding) => binding.ownerKey);
+
+        let removed = 0;
+        let remaining: SessionBinding[];
+        if (daemon) {
+            const result = await daemon.client.cleanupProjectBindings(project.id, removeOwnerKeys);
+            removed = result.removed;
+            remaining = result.bindings;
+        } else {
+            const store = new BindingStore();
+            removed = await store.removeFromProject(project.id, removeOwnerKeys);
+            remaining = store.list().filter((item) => item.projectId === project.id);
+        }
+        return { project, removed, conversations: presentBindings(remaining) };
+    });
+}
+
 export async function runDoctorService(fix = false): Promise<DoctorServiceResult> {
     const fixes: string[] = [];
+    const warnings: string[] = [];
     if (fix) {
         const state = (await import("../daemon/state.js")).loadDaemonState();
         const stale = Boolean(state && !isPidAlive(state.pid));
@@ -142,8 +224,18 @@ export async function runDoctorService(fix = false): Promise<DoctorServiceResult
         cleanStaleDaemonState();
         fixes.push("已确保 ~/.codex-mcp 和日志目录存在");
         if (stale) fixes.push("已清理失效的 daemon 状态文件");
+        if (!(await findRipgrep())) {
+            try {
+                const installed = await ensureManagedTool("ripgrep");
+                fixes.push(`已安装文件搜索组件：${installed.path}`);
+            } catch (error) {
+                warnings.push(
+                    `文件搜索组件自动恢复失败：${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
     }
-    return { fixes, report: await runDoctorChecks() };
+    return { fixes, warnings, report: await runDoctorChecks() };
 }
 
 export async function setConnectionPassword(password: string): Promise<void> {
@@ -155,6 +247,20 @@ export async function generateConnectionPassword(): Promise<string> {
     const password = generateAdminPassword();
     await setConnectionPassword(password);
     return password;
+}
+
+export async function getConsoleSyncState(): Promise<{
+    config: Pick<ReturnType<typeof loadUserConfig>, "publicAccess" | "runtime">;
+    passwordConfigured: boolean;
+}> {
+    const config = loadUserConfig();
+    return {
+        config: {
+            ...(config.publicAccess ? { publicAccess: config.publicAccess } : {}),
+            ...(config.runtime ? { runtime: config.runtime } : {}),
+        },
+        passwordConfigured: await hasAdminPassword(),
+    };
 }
 
 export async function getSetupSummary(primaryWorkspace = process.cwd()): Promise<{
@@ -229,6 +335,36 @@ export async function selfUpdate(options: { signal?: AbortSignal; onOutput?: (te
     await runSelfUpdate(options);
 }
 
+export function preferredRuntimeIntent(config = loadUserConfig()): RuntimeIntent {
+    if (config.runtime) {
+        return canonicalRuntimeIntent({
+            local: config.runtime.mode === "local",
+            noTunnel: config.runtime.noTunnel === true,
+            tunnelLogs: config.runtime.tunnelLogs === true,
+        });
+    }
+    return config.publicAccess
+        ? { local: false, noTunnel: false, tunnelLogs: false }
+        : { local: true, noTunnel: true, tunnelLogs: false };
+}
+
+function persistRuntimeIntent(intent: RuntimeIntent): void {
+    const normalized = canonicalRuntimeIntent(intent);
+    saveUserConfig({
+        runtime: {
+            mode: normalized.local ? "local" : "public",
+            noTunnel: normalized.noTunnel,
+            tunnelLogs: normalized.tunnelLogs,
+        },
+    });
+}
+
+function canonicalRuntimeIntent(intent: RuntimeIntent): RuntimeIntent {
+    return intent.local
+        ? { local: true, noTunnel: true, tunnelLogs: false }
+        : { local: false, noTunnel: intent.noTunnel, tunnelLogs: intent.tunnelLogs };
+}
+
 async function ensureRuntime(intent: RuntimeIntent, intentSpecified: boolean) {
     const existing = await contactRunningDaemon();
     if (existing && !intentSpecified) return existing;
@@ -246,8 +382,8 @@ async function ensureRuntime(intent: RuntimeIntent, intentSpecified: boolean) {
 async function assertIntentReady(intent: Pick<RuntimeIntent, "local" | "noTunnel">): Promise<void> {
     if (intent.local) return;
     const config = loadUserConfig();
-    if (!config.publicAccess) throw new Error("还没有配置公网连接；请先完成 setup");
-    if (!(await hasAdminPassword())) throw new Error("还没有设置连接密码；请先完成 setup 或 auth");
+    if (!config.publicAccess) throw new Error("还没有配置公网连接；请打开 Web Console 的“连接”页面，或运行 `codex-mcp setup`");
+    if (!(await hasAdminPassword())) throw new Error("还没有设置连接密码；请在 Web Console 的“连接”页面设置，或运行 `codex-mcp auth`");
     if (!intent.noTunnel && config.publicAccess.kind === "cloudflare") {
         await loadCommittedTunnelSetup(config, config.host ?? "127.0.0.1", config.port ?? 3920);
     }

@@ -21,26 +21,27 @@ codex-mcp 会在你的电脑上读取文件、修改代码、执行命令、查�
 
 ## 它是怎么工作的？
 
-codex-mcp 在你的电脑上运行一个后台服务，并通过 MCP 把本地开发能力提供给 ChatGPT。
+codex-mcp 把本机控制面和真正处理 MCP 请求的 Runtime 分开：
 
 ```text
-ChatGPT
-   │
-   │ HTTPS / MCP
-   ▼
+Web Console / CLI
+       │
+       ▼
+本机 Controller ─── 项目、配置、日志、诊断、更新
+       │
+       ▼
+MCP Runtime ─────── 工具执行、OAuth、项目运行态
+       │
+       ▼
 Cloudflare Tunnel 或你自己的 HTTPS 入口
-   │
-   ▼
-codex-mcp 后台服务
-   │
-   ├── 项目 A
-   ├── 项目 B
-   └── 项目 C
+       │
+       ▼
+ChatGPT
 ```
 
-你只需要运行 **一个 codex-mcp 后台服务**。
+Controller 只监听本机，负责管理状态；Runtime 可以启动或停止。`codex-mcp stop` 只停止 Runtime，所以 Web Console 仍然能打开并用于修复配置；`codex-mcp shutdown` 才会把两者都关闭。
 
-不同项目不需要分别启动服务器，也不需要分别创建 Cloudflare Tunnel。进入每个项目目录运行一次 `codex-mcp start`，它就会把这个项目注册到同一个后台服务里。
+所有注册项目共享 **一个 MCP Runtime**。`codex-mcp project add` 只注册项目，不会隐式启动 Runtime；`codex-mcp start` 会先注册当前项目，再按保存的运行模式启动 Runtime。
 
 每个 ChatGPT 对话只会绑定一个项目。这样你可以在不同对话里分别处理不同项目，也可以明确切换当前对话使用的项目。ChatGPT 会提供稳定的对话级 session 标识；其它 MCP 客户端如果既不提供对话元数据也不维持 MCP session，绑定会退化为该 OAuth client 的共享绑定，因此这类客户端应保持独立 MCP session。
 
@@ -115,15 +116,30 @@ codex-mcp --version
 
 ---
 
-## 2. 首次设置
+## 2. 打开 Web Console（推荐）
 
 运行：
 
 ```bash
-codex-mcp setup
+codex-mcp open
 ```
 
-首次设置会带你完成几个步骤。
+这只会启动本机 Controller 并打开 Web Console，**不会启动 MCP Runtime，也不会自动修改公网配置**。
+
+推荐按这个顺序使用：
+
+1. 在“项目”里添加 ChatGPT 可以操作的目录
+2. 如果要从 ChatGPT 连接，在“连接”里按“公网地址 → 连接密码 → 检查连接”三步完成配置
+3. 回到“概览”，明确选择“启动公网服务”或“仅本机启动”
+4. Codex / Claude / Skills、诊断、日志和更新统一放在“系统”里
+
+如果你更喜欢终端，也可以完全不用 Web：
+
+```bash
+codex-mcp project add /path/to/project
+codex-mcp setup        # 只有需要 ChatGPT 公网连接时才需要
+codex-mcp start
+```
 
 ### 公网连接
 
@@ -196,7 +212,7 @@ codex-mcp auth
 
 ---
 
-## 3. 启动第一个项目
+## 3. 用 CLI 启动项目
 
 进入项目目录：
 
@@ -205,9 +221,11 @@ cd /path/to/your-project
 codex-mcp start
 ```
 
-第一次运行时，codex-mcp 会启动后台服务，然后注册当前项目。
+`start` 的顺序是：先注册当前项目，再启动/复用 Controller，最后启动 Runtime。这样即使公网配置有问题，项目注册也不会丢，CLI 会给出 Web Console 地址供你继续修复。
 
-以后再次运行同一个项目，只会确认这个项目处于已注册状态，不会再启动一套新的服务器。
+如果还没有配置公网连接，裸 `codex-mcp start` 默认使用**本机模式**。显式运行 `codex-mcp start --local` 也会把本机模式保存为以后默认；公网模式同样会保存，下次裸 `start` 会复用实际运行模式。
+
+同一个项目以后再次运行不会创建第二套服务器，只会刷新项目状态并确保共享 Runtime 可用。
 
 你也可以从其他目录指定项目：
 
@@ -223,7 +241,8 @@ codex-mcp status
 
 你会看到：
 
-- 后台服务是否运行
+- Controller 是否运行、Web Console 地址
+- MCP Runtime 是否运行，以及当前/默认运行模式
 - 本机 MCP 地址
 - 公网 MCP 地址
 - Cloudflare Tunnel 是否在线
@@ -267,10 +286,10 @@ https://codex-mcp.example.com/mcp
 
 先区分两个概念：
 
-- **注册项目（Registered Project）**：你运行 `codex-mcp start` 注册的主项目。一个 ChatGPT 对话同一时间只绑定一个注册项目。
+- **注册项目（Registered Project）**：通过 Web Console、`codex-mcp project add` 或 `codex-mcp start` 注册的项目。一个 ChatGPT 对话同一时间只绑定一个注册项目。
 - **会话绑定（Conversation Binding）**：ChatGPT 对话当前选择的注册项目；文件和命令工具只能在这个项目目录内运行。
 
-项目注册由本地 CLI 完成；模型只通过 `project_control` 选择已经注册的项目，不会自行注册项目或扩大路径边界。
+项目注册由本机 Controller/CLI 完成；模型只通过 `project_control` 选择已经注册的项目，不会自行注册项目或扩大路径边界。
 
 ## 注册多个项目
 
@@ -337,6 +356,14 @@ ChatGPT 会通过 `project_control` 选择对应项目，然后后面的文件�
 
 切换已有绑定时需要明确确认，不会静默跳到另一个项目。
 
+如果某些旧会话不再需要保留项目绑定，可以在 Web Console 的“项目”页面逐个或全部清除，也可以在终端运行：
+
+```bash
+codex-mcp bindings clean [项目]
+```
+
+终端会列出该项目的会话编号；只会清理你显式选中的绑定。清理不会删除 ChatGPT 对话或项目文件，这些会话下次使用项目工具时需要重新选择项目。
+
 ---
 
 ## 停止一个项目
@@ -371,7 +398,13 @@ codex-mcp stop
 codex-mcp restart
 ```
 
-`stop` 会关闭所有项目运行时、codex-mcp 后台服务和 Cloudflare Tunnel，但**保留项目注册和 active 状态**。需要再次启动时，进入项目目录运行 `codex-mcp start`（本机模式用 `codex-mcp start --local`）。`restart` 只用于重启当前正在运行的后台服务，因此能可靠保留原来的本机/公网模式。
+`stop` 只关闭 MCP Runtime、项目运行态和 Cloudflare Tunnel，**Controller / Web Console 继续运行**，项目注册状态也会保留。`restart` 只重启当前 Runtime，并保持当前运行模式。
+
+如果要把 codex-mcp 的 Controller 和 Runtime 都完全关闭：
+
+```bash
+codex-mcp shutdown
+```
 
 ---
 
@@ -506,26 +539,30 @@ codex-mcp setup
 | 命令 | 作用 |
 |---|---|
 | `codex-mcp` | 显示帮助，不隐式启动服务 |
-| `codex-mcp start` | 注册 / 启动当前项目，并确保后台服务运行 |
-| `codex-mcp status` | 查看 Controller、MCP Runtime、Tunnel 和所有项目 |
+| `codex-mcp open` | 启动/复用本机 Controller 并打开 Web Console；不启动 Runtime |
+| `codex-mcp start` | 先注册当前项目，再按保存的模式启动/复用 MCP Runtime |
+| `codex-mcp status` | 查看 Controller、MCP Runtime、默认运行模式、Tunnel 和所有项目 |
 | `codex-mcp status --json` | 输出稳定的机器可读状态，其中包含本机 Web Console 地址 |
 | `http://127.0.0.1:<Controller端口>/` | 打开完整本机 Web Console；可执行 CLI 的用户级操作 |
 | `codex-mcp restart` | 重启 MCP Runtime，保留 Controller 和项目注册状态 |
 | `codex-mcp stop` | 停止 MCP Runtime 和 Tunnel；Controller / Web Console 保持在线 |
+| `codex-mcp shutdown` | 完全关闭 MCP Runtime 和 Controller / Web Console |
 | `codex-mcp project list` | 查看已注册项目 |
-| `codex-mcp project add [目录]` | 注册项目，默认当前目录 |
+| `codex-mcp project add [目录]` | 只注册项目，默认当前目录；不会启动 Runtime |
 | `codex-mcp project remove [项目]` | 停用项目，默认当前目录 |
 | `codex-mcp project info [项目]` | 查看项目详情 |
+| `codex-mcp bindings clean [项目]` | 交互清理指定项目的旧会话绑定，默认当前项目 |
 | `codex-mcp logs [--lines N]` | 查看最近运行日志 |
 | `codex-mcp logs -f` | 持续跟随运行日志 |
 | `codex-mcp setup` | 首次设置或管理现有配置 |
 | `codex-mcp doctor` | 只读检查安装、配置和依赖 |
-| `codex-mcp doctor --fix` | 创建缺失本机目录、清理失效 daemon 状态等安全修复 |
+| `codex-mcp doctor --fix` | 恢复缺失的文件搜索组件、创建本机目录、清理失效 daemon 状态等安全修复 |
 | `codex-mcp auth` | 修改 ChatGPT 连接密码 |
 | `codex-mcp update` | 更新到最新版本 |
 | `codex-mcp start --root <目录>` | 注册指定目录，而不是当前目录 |
-| `codex-mcp start --local` | 仅本机模式，不开放公网 |
-| `codex-mcp start --no-tunnel` | 不自动启动 Cloudflare Tunnel |
+| `codex-mcp start --local` | 显式切换并保存为本机模式，不开放公网 |
+| `codex-mcp start --public` | 显式切换并保存为公网模式；需要先配置公网连接和密码 |
+| `codex-mcp start --no-tunnel` | 公网模式下不自动启动 Cloudflare Tunnel |
 | `codex-mcp start --tunnel-logs` | 把 Tunnel 日志同时输出到运行日志 |
 | `codex-mcp --version` | 查看版本 |
 | `codex-mcp help` | 查看帮助 |
@@ -645,6 +682,14 @@ codex-mcp doctor
 - 外部能力设置
 
 这是排查问题时最先应该运行的命令。
+
+如果文件搜索组件缺失，可以直接运行：
+
+```bash
+codex-mcp doctor --fix
+```
+
+它会下载项目固定版本的受管 ripgrep，校验 SHA-256，并在安装后重新验证版本；不需要重新执行整套安装脚本。
 
 ---
 

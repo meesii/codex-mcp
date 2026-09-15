@@ -29,6 +29,15 @@ export interface CapabilitySourceConfig {
     skills?: boolean;
 }
 
+export interface UserRuntimeConfig {
+    /** Preferred Runtime mode used by start when no mode flag is supplied. */
+    mode: "local" | "public";
+    /** Public mode can skip the managed Cloudflare sidecar when an external route owns ingress. */
+    noTunnel?: boolean;
+    /** Mirror managed tunnel logs into the terminal/runtime log. */
+    tunnelLogs?: boolean;
+}
+
 export interface UserCapabilitiesConfig {
     /** Reload external capability sources when their files change, or only at process start. */
     sync?: CapabilitySyncMode;
@@ -66,6 +75,8 @@ export interface UserConfig {
     publicAccess?: PublicAccessConfig;
     /** Optional per-client tool registration policy; omitted means all tools. */
     clientCapabilities?: ClientCapabilitiesConfig;
+    /** Preferred Runtime lifecycle intent, independent from whether a Runtime is currently running. */
+    runtime?: UserRuntimeConfig;
     /** External MCP / Skill sources consumed at runtime without copying them. */
     capabilities?: UserCapabilitiesConfig;
     /** ChatGPT-facing custom UI preferences. */
@@ -127,6 +138,9 @@ export function saveUserConfig(patch: UserConfigPatch): UserConfig {
     }
     if (patch.clientCapabilities !== undefined) {
         merged.clientCapabilities = normalizeClientCapabilities(patch.clientCapabilities);
+    }
+    if (patch.runtime !== undefined) {
+        merged.runtime = normalizeRuntimeConfig(patch.runtime);
     }
     if (patch.capabilities !== undefined) {
         merged.capabilities = normalizeCapabilitiesConfig(patch.capabilities);
@@ -195,6 +209,7 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
         "port",
         "publicAccess",
         "clientCapabilities",
+        "runtime",
         "capabilities",
         "ui",
     ]);
@@ -219,6 +234,9 @@ function normalizeUserConfig(raw: Record<string, unknown>): UserConfig {
     }
     if (raw.clientCapabilities !== undefined) {
         config.clientCapabilities = normalizeClientCapabilities(raw.clientCapabilities);
+    }
+    if (raw.runtime !== undefined) {
+        config.runtime = normalizeRuntimeConfig(raw.runtime);
     }
     if (raw.capabilities !== undefined) {
         config.capabilities = normalizeCapabilitiesConfig(raw.capabilities);
@@ -287,6 +305,31 @@ function requireNonEmpty(value: unknown, name: string): string {
         throw new Error(`${name} must be a non-empty string`);
     }
     return value.trim();
+}
+
+function normalizeRuntimeConfig(value: unknown): UserRuntimeConfig {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("runtime must be an object");
+    }
+    const raw = value as Record<string, unknown>;
+    assertObjectKeys(raw, "runtime", ["mode", "noTunnel", "tunnelLogs"]);
+    if (raw.mode !== "local" && raw.mode !== "public") {
+        throw new Error("runtime.mode must be local or public");
+    }
+    if (raw.noTunnel !== undefined && typeof raw.noTunnel !== "boolean") {
+        throw new Error("runtime.noTunnel must be a boolean");
+    }
+    if (raw.tunnelLogs !== undefined && typeof raw.tunnelLogs !== "boolean") {
+        throw new Error("runtime.tunnelLogs must be a boolean");
+    }
+    if (raw.mode === "local") {
+        return { mode: "local", noTunnel: true, tunnelLogs: false };
+    }
+    return {
+        mode: "public",
+        noTunnel: raw.noTunnel === true,
+        tunnelLogs: raw.tunnelLogs === true,
+    };
 }
 
 function normalizeCapabilitiesConfig(value: unknown): UserCapabilitiesConfig {

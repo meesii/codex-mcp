@@ -21,13 +21,15 @@ import {
     type DaemonState,
     type RegisteredProject,
     type RuntimeIntent,
+    type SessionBinding,
 } from "./state.js";
 
-const DAEMON_START_TIMEOUT_MS = 300_000;
+export const DAEMON_START_TIMEOUT_MS = 300_000;
+export const DAEMON_STOP_TIMEOUT_MS = 20_000;
+export const DAEMON_LIFECYCLE_LOCK_WAIT_TIMEOUT_MS = 30_000;
 export const DAEMON_CONTROL_API_VERSION = 1 as const;
 const DAEMON_LOCK_PATH = join(getUserConfigDir(), "daemon.lock");
 const LOCK_STALE_MS = 30_000;
-const LOCK_WAIT_TIMEOUT_MS = 30_000;
 
 export type TunnelObservedState = "off" | "starting" | "connected" | "degraded" | "exited";
 
@@ -72,6 +74,15 @@ export interface ControlDeactivateResponse {
     projects: RegisteredProject[];
 }
 
+export interface ControlProjectBindingsResponse {
+    ok: boolean;
+    bindings: SessionBinding[];
+}
+
+export interface ControlCleanupBindingsResponse extends ControlProjectBindingsResponse {
+    removed: number;
+}
+
 /**
  * Loopback-only client for the daemon control API. The control token lives in
  * daemon.json; the endpoint only accepts loopback clients that present it.
@@ -107,6 +118,22 @@ export class DaemonControlClient {
             method: "DELETE",
         });
         return data as ControlDeactivateResponse;
+    }
+
+    async listProjectBindings(id: string): Promise<SessionBinding[]> {
+        const data = await this.request(`/daemon/projects/${encodeURIComponent(id)}/bindings`);
+        return (data as ControlProjectBindingsResponse).bindings;
+    }
+
+    async cleanupProjectBindings(
+        id: string,
+        removeOwnerKeys: string[],
+    ): Promise<ControlCleanupBindingsResponse> {
+        const data = await this.request(`/daemon/projects/${encodeURIComponent(id)}/bindings/cleanup`, {
+            method: "POST",
+            body: JSON.stringify({ removeOwnerKeys }),
+        });
+        return data as ControlCleanupBindingsResponse;
     }
 
     async shutdown(): Promise<void> {
@@ -416,7 +443,7 @@ export async function startDaemonForIntent(
 /** Gracefully stop one contacted daemon. Caller must hold the lifecycle lock. */
 export async function stopDaemonContact(
     daemon: DaemonContact,
-    timeoutMs = 20_000,
+    timeoutMs = DAEMON_STOP_TIMEOUT_MS,
 ): Promise<void> {
     await daemon.client.shutdown();
     const deadline = Date.now() + timeoutMs;
@@ -496,7 +523,7 @@ function daemonExitedError(
 
 /** Serialize every daemon start/stop and public setup transition. */
 export async function withDaemonLifecycleLock<T>(run: () => Promise<T>): Promise<T> {
-    const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+    const deadline = Date.now() + DAEMON_LIFECYCLE_LOCK_WAIT_TIMEOUT_MS;
     while (Date.now() < deadline) {
         let release: (() => void) | undefined;
         try {

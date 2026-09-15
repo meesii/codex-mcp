@@ -42,6 +42,47 @@ test("conversation presentation hides raw owner identifiers and sorts by last us
     assert.equal(result[1].id, presentBindings(bindings)[1].id);
 });
 
+test("runtime binding cleanup removes only requested project bindings", async t => {
+    const { createHttpServer } = await import("../dist/server/http-server.js");
+    const { loadConfig } = await import("../dist/config/loader.js");
+    const { ProjectRegistry } = await import("../dist/projects/registry.js");
+    const { BindingStore } = await import("../dist/projects/bindings.js");
+    const { ProjectRuntimeManager } = await import("../dist/projects/runtime.js");
+    const registry = new ProjectRegistry({ projects: [], save: async () => {} });
+    const project = await registry.register({ path: testHome });
+    const otherRoot = mkdtempSync(join(tmpdir(), "codex-console-other-"));
+    const other = await registry.register({ path: otherRoot });
+    const now = "2026-09-15T00:00:00.000Z";
+    const bindings = new BindingStore({
+        bindings: [
+            { ownerKey: "oauth:one|openai-session:first", projectId: project.id, boundAt: now, lastSeenAt: now },
+            { ownerKey: "oauth:two|openai-session:second", projectId: project.id, boundAt: now, lastSeenAt: now },
+            { ownerKey: "oauth:three|openai-session:third", projectId: other.id, boundAt: now, lastSeenAt: now },
+        ],
+        save: async () => {},
+    });
+    const server = createHttpServer(loadConfig({ projectRoot: testHome, userConfig: { port: 0 }, local: true }), {
+        daemon: { registry, bindings, runtimes: new ProjectRuntimeManager(), controlToken: "binding-clean-token", runtimeIntent: { local: true, noTunnel: true, tunnelLogs: false }, tunnelStatus: () => ({ running: false, state: "off" }), onShutdown: async () => {} },
+    });
+    await server.listen();
+    t.after(() => server.close());
+    const endpoint = new URL(`/daemon/projects/${encodeURIComponent(project.id)}/bindings`, server.getMcpUrl());
+    const headers = { "x-codex-control-token": "binding-clean-token", "content-type": "application/json" };
+    const before = await fetch(endpoint, { headers });
+    assert.equal(before.status, 200, await before.clone().text());
+    assert.equal((await before.json()).bindings.length, 2);
+    const cleanup = await fetch(`${endpoint.href}/cleanup`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ removeOwnerKeys: ["oauth:one|openai-session:first"] }),
+    });
+    assert.equal(cleanup.status, 200, await cleanup.clone().text());
+    const result = await cleanup.json();
+    assert.equal(result.removed, 1);
+    assert.deepEqual(result.bindings.map((item) => item.ownerKey), ["oauth:two|openai-session:second"]);
+    assert.equal(bindings.list().filter((item) => item.projectId === other.id).length, 1);
+});
+
 test("public-mode internal probe is read-only and never opens an unauthenticated MCP path", async t => {
     const { createHttpServer } = await import("../dist/server/http-server.js");
     const { loadConfig } = await import("../dist/config/loader.js");

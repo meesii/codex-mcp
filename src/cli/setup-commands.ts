@@ -163,7 +163,7 @@ function printCompletedSetup(
     if (generatedPassword) {
         printWarning("请保存上面的连接密码；电脑只保存密码哈希，忘记后需要重新设置。");
     }
-    printInfo("下一步：进入你的项目目录，运行 codex-mcp start。");
+    printInfo("下一步：可运行 codex-mcp open 在 Web Console 添加项目并启动，也可以进入项目目录运行 codex-mcp start。");
     printOutro("设置完成");
 }
 

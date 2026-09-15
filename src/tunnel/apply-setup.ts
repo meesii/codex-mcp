@@ -1,7 +1,7 @@
 import { printSuccess, printWarning } from "../lib/util/terminal.js";
 import { withSpinner } from "./prompt.js";
 import { getUserConfigPath, saveUserConfig } from "../config/user-config.js";
-import { cutoverCloudflareDns, dnsSnapshotReferencesTunnel, dnsSnapshotPointsToTunnel, restoreCloudflareDns, snapshotCloudflareDns, type CloudflareDnsSnapshot } from "./cloudflare-api.js";
+import { cutoverCloudflareDns, dnsSnapshotReferencesTunnel, dnsSnapshotPointsToTunnel, removeCloudflareManagedDnsIfOwned, restoreCloudflareDns, snapshotCloudflareDns, type CloudflareDnsSnapshot } from "./cloudflare-api.js";
 import { requireDnsOverwriteConfirmation } from "./confirm.js";
 import { assertSetupPortAvailable, verifySetupPublicRoute } from "./setup-verify.js";
 import { removeCloudflaredRevision } from "./yml.js";
@@ -12,7 +12,7 @@ import type { AppliedTunnelSetup, TunnelSetupResult } from "./setup.js";
 // reference checks and compensation policy stay in this module.
 const setupOperations = {
     assertSetupPortAvailable, verifySetupPublicRoute, snapshotCloudflareDns,
-    cutoverCloudflareDns, restoreCloudflareDns, saveUserConfig,
+    cutoverCloudflareDns, restoreCloudflareDns, removeCloudflareManagedDnsIfOwned, saveUserConfig,
     removeCloudflaredRevision, cleanupFailedCandidate, requireDnsOverwriteConfirmation,
 };
 type SetupOperations = typeof setupOperations;
@@ -98,6 +98,20 @@ export async function applyTunnelSetup(
                 operations.removeCloudflaredRevision(candidate.previousConfigRevision);
             } catch (error) {
                 printWarning(`上一个 Tunnel 配置 revision 清理失败，可稍后手动检查：${readableError(error)}`);
+            }
+        }
+        const previousManaged = candidate.previousManagedAccess;
+        if (previousManaged && previousManaged.domain !== candidate.domain) {
+            try {
+                setPhase("清理旧公网 DNS");
+                const removed = await operations.removeCloudflareManagedDnsIfOwned(
+                    previousManaged.zoneId,
+                    previousManaged.domain,
+                    previousManaged.tunnelId,
+                );
+                if (removed) printSuccess(`已清理旧公网地址：${previousManaged.domain}`);
+            } catch (error) {
+                printWarning(`新公网配置已提交，但旧 DNS 清理失败：${readableError(error)}`);
             }
         }
         printSuccess(`codex-mcp 配置已原子提交：${getUserConfigPath()}`);
