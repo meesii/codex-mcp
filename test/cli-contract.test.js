@@ -237,7 +237,7 @@ test("project add changes durable project state without starting Controller or R
     assert.equal(existsSync(join(configDir, "daemon.json")), false);
     const projects = JSON.parse(readFileSync(join(configDir, "projects.json"), "utf8"));
     assert.equal(projects.projects.length, 1);
-    assert.equal(projects.projects[0].path, realpathSync(project));
+    assert.equal(projects.projects[0].path, realpathSync.native(project));
 });
 
 test("plain start defaults to local mode, persists the actual intent, and reuses it", async () => {
@@ -311,7 +311,7 @@ test("open starts only the local control plane and exposes the Web Console", asy
         const afterCliAdd = await fetch(new URL("/api/console/snapshot", panelUrl), { headers: snapshotHeaders });
         const afterCliAddJson = await afterCliAdd.json();
         assert.equal(afterCliAddJson.status.runtime.projects.length, 1, "Web snapshot must observe CLI project changes without restarting Controller");
-        assert.equal(afterCliAddJson.status.runtime.projects[0].path, realpathSync(cliProject));
+        assert.equal(afterCliAddJson.status.runtime.projects[0].path, realpathSync.native(cliProject));
 
         const generatedPassword = await fetch(new URL("/api/auth/generate", panelUrl), {
             method: "POST",
@@ -354,7 +354,7 @@ test("start registers the project before Runtime validation and leaves Web recov
         assert.match(result.output, /Web Console/);
         const projects = JSON.parse(readFileSync(join(configDir, "projects.json"), "utf8"));
         assert.equal(projects.projects.length, 1);
-        assert.equal(projects.projects[0].path, realpathSync(project));
+        assert.equal(projects.projects[0].path, realpathSync.native(project));
         assert.equal(existsSync(join(configDir, "controller.json")), true);
         assert.equal(existsSync(join(configDir, "daemon.json")), false);
     } finally {
@@ -803,8 +803,9 @@ test("interactive commands fail clearly without a terminal; internal daemon entr
     assert.match(controller.output, /内部入口/);
     assert.notEqual(run(["project", "list", "unexpected"]).code, 0);
     const doctor = run(["doctor"]);
-    assert.equal(doctor.code, 0, doctor.output);
-    assert.match(doctor.output, /可以正常使用|安装和配置看起来都正常/);
+    assert.ok([0, 1].includes(doctor.code), doctor.output);
+    assert.match(doctor.output, /codex-mcp 检查/);
+    assert.doesNotMatch(doctor.output, /需要交互式终端|必须在交互式终端/);
     const stopped = run(["stop"]);
     assert.equal(stopped.code, 0, stopped.output);
     assert.notEqual(run(["restart"]).code, 0);

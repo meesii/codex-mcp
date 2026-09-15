@@ -22,7 +22,7 @@ import { ProcessSessionManager } from "../dist/lib/process/sessions.js";
 async function listen(t, handler) {
     const server = createServer(handler);
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+    t.after(() => new Promise(resolve => { server.close(resolve); }));
     return `http://127.0.0.1:${server.address().port}`;
 }
 
