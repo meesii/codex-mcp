@@ -22,6 +22,11 @@ import {
 const TUNNEL_ID_RE =
     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
+const CLOUDFLARE_LOGIN_REQUIRED_MESSAGE =
+    "Cloudflare 登录凭据缺失或已失效。请在 Web 的连接页面重新选择 Cloudflare（会自动打开登录），" +
+    "或运行 `codex-mcp setup` 并选择“重新登录 / 切换 Cloudflare 账号”。" +
+    "codex-mcp 使用独立的 Cloudflare 凭据目录，不需要手工复制 ~/.cloudflared/cert.pem。";
+
 export async function ensureLogin(
     bin: string,
     force: boolean,
@@ -244,11 +249,37 @@ async function listTunnels(bin: string): Promise<ListedTunnel[]> {
         { allowFailure: true, timeoutMs: 180_000 },
     );
     if (jsonAttempt.code !== 0) {
-        throw new Error((jsonAttempt.stderr || jsonAttempt.stdout).trim() || `无法读取 Cloudflare Tunnel 列表（退出代码 ${jsonAttempt.code}）`);
+        throw new Error(formatCloudflaredManagementFailure(
+            "无法读取 Cloudflare Tunnel 列表",
+            jsonAttempt.stdout,
+            jsonAttempt.stderr,
+            jsonAttempt.code,
+        ));
     }
-    const rows: unknown = JSON.parse(jsonAttempt.stdout);
+
+    let rows: unknown;
+    try {
+        rows = JSON.parse(jsonAttempt.stdout);
+    } catch {
+        throw new Error(
+            "cloudflared 返回的 Tunnel 列表不是可识别的 JSON。" +
+            "请运行 `codex-mcp doctor` 检查 cloudflared 状态；如果问题仍存在，请重新登录 Cloudflare 后重试。",
+        );
+    }
     if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.id !== "string" || typeof row.name !== "string")) {
-        throw new Error("cloudflared 返回了无效的 Tunnel JSON 列表；请更新 cloudflared");
+        const embeddedError = extractCloudflaredErrorMessage(rows);
+        if (embeddedError) {
+            throw new Error(formatCloudflaredManagementFailure(
+                "无法读取 Cloudflare Tunnel 列表",
+                embeddedError,
+                "",
+                0,
+            ));
+        }
+        throw new Error(
+            "cloudflared 返回了不受支持的 Tunnel 列表格式。" +
+            "请运行 `codex-mcp doctor` 检查 cloudflared 状态；如果已是最新版本，请保留诊断日志再反馈。",
+        );
     }
     return rows.map((row) => ({ id: row.id, name: row.name }));
 }
@@ -264,10 +295,44 @@ async function findTunnelIdByName(
 
 function cloudflaredManagementArgs(...args: string[]): string[] {
     const command = ["tunnel", "--config", ensureCloudflaredManagementConfig()];
-    if (args[0] !== "login" && hasManagedCloudflareLogin()) {
+    if (args[0] !== "login") {
+        if (!hasManagedCloudflareLogin()) {
+            throw new Error(CLOUDFLARE_LOGIN_REQUIRED_MESSAGE);
+        }
         command.push("--origincert", getCloudflareOriginCertPath());
     }
     return [...command, ...args];
+}
+
+export function formatCloudflaredManagementFailure(
+    action: string,
+    stdout: string,
+    stderr: string,
+    exitCode: number | null,
+): string {
+    const detail = [stderr, stdout]
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .join("\n");
+    if (isOriginCertError(detail)) {
+        return CLOUDFLARE_LOGIN_REQUIRED_MESSAGE;
+    }
+    return detail || `${action}（cloudflared 退出代码 ${exitCode ?? "未知"}）`;
+}
+
+function extractCloudflaredErrorMessage(value: unknown): string | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
+    if (typeof record.error === "string" && record.error.trim()) return record.error.trim();
+    return undefined;
+}
+
+function isOriginCertError(detail: string): boolean {
+    const normalized = detail.toLowerCase();
+    return normalized.includes("origin certificate") ||
+        normalized.includes("origin cert") ||
+        normalized.includes("origincert");
 }
 
 function readableError(error: unknown): string {

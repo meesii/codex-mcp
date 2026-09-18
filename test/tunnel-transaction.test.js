@@ -8,7 +8,11 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 const { applyTunnelSetup } = await import("../dist/tunnel/apply-setup.js");
 const { isDeletedCloudflareTunnelRecord } = await import("../dist/tunnel/cloudflare-api.js");
-const { selectReusableTunnel } = await import("../dist/tunnel/cloudflare-session.js");
+const {
+    ensureTunnelCreated,
+    formatCloudflaredManagementFailure,
+    selectReusableTunnel,
+} = await import("../dist/tunnel/cloudflare-session.js");
 
 const tunnelId = "00000000-0000-4000-8000-000000000001";
 const before = { zoneId: "zone", hostname: "mcp.example.com", records: [] };
@@ -119,6 +123,31 @@ test("Cloudflare soft-deleted tunnel records are treated as absent", () => {
     assert.equal(isDeletedCloudflareTunnelRecord({}), false);
     assert.equal(isDeletedCloudflareTunnelRecord({ deleted_at: null }), false);
     assert.equal(isDeletedCloudflareTunnelRecord({ deleted_at: "2026-09-15T12:15:02Z" }), true);
+});
+
+test("missing managed Cloudflare login is reported with an actionable recovery path", async () => {
+    await assert.rejects(
+        ensureTunnelCreated("cloudflared-should-not-run", "fixture", "account"),
+        (error) => {
+            assert.match(error.message, /Cloudflare 登录凭据缺失或已失效/);
+            assert.match(error.message, /codex-mcp setup/);
+            assert.match(error.message, /重新登录 \/ 切换 Cloudflare 账号/);
+            assert.doesNotMatch(error.message, /请更新 cloudflared/);
+            return true;
+        },
+    );
+});
+
+test("cloudflared origin-cert failures are translated instead of exposing raw troubleshooting output", () => {
+    const message = formatCloudflaredManagementFailure(
+        "无法读取 Cloudflare Tunnel 列表",
+        "Error locating origin cert: client didn't specify origincert path",
+        '{"level":"error","message":"Cannot determine default origin certificate path"}',
+        1,
+    );
+    assert.match(message, /Cloudflare 登录凭据缺失或已失效/);
+    assert.match(message, /codex-mcp 使用独立的 Cloudflare 凭据目录/);
+    assert.doesNotMatch(message, /Cannot determine default origin certificate path/);
 });
 
 test("managed Tunnel reuse recognizes locally-owned historical suffixes", () => {
