@@ -89,5 +89,5 @@ export function getManagedToolSpec(
         }
     }
 
-    throw new Error(`暂不支持这个系统组合：${platform}/${arch}`);
+    throw new Error(`当前系统/架构暂不支持自动安装所需组件：${platform}/${arch}`);
 }

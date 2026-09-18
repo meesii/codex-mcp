@@ -24,7 +24,7 @@ export function getCloudflaredRevisionDir(): string {
 
 export function getCloudflaredRevisionPath(revision: string): string {
     if (!/^[a-zA-Z0-9_-]{8,80}$/.test(revision)) {
-        throw new Error("Tunnel 配置 revision 格式不正确");
+        throw new Error("Cloudflare 本机配置文件标识格式不正确。请运行 `codex-mcp setup` 重新生成配置");
     }
     return join(getCloudflaredRevisionDir(), `${revision}.yml`);
 }

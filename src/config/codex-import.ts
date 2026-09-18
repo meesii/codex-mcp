@@ -40,26 +40,26 @@ export async function loadCodexMcpConfig(): Promise<UserMcpConfig> {
             return { mcpServers: {} };
         }
         throw new Error(
-            `Unable to import Codex MCP configuration via \`codex mcp list --json\`: ${
+            `读取 Codex 的 MCP 配置失败（执行 \`codex mcp list --json\` 时出错）：${
                 error instanceof Error ? error.message : String(error)
-            }`,
+            }。请先确认 Codex CLI 能正常运行`,
         );
     }
     if (result.truncated) {
         throw new Error(
-            `Codex MCP list exceeded ${CODEX_MCP_LIST_MAX_BYTES} bytes; refusing partial JSON`,
+            `Codex 返回的 MCP 列表超过 ${CODEX_MCP_LIST_MAX_BYTES} 字节，为避免读取到不完整配置，已停止导入`,
         );
     }
     if (result.exitCode !== 0) {
-        const detail = result.stderr.trim() || `exit code ${result.exitCode ?? "unknown"}`;
-        throw new Error(`Unable to import Codex MCP configuration: ${detail}`);
+        const detail = result.stderr.trim() || `退出代码 ${result.exitCode ?? "未知"}`;
+        throw new Error(`读取 Codex 的 MCP 配置失败：${detail}。请先运行 \`codex mcp list --json\` 检查 Codex 自身配置`);
     }
 
     let raw: unknown;
     try {
         raw = JSON.parse(result.stdout) as unknown;
     } catch {
-        throw new Error("Codex MCP list returned invalid JSON.");
+        throw new Error("Codex 返回的 MCP 列表不是有效 JSON。请先运行 `codex mcp list --json` 检查 Codex 输出");
     }
     return normalizeCodexMcpList(raw);
 }
@@ -69,13 +69,13 @@ export function normalizeCodexMcpList(
     env: NodeJS.ProcessEnv = process.env,
 ): UserMcpConfig {
     if (!Array.isArray(raw)) {
-        throw new Error("Codex MCP list must be an array");
+        throw new Error("Codex 返回的 MCP 列表格式不正确：顶层应该是数组");
     }
 
     const mcpServers: Record<string, McpServerConfig> = {};
     for (const item of raw) {
         if (!item || typeof item !== "object" || Array.isArray(item)) {
-            throw new Error("Codex MCP entry must be an object");
+            throw new Error("Codex 返回的 MCP 列表中存在格式不正确的项目：每项都应该是对象");
         }
         const entry = item as Record<string, unknown>;
         if (entry.enabled !== true) continue;
@@ -138,7 +138,7 @@ export function normalizeCodexMcpList(
                 const value = env[envName];
                 if (value === undefined) {
                     throw new Error(
-                        `Codex MCP ${name} requires environment variable ${envName} for HTTP header ${header}`,
+                        `Codex MCP ${name} 的请求头 ${header} 需要环境变量 ${envName}，但当前环境没有设置这个变量`,
                     );
                 }
                 headers[header] = value;
@@ -150,7 +150,7 @@ export function normalizeCodexMcpList(
                     const token = env[envName];
                     if (token === undefined) {
                         throw new Error(
-                            `Codex MCP ${name} requires environment variable ${envName} for bearer authentication`,
+                            `Codex MCP ${name} 的登录令牌来自环境变量 ${envName}，但当前环境没有设置这个变量`,
                         );
                     }
                     headers.Authorization = `Bearer ${token}`;
@@ -170,7 +170,7 @@ export function normalizeCodexMcpList(
             continue;
         }
 
-        throw new Error(`Codex MCP ${name} uses unsupported transport type ${type}`);
+        throw new Error(`Codex MCP ${name} 使用了当前不支持的连接方式：${type}`);
     }
 
     return { mcpServers };
@@ -189,31 +189,31 @@ function applyCodexRuntimeOptions(
 function secondsToMilliseconds(value: unknown): number | undefined {
     if (value === undefined || value === null) return undefined;
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-        throw new Error("Codex MCP timeout must be a positive number");
+        throw new Error("Codex MCP 的超时时间必须是大于 0 的数字");
     }
     return Math.ceil(value * 1000);
 }
 
 function requireObject(value: unknown, label: string): Record<string, unknown> {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error(`${label} must be an object`);
+        throw new Error(`${label} 必须是对象`);
     }
     return value as Record<string, unknown>;
 }
 
 function requireString(value: unknown, label: string): string {
     if (typeof value !== "string" || !value.trim()) {
-        throw new Error(`${label} must be a non-empty string`);
+        throw new Error(`${label} 必须是非空字符串`);
     }
     return value.trim();
 }
 
 function normalizeStringArray(value: unknown, label: string): string[] {
     if (value === undefined || value === null) return [];
-    if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+    if (!Array.isArray(value)) throw new Error(`${label} 必须是数组`);
     return value.map((item, index) => {
         if (typeof item !== "string") {
-            throw new Error(`${label}[${index}] must be a string`);
+            throw new Error(`${label}[${index}] 必须是字符串`);
         }
         return item;
     });
@@ -228,7 +228,7 @@ function normalizeOptionalStringMap(
     const result: Record<string, string> = {};
     for (const [key, item] of Object.entries(object)) {
         if (typeof item !== "string") {
-            throw new Error(`${label}.${key} must be a string`);
+            throw new Error(`${label}.${key} 必须是字符串`);
         }
         result[key] = item;
     }

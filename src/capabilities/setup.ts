@@ -29,7 +29,7 @@ export async function configureCapabilitySources(
     const currentConfig = loadUserConfig().capabilities;
 
     printSummary(
-        "外部能力",
+        "外部工具与技能",
         detections.map((item) => ({
             label: item.label,
             value: item.detected
@@ -39,15 +39,15 @@ export async function configureCapabilitySources(
     );
 
     if (detected.length === 0) {
-        printInfo("没有检测到 Codex、Claude Code 或 Agent Skills；保持默认设置，不写入额外配置。");
+        printInfo("没有检测到可读取的 Codex、Claude Code 或 Agent Skills 配置；保持默认设置，不做额外修改。");
         return { detections, changed: false };
     }
 
     const action = await askSelect(
-        "是否让 codex-mcp 使用这些已有能力？",
+        "是否让 codex-mcp 直接读取这些已有的工具和 Skills？",
         [
-            { value: "all", label: "使用检测到的全部能力", hint: "推荐；只读取源配置，不复制" },
-            { value: "custom", label: "自定义", hint: "分别选择 MCP / Skills" },
+            { value: "all", label: "读取检测到的全部工具与 Skills", hint: "推荐；直接读取原配置，不复制文件" },
+            { value: "custom", label: "自定义读取内容", hint: "分别选择 MCP / Skills" },
             { value: "off", label: "都不使用" },
             { value: "keep", label: "保持当前设置" },
         ],
@@ -82,9 +82,9 @@ export async function configureCapabilitySources(
     const anyEnabled = SOURCE_PRIORITY.some((source) => resolvedNext.sources[source].enabled);
     const sync = anyEnabled
         ? await askSelect(
-              "外部能力变化时如何同步？",
+              "这些外部工具或 Skills 的配置变化后，如何同步？",
               [
-                  { value: "watch", label: "自动同步变化", hint: "推荐；源配置变化后热刷新" },
+                  { value: "watch", label: "自动同步变化", hint: "推荐；原配置变化后自动重新读取" },
                   { value: "startup", label: "只在启动时读取", hint: "运行期间不监听文件变化" },
               ],
               "watch",
@@ -106,7 +106,7 @@ export function describeCapabilitiesConfig(config?: UserCapabilitiesConfig): str
         .filter((source) => resolved.sources[source].enabled)
         .map(sourceLabel);
     const sync = resolved.sync === "startup" ? "仅启动读取" : "自动同步";
-    return `${enabled.length > 0 ? enabled.join(" + ") : "未启用外部能力"} · ${sync}`;
+    return `${enabled.length > 0 ? enabled.join(" + ") : "未启用外部工具与技能"} · ${sync}`;
 }
 
 function detectedSourceDefaults(item: CapabilitySourceDetection): CapabilitySourceConfig {

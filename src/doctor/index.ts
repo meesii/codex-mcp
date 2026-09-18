@@ -4,12 +4,11 @@ import { findRipgrep } from "../lib/search/ripgrep.js";
 import { runSubprocess } from "../lib/util/subprocess.js";
 import { suggestCloudflaredBin, probeCloudflaredVersion } from "../tunnel/bin.js";
 import {
-    getCloudflareOriginCertPath,
     hasManagedCloudflareLogin,
     readManagedCloudflareOriginToken,
     readTunnelCredentialIdentity,
 } from "../tunnel/cloudflare-account.js";
-import { getCredentialsPath, resolveCloudflaredRuntimeConfigPath } from "../tunnel/yml.js";
+import { getCredentialsPath } from "../tunnel/yml.js";
 import { getUserConfigPath, loadUserConfig } from "../config/user-config.js";
 import { describeEnabledCapabilitySources, resolveCapabilitiesConfig } from "../capabilities/config.js";
 import { dnsSnapshotPointsToTunnel, inspectCloudflareTunnel, snapshotCloudflareDns } from "../tunnel/cloudflare-api.js";
@@ -67,7 +66,7 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
 
     const capabilityConfig = resolveCapabilitiesConfig(userConfig?.capabilities);
     checks.push({
-        label: "外部能力",
+        label: "工具与技能",
         level: "ok",
         detail: `${describeEnabledCapabilitySources(capabilityConfig)} · ${capabilityConfig.sync === "watch" ? "自动同步" : "仅启动读取"}`,
     });
@@ -85,7 +84,7 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             detail: configured
                 ? "已设置"
                 : publicModeExpected
-                  ? "未设置；公网连接需要连接密码，请在 Web Console 的“连接”页面设置，或运行 `codex-mcp auth`"
+                  ? "未设置；公网连接需要连接密码，请在 Web 控制台的“连接”页面设置，或运行 `codex-mcp auth`"
                   : "未设置；仅本机模式不需要，连接 ChatGPT 时再设置即可",
         });
     } catch (error) {
@@ -107,46 +106,45 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             label: "公网地址",
             level: userConfig?.runtime?.mode === "public" ? "error" : "warn",
             detail: userConfig?.runtime?.mode === "public"
-                ? "未设置；当前默认启动是公网模式，请在 Web Console 的“连接”页面配置，或运行 `codex-mcp setup`"
+                ? "未设置；当前默认启动是公网模式，请在 Web 控制台的“连接”页面配置，或运行 `codex-mcp setup`"
                 : "未设置；当前仍可仅本机使用，需要连接 ChatGPT 时再配置即可",
         });
     }
 
     if (publicAccess?.kind === "external") {
         checks.push({
-            label: "Cloudflare Tunnel",
+            label: "公网方式",
             level: "warn",
-            detail: "已关闭。请确认你自己准备了可用的 HTTPS 公网入口",
+            detail: "当前使用你自己的 HTTPS 公网地址，codex-mcp 不会启动 Cloudflare Tunnel。请确认这个地址已经转发到本机 MCP 服务",
         });
     } else if (publicAccess?.kind === "cloudflare") {
         const cloudflaredBin = await suggestCloudflaredBin(publicAccess.cloudflaredBin);
         if (!cloudflaredBin) {
             checks.push({
-                label: "cloudflared",
+                label: "Cloudflare 连接组件",
                 level: "error",
-                detail: "没有找到 cloudflared。重新运行 `codex-mcp setup` 可以继续配置",
+                detail: "缺少 Cloudflare 连接组件。运行 `codex-mcp setup` 会自动准备并继续配置",
             });
         } else {
             try {
                 const version = await probeCloudflaredVersion(cloudflaredBin);
-                checks.push({ label: "cloudflared", level: "ok", detail: version });
+                checks.push({ label: "Cloudflare 连接组件", level: "ok", detail: version });
             } catch (error) {
                 checks.push({
-                    label: "cloudflared",
+                    label: "Cloudflare 连接组件",
                     level: "error",
                     detail: readableError(error),
                 });
             }
         }
 
-        const managedLoginPath = getCloudflareOriginCertPath();
         const managedLogin = hasManagedCloudflareLogin();
         checks.push({
-            label: "Cloudflare 登录",
+            label: "Cloudflare 授权",
             level: managedLogin ? "ok" : "warn",
             detail: managedLogin
-                ? `codex-mcp 私有登录：${managedLoginPath}`
-                : "没有可用的 codex-mcp 私有登录；Tunnel 仍可运行，但修改或远端诊断时需要重新登录",
+                ? "已登录，可以管理当前 Cloudflare 配置"
+                : "当前没有可用的 Cloudflare 登录。已经运行的 Tunnel 可能仍能继续使用，但修改配置或检查 Cloudflare 远端状态前需要重新登录；运行 `codex-mcp setup` 选择“重新登录 / 切换 Cloudflare 账号”",
         });
 
         const credentialsPath = getCredentialsPath(publicAccess.tunnelId);
@@ -157,29 +155,28 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
                 const mismatch = identity.tunnelId !== publicAccess.tunnelId ||
                     identity.accountId !== publicAccess.accountId;
                 checks.push({
-                    label: "Tunnel 凭据",
+                    label: "Cloudflare Tunnel 凭据",
                     level: mismatch ? "error" : "ok",
                     detail: mismatch
-                        ? "credential 的 TunnelID / AccountTag 与已提交配置不一致"
-                        : `${credentialsPath} · Tunnel / 账号一致`,
+                        ? "本机保存的 Tunnel 凭据与当前 Cloudflare 配置不匹配；请运行 `codex-mcp setup` 重新配置 Cloudflare"
+                        : "本机 Tunnel 凭据与当前 Cloudflare 配置一致",
                 });
             } catch (error) {
-                checks.push({ label: "Tunnel 凭据", level: "error", detail: readableError(error) });
+                checks.push({ label: "Cloudflare Tunnel 凭据", level: "error", detail: readableError(error) });
             }
         } else {
             checks.push({
-                label: "Tunnel 凭据",
+                label: "Cloudflare Tunnel 凭据",
                 level: "error",
-                detail: `缺少本机凭据：${credentialsPath}`,
+                detail: `缺少当前 Tunnel 的本机凭据。请运行 \`codex-mcp setup\` 重新配置 Cloudflare。文件位置：${credentialsPath}`,
             });
         }
 
-        const runtimeConfigPath = resolveCloudflaredRuntimeConfigPath(publicAccess);
         try {
             await loadCommittedTunnelSetup(userConfig);
-            checks.push({ label: "Tunnel 配置一致性", level: "ok", detail: runtimeConfigPath });
+            checks.push({ label: "Cloudflare 本机配置", level: "ok", detail: "配置文件与当前 Tunnel 一致" });
         } catch (error) {
-            checks.push({ label: "Tunnel 配置一致性", level: "error", detail: readableError(error) });
+            checks.push({ label: "Cloudflare 本机配置", level: "error", detail: `${readableError(error)}；请运行 \`codex-mcp setup\` 重新配置 Cloudflare` });
         }
 
         if (managedLogin) {
@@ -187,15 +184,15 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
                 const login = readManagedCloudflareOriginToken();
                 if (login.accountID !== publicAccess.accountId) {
                     checks.push({
-                        label: "Cloudflare 账号一致性",
+                        label: "Cloudflare 账号",
                         level: "error",
-                        detail: "当前私有登录账号与已提交 Tunnel 账号不同；运行 setup 重新选择账号",
+                        detail: "当前登录的 Cloudflare 账号与这个 Tunnel 所属账号不同；运行 `codex-mcp setup` 并选择“重新登录 / 切换 Cloudflare 账号”",
                     });
                 } else {
-                    checks.push({ label: "Cloudflare 账号一致性", level: "ok", detail: publicAccess.accountId });
+                    checks.push({ label: "Cloudflare 账号", level: "ok", detail: "当前登录账号与 Tunnel 所属账号一致" });
                 }
             } catch (error) {
-                checks.push({ label: "Cloudflare 账号一致性", level: "error", detail: readableError(error) });
+                checks.push({ label: "Cloudflare 账号", level: "error", detail: readableError(error) });
             }
             try {
                 const [tunnel, dns] = await Promise.all([
@@ -203,32 +200,32 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
                     snapshotCloudflareDns(publicAccess.zoneId, publicAccess.domain),
                 ]);
                 checks.push({
-                    label: "Cloudflare Tunnel 远端状态",
+                    label: "Cloudflare Tunnel",
                     level: tunnel.exists ? (tunnel.status === "down" ? "warn" : "ok") : "error",
                     detail: tunnel.exists
-                        ? `${tunnel.status ?? "状态未知"} · ${tunnel.connectorCount ?? 0} 个 connector`
-                        : "远端 Tunnel 不存在",
+                        ? describeRemoteTunnel(tunnel.status, tunnel.connectorCount)
+                        : "Cloudflare 上已经找不到这个 Tunnel；请运行 `codex-mcp setup` 重新配置公网连接",
                 });
                 const dnsMatches = dnsSnapshotPointsToTunnel(dns, publicAccess.tunnelId);
                 checks.push({
-                    label: "Cloudflare DNS 一致性",
+                    label: "Cloudflare DNS",
                     level: dnsMatches ? "ok" : "error",
                     detail: dnsMatches
-                        ? `${publicAccess.domain} → ${publicAccess.tunnelId}.cfargotunnel.com`
-                        : `${publicAccess.domain} 没有唯一指向已提交 Tunnel`,
+                        ? `${publicAccess.domain} 已正确指向当前 Tunnel`
+                        : `${publicAccess.domain} 没有指向当前 Tunnel；请运行 \`codex-mcp setup\` 检查并重新配置这个域名`,
                 });
             } catch (error) {
                 checks.push({
-                    label: "Cloudflare 远端诊断",
+                    label: "Cloudflare 远端检查",
                     level: "warn",
-                    detail: `只读 API 检查失败：${readableError(error)}`,
+                    detail: `暂时无法读取 Cloudflare 远端状态：${readableError(error)}。本机服务可能仍可使用；请先检查网络或稍后重试`,
                 });
             }
         } else {
             checks.push({
-                label: "Cloudflare 远端诊断",
+                label: "Cloudflare 远端检查",
                 level: "warn",
-                detail: "没有可用的 codex-mcp 私有登录；运行 setup 重新登录后可启用远端一致性检查",
+                detail: "当前没有 Cloudflare 登录，因此只能检查本机状态。运行 `codex-mcp setup` 重新登录后，可以继续检查远端 Tunnel 和 DNS",
             });
         }
     }
@@ -237,20 +234,20 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
     if (daemon) {
         const status = await daemon.client.status();
         checks.push({
-            label: "守护进程",
+            label: "MCP 服务",
             level: "ok",
-            detail: `pid ${status.pid} · ${status.mode === "local" ? "本机" : "公网"} · ${status.version}`,
+            detail: `正在运行 · ${status.mode === "local" ? "仅本机" : "公网"} · 版本 ${status.version}`,
         });
         if (publicAccess && status.mode === "public") {
             const expected = `https://${publicAccess.domain}/mcp`;
             if (status.publicMcpUrl !== expected) {
                 checks.push({
-                    label: "Daemon 配置一致性",
+                    label: "MCP 服务配置",
                     level: "error",
-                    detail: `daemon 使用 ${status.publicMcpUrl ?? "无公网地址"}，已提交配置是 ${expected}；请重启`,
+                    detail: `正在运行的服务仍使用 ${status.publicMcpUrl ?? "旧的公网设置"}，当前保存的是 ${expected}；请运行 \`codex-mcp restart\` 让新配置生效`,
                 });
             } else {
-                checks.push({ label: "Daemon 配置一致性", level: "ok", detail: expected });
+                checks.push({ label: "MCP 服务配置", level: "ok", detail: "正在运行的服务与当前保存的公网配置一致" });
             }
             try {
                 await verifyRunningPublicRoute(
@@ -258,15 +255,15 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
                     userConfig?.host ?? "127.0.0.1",
                     userConfig?.port ?? 3920,
                 );
-                checks.push({ label: "公网实例一致性", level: "ok", detail: "公网与本机返回相同 instance" });
+                checks.push({ label: "公网连接", level: "ok", detail: "公网地址已经确认连接到这台电脑上的 codex-mcp" });
             } catch (error) {
-                checks.push({ label: "公网实例一致性", level: "error", detail: readableError(error) });
+                checks.push({ label: "公网连接", level: "error", detail: readableError(error) });
             }
         } else if (publicAccess) {
             checks.push({
-                label: "Daemon 配置一致性",
+                label: "MCP 服务配置",
                 level: "warn",
-                detail: "daemon 当前以本机模式运行；已提交公网配置会在下次公网启动时使用",
+                detail: "当前 MCP 服务只在本机运行。公网配置已经保存，下次切换到公网模式时会使用",
             });
         }
         if (
@@ -275,9 +272,9 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             status.runtimeIntent.noTunnel === false
         ) {
             checks.push({
-                label: "Tunnel 运行状态",
+                label: "Cloudflare 连接",
                 level: status.tunnel.state === "connected" ? "ok" : "error",
-                detail: `${status.tunnel.state}${status.tunnel.detail ? ` · ${status.tunnel.detail}` : ""}`,
+                detail: describeRunningTunnel(status.tunnel.state, status.tunnel.detail),
             });
         } else if (
             publicAccess?.kind === "cloudflare" &&
@@ -285,13 +282,13 @@ export async function runDoctorChecks(): Promise<DoctorReport> {
             status.runtimeIntent.noTunnel === true
         ) {
             checks.push({
-                label: "Tunnel 运行状态",
+                label: "Cloudflare 连接",
                 level: "warn",
-                detail: "daemon 使用 --no-tunnel，managed sidecar 未启动",
+                detail: "当前公网模式设置为不启动内置 Cloudflare Tunnel。只有你已经自己准备了 HTTPS 公网入口时才应这样使用",
             });
         }
     } else {
-        checks.push({ label: "守护进程", level: "warn", detail: "未运行；项目注册和公网配置仍保留" });
+        checks.push({ label: "MCP 服务", level: "warn", detail: "当前没有启动。项目和连接设置都还在，需要使用时运行 `codex-mcp start`" });
     }
 
     const errors = checks.filter((item) => item.level === "error").length;
@@ -377,6 +374,28 @@ async function checkCommand(
                       : "没有找到",
         };
     }
+}
+
+function describeRemoteTunnel(status: string | undefined, connectorCount: number | undefined): string {
+    const count = connectorCount ?? 0;
+    if (status === "down") return `远端 Tunnel 当前没有可用连接（活动连接 ${count} 个）`;
+    if (status) return `远端 Tunnel 状态正常（${status}，活动连接 ${count} 个）`;
+    return `远端 Tunnel 存在，Cloudflare 暂未返回明确状态（活动连接 ${count} 个）`;
+}
+
+function describeRunningTunnel(state: string, detail?: string): string {
+    const label = state === "connected"
+        ? "已连接"
+        : state === "starting"
+          ? "正在连接 Cloudflare"
+          : state === "degraded"
+            ? "连接不稳定，正在自动恢复"
+            : state === "exited"
+              ? "Cloudflare 连接已经停止"
+              : state === "off"
+                ? "未启动 Cloudflare 连接"
+                : `状态：${state}`;
+    return detail ? `${label} · ${detail}` : label;
 }
 
 function canRead(path: string): boolean {

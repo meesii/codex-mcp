@@ -242,7 +242,7 @@ test("read-only commands work from a clean home", () => {
 
     const projects = run(["project", "list"], home);
     assert.equal(projects.code, 0);
-    assert.match(projects.output, /还没有注册项目/);
+    assert.match(projects.output, /还没有添加项目/);
 });
 
 test("project add changes durable project state without starting Controller or Runtime", () => {
@@ -295,7 +295,7 @@ test("explicit public start persists the requested mode even when prerequisites 
     try {
         const result = run(["start", "--public"], home, project);
         assert.notEqual(result.code, 0, result.output);
-        assert.match(result.output, /Web Console|连接.*页面/);
+        assert.match(result.output, /Web 控制台|连接.*页面/);
         const saved = JSON.parse(readFileSync(join(configDir, "config.json"), "utf8"));
         assert.deepEqual(saved.runtime, { mode: "public", noTunnel: false, tunnelLogs: false });
         const status = JSON.parse(run(["status", "--json"], home, project).output);
@@ -368,8 +368,8 @@ test("start registers the project before Runtime validation and leaves Web recov
     try {
         const result = run(["start"], home, project);
         assert.notEqual(result.code, 0);
-        assert.match(result.output, /还没有配置公网连接/);
-        assert.match(result.output, /Web Console/);
+        assert.match(result.output, /还没有配置 ChatGPT 公网连接/);
+        assert.match(result.output, /Web 控制台/);
         const projects = JSON.parse(readFileSync(join(configDir, "projects.json"), "utf8"));
         assert.equal(projects.projects.length, 1);
         assert.equal(projects.projects[0].path, realpathSync.native(project));
@@ -387,7 +387,7 @@ test("corrupt durable state fails closed", () => {
     writeFileSync(join(dir, "projects.json"), JSON.stringify({ projects: [] }));
     const result = run(["project", "list"], home);
     assert.notEqual(result.code, 0);
-    assert.match(result.output, /无法读取有效的项目状态/);
+    assert.match(result.output, /无法读取项目列表/);
 });
 
 test("invalid records are not silently discarded", () => {
@@ -397,7 +397,7 @@ test("invalid records are not silently discarded", () => {
     writeFileSync(join(dir, "projects.json"), JSON.stringify({ schemaVersion: 1, projects: [{ id: "broken" }] }));
     const result = run(["project", "list"], home);
     assert.notEqual(result.code, 0);
-    assert.match(result.output, /无法读取有效的项目状态/);
+    assert.match(result.output, /无法读取项目列表/);
 });
 
 test("project identity is collision-resistant and durable state rejects duplicate routing keys", async () => {
@@ -423,7 +423,7 @@ test("project identity is collision-resistant and durable state rejects duplicat
     }));
     const projects = run(["project", "list"], home);
     assert.notEqual(projects.code, 0);
-    assert.match(projects.output, /duplicate id/);
+    assert.match(projects.output, /重复项目 ID/);
 
     writeFileSync(join(dir, "projects.json"), JSON.stringify({ schemaVersion: 1, projects: [] }));
     writeFileSync(join(dir, "session-bindings.json"), JSON.stringify({
@@ -433,19 +433,110 @@ test("project identity is collision-resistant and durable state rejects duplicat
             { ownerKey: "owner", projectId: "two", boundAt: common.addedAt, lastSeenAt: common.lastSeenAt },
         ],
     }));
-    const bindingsScript = `process.env.HOME=${JSON.stringify(home)}; process.env.USERPROFILE=${JSON.stringify(home)}; const { loadBindingsFile } = await import(${JSON.stringify(new URL("dist/daemon/state.js", root).href)}); try { loadBindingsFile(); process.exit(2); } catch (error) { if (!String(error?.message).includes("duplicate owner")) process.exit(3); }`;
+    const bindingsScript = `process.env.HOME=${JSON.stringify(home)}; process.env.USERPROFILE=${JSON.stringify(home)}; const { loadBindingsFile } = await import(${JSON.stringify(new URL("dist/daemon/state.js", root).href)}); try { loadBindingsFile(); process.exit(2); } catch (error) { if (!String(error?.message).includes("重复项")) process.exit(3); }`;
     execFileSync(process.execPath, ["--input-type=module", "-e", bindingsScript], { stdio: "pipe" });
 });
 
-test("1.0 rejects legacy config keys instead of silently migrating them", () => {
+test("1.0 treats legacy config as a destructive upgrade and requires explicit cleanup", () => {
     const home = mkdtempSync(join(tmpdir(), "codex-mcp-1-0-"));
-    mkdirSync(join(home, ".codex-mcp"), { recursive: true });
-    writeFileSync(join(home, ".codex-mcp", "config.json"), JSON.stringify({ domain: "legacy.example.com" }));
-    const script = `process.env.HOME=${JSON.stringify(home)}; process.env.USERPROFILE=${JSON.stringify(home)}; const { loadUserConfig } = await import(${JSON.stringify(new URL("dist/config/user-config.js", root).href)}); try { loadUserConfig(); process.exit(2); } catch (error) { if (!String(error?.message).includes("不支持的字段")) process.exit(3); }`;
-    execFileSync(process.execPath, ["--input-type=module", "-e", script], { stdio: "pipe" });
+    const dir = join(home, ".codex-mcp");
+    const systemCloudflare = join(home, ".cloudflared");
+    const tunnelId = "00000000-0000-4000-8000-000000000123";
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(systemCloudflare, { recursive: true });
+    mkdirSync(join(dir, "cloudflare", ".cloudflared"), { recursive: true });
+    mkdirSync(join(dir, "tunnel-configs"), { recursive: true });
+    mkdirSync(join(dir, "logs"), { recursive: true });
+
+    writeFileSync(join(dir, "config.json"), JSON.stringify({
+        host: "127.0.0.1",
+        port: 3920,
+        domain: "legacy.example.com",
+        useCloudflared: true,
+        cloudflaredBin: "/old/cloudflared",
+        tunnelName: "old-tunnel",
+        tunnelId,
+    }));
+    writeFileSync(join(dir, "cloudflared.yml"), `tunnel: ${tunnelId}\ncredentials-file: old.json\n`);
+    writeFileSync(join(dir, "cloudflared-management.yml"), "no-autoupdate: true\n");
+    writeFileSync(join(dir, "cloudflare", ".cloudflared", "cert.pem"), "private-old-cert");
+    writeFileSync(join(dir, "tunnel-configs", "oldrevision.yml"), "old");
+    writeFileSync(join(dir, "oauth-state.json"), JSON.stringify({ version: 1, clients: {} }));
+    writeFileSync(join(dir, "projects.json"), JSON.stringify({ schemaVersion: 1, projects: [] }));
+    writeFileSync(join(dir, "logs", "runtime.log"), "keep");
+    writeFileSync(join(systemCloudflare, `${tunnelId}.json`), JSON.stringify({
+        AccountTag: "account",
+        TunnelSecret: "secret",
+        TunnelID: tunnelId,
+    }));
+    writeFileSync(join(systemCloudflare, "cert.pem"), "shared-account-cert");
+    writeFileSync(join(systemCloudflare, "config.yml"), "shared: true\n");
+
+    const inspectUrl = JSON.stringify(new URL("dist/config/legacy-cleanup.js", root).href);
+    const configUrl = JSON.stringify(new URL("dist/config/user-config.js", root).href);
+    const script = `
+        const { inspectLegacyCleanup, applyLegacyCleanup } = await import(${inspectUrl});
+        const { loadUserConfig } = await import(${configUrl});
+        let error = "";
+        try { loadUserConfig(); } catch (value) { error = String(value?.message ?? value); }
+        const plan = inspectLegacyCleanup();
+        const removed = applyLegacyCleanup(plan);
+        process.stdout.write(JSON.stringify({ error, plan, removed, after: loadUserConfig() }));
+    `;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+        encoding: "utf8",
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+    const result = JSON.parse(output);
+
+    assert.match(result.error, /破坏性更新/);
+    assert.match(result.error, /codex-mcp setup/);
+    assert.equal(result.plan.breakingUpdate, true);
+    assert.deepEqual(result.after, {});
+    const deletedPaths = result.plan.items.map((item) => item.path);
+    for (const expected of [
+        join(dir, "config.json"),
+        join(dir, "cloudflared.yml"),
+        join(dir, "cloudflared-management.yml"),
+        join(dir, "cloudflare"),
+        join(dir, "tunnel-configs"),
+        join(dir, "oauth-state.json"),
+        join(systemCloudflare, `${tunnelId}.json`),
+    ]) {
+        assert.ok(deletedPaths.includes(expected), `cleanup plan must disclose ${expected}`);
+        assert.equal(existsSync(expected), false, `cleanup must remove ${expected}`);
+    }
+    assert.equal(existsSync(join(systemCloudflare, "cert.pem")), true, "shared Cloudflare cert must be preserved");
+    assert.equal(existsSync(join(systemCloudflare, "config.yml")), true, "shared Cloudflare config must be preserved");
+    assert.equal(existsSync(join(dir, "projects.json")), true, "project registry must be preserved");
+    assert.equal(existsSync(join(dir, "logs", "runtime.log")), true, "logs must be preserved");
+    assert.ok(result.plan.preservedSystemPaths.includes(join(systemCloudflare, "cert.pem")));
+    assert.ok(result.plan.preservedSystemPaths.includes(join(systemCloudflare, "config.yml")));
 });
 
-test("1.0 rejects incomplete Cloudflare config and old OAuth state", async () => {
+test("legacy cleanup refuses a stale confirmation list", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-mcp-legacy-race-"));
+    const dir = join(home, ".codex-mcp");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ domain: "legacy.example.com" }));
+    const inspectUrl = JSON.stringify(new URL("dist/config/legacy-cleanup.js", root).href);
+    const script = `
+        const { inspectLegacyCleanup, applyLegacyCleanup } = await import(${inspectUrl});
+        const plan = inspectLegacyCleanup();
+        plan.items.push({ path: ${JSON.stringify(join(home, ".codex-mcp", "projects.json"))}, kind: "file", reason: "forged" });
+        try { applyLegacyCleanup(plan); process.exit(2); }
+        catch (error) {
+            if (!String(error?.message ?? error).includes("清理清单已经变化")) process.exit(3);
+        }
+    `;
+    execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+        stdio: "pipe",
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+    assert.equal(existsSync(join(dir, "config.json")), true, "stale confirmation must not delete anything");
+});
+
+test("1.0 routes incomplete legacy Cloudflare config to destructive setup and rejects old OAuth state", async () => {
     const home = mkdtempSync(join(tmpdir(), "codex-mcp-schema-"));
     const dir = join(home, ".codex-mcp");
     mkdirSync(dir, { recursive: true });
@@ -458,7 +549,7 @@ test("1.0 rejects incomplete Cloudflare config and old OAuth state", async () =>
             tunnelId: "00000000-0000-0000-0000-000000000000",
         },
     }));
-    const configScript = `process.env.HOME=${JSON.stringify(home)}; process.env.USERPROFILE=${JSON.stringify(home)}; const { loadUserConfig } = await import(${JSON.stringify(new URL("dist/config/user-config.js", root).href)}); try { loadUserConfig(); process.exit(2); } catch (error) { if (!String(error?.message).includes("configRevision")) process.exit(3); }`;
+    const configScript = `process.env.HOME=${JSON.stringify(home)}; process.env.USERPROFILE=${JSON.stringify(home)}; const { loadUserConfig } = await import(${JSON.stringify(new URL("dist/config/user-config.js", root).href)}); try { loadUserConfig(); process.exit(2); } catch (error) { const message = String(error?.message ?? error); if (!message.includes("破坏性更新") || !message.includes("codex-mcp setup")) process.exit(3); }`;
     execFileSync(process.execPath, ["--input-type=module", "-e", configScript], { stdio: "pipe" });
 
     writeFileSync(join(dir, "oauth-state.json"), JSON.stringify({
@@ -470,7 +561,10 @@ test("1.0 rejects incomplete Cloudflare config and old OAuth state", async () =>
         revokedFamilies: {},
     }));
     const { OAuthStateStore } = await import(new URL("dist/auth/oauth-state.js", root).href);
-    await assert.rejects(() => OAuthStateStore.open(join(dir, "oauth-state.json")), /Unsupported OAuth state version/);
+    await assert.rejects(
+        () => OAuthStateStore.open(join(dir, "oauth-state.json")),
+        /旧版 ChatGPT 授权状态.*codex-mcp setup/,
+    );
 
     writeFileSync(join(dir, "oauth-state.json"), JSON.stringify({
         version: 2,
@@ -481,7 +575,10 @@ test("1.0 rejects incomplete Cloudflare config and old OAuth state", async () =>
         refreshTokens: {},
         revokedFamilies: {},
     }));
-    await assert.rejects(() => OAuthStateStore.open(join(dir, "oauth-state.json")), /Unsupported OAuth state version/);
+    await assert.rejects(
+        () => OAuthStateStore.open(join(dir, "oauth-state.json")),
+        /授权状态文件无法识别或已经损坏/,
+    );
 });
 
 test("persistent local Controller exposes writable Web Console and survives Runtime stop", async () => {
@@ -815,10 +912,10 @@ test("interactive commands fail clearly without a terminal; internal daemon entr
     assert.match(bindings.output, /终端/);
     const daemon = run(["daemon", "--local"]);
     assert.notEqual(daemon.code, 0);
-    assert.match(daemon.output, /内部入口/);
+    assert.match(daemon.output, /内部使用的入口/);
     const controller = run(["controller"]);
     assert.notEqual(controller.code, 0);
-    assert.match(controller.output, /内部入口/);
+    assert.match(controller.output, /内部使用的入口/);
     assert.notEqual(run(["project", "list", "unexpected"]).code, 0);
     const doctor = run(["doctor"]);
     assert.ok([0, 1].includes(doctor.code), doctor.output);

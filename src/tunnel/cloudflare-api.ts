@@ -56,10 +56,10 @@ export async function snapshotCloudflareDns(
     hostname: string,
 ): Promise<CloudflareDnsSnapshot> {
     const query = new URLSearchParams({ "name.exact": hostname, per_page: "5000000" });
-    const records = await cloudflareApiRequest<CloudflareDnsRecordSnapshot[]>(
+    const records = parseCloudflareDnsRecordList(await cloudflareApiRequest<unknown>(
         "GET",
         `/zones/${encodeURIComponent(zoneId)}/dns_records?${query.toString()}`,
-    );
+    ));
     return {
         zoneId,
         hostname: hostname.toLowerCase(),
@@ -152,7 +152,7 @@ export async function restoreCloudflareDns(
         snapshot.zoneId !== expectedCurrent.zoneId ||
         snapshot.hostname !== expectedCurrent.hostname
     ) {
-        throw new Error("DNS 补偿快照不属于同一个 hostname");
+        throw new Error("用于恢复 DNS 的记录与当前域名不一致。为避免误改其它域名，程序已经停止自动恢复；请运行 `codex-mcp doctor` 查看当前状态");
     }
     const current = await snapshotCloudflareDns(snapshot.zoneId, snapshot.hostname);
     if (dnsRecordsEquivalent(current.records, snapshot.records)) return;
@@ -204,19 +204,19 @@ export async function inspectCloudflareTunnel(
 ): Promise<CloudflareTunnelObserved> {
     const normalizedTunnelId = normalizeTunnelId(tunnelId);
     try {
-        const tunnel = await cloudflareApiRequest<{ status?: unknown; deleted_at?: unknown }>(
+        const tunnel = parseCloudflareTunnelDetail(await cloudflareApiRequest<unknown>(
             "GET",
             `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(normalizedTunnelId)}`,
-        );
+        ));
         // Cloudflare soft-deletes tunnels: the detail endpoint can keep returning
         // HTTP 200 with deleted_at populated even though the tunnel disappeared
         // from the active list. Treat that state as absent and do not query
         // connections for an object that can no longer be used.
         if (isDeletedCloudflareTunnelRecord(tunnel)) return { exists: false };
-        const connections = await cloudflareApiRequest<unknown[]>(
+        const connections = parseCloudflareConnectionList(await cloudflareApiRequest<unknown>(
             "GET",
             `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(normalizedTunnelId)}/connections`,
-        );
+        ));
         const status = isTunnelStatus(tunnel.status) ? tunnel.status : undefined;
         return { exists: true, ...(status ? { status } : {}), connectorCount: connections.length };
     } catch (error) {
@@ -300,6 +300,40 @@ function dnsCreateBody(record: CloudflareDnsRecordSnapshot): Record<string, unkn
             : {}),
         ...(isRecordObject(record.settings) ? { settings: record.settings } : {}),
     };
+}
+
+export function parseCloudflareDnsRecordList(value: unknown): CloudflareDnsRecordSnapshot[] {
+    if (!Array.isArray(value)) {
+        throw new Error("Cloudflare DNS 列表返回格式异常：result 应该是数组");
+    }
+    for (const item of value) {
+        if (
+            !isRecordObject(item) ||
+            typeof item.id !== "string" ||
+            typeof item.type !== "string" ||
+            typeof item.name !== "string" ||
+            typeof item.ttl !== "number"
+        ) {
+            throw new Error("Cloudflare DNS 列表包含无法识别的记录");
+        }
+    }
+    return value as CloudflareDnsRecordSnapshot[];
+}
+
+export function parseCloudflareConnectionList(value: unknown): unknown[] {
+    if (!Array.isArray(value)) {
+        throw new Error("Cloudflare Tunnel 连接列表返回格式异常：result 应该是数组");
+    }
+    return value;
+}
+
+export function parseCloudflareTunnelDetail(
+    value: unknown,
+): { status?: unknown; deleted_at?: unknown } {
+    if (!isRecordObject(value)) {
+        throw new Error("Cloudflare Tunnel 详情返回格式异常：result 应该是对象");
+    }
+    return value;
 }
 
 function isRecordObject(value: unknown): value is Record<string, unknown> {

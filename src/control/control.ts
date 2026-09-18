@@ -116,11 +116,11 @@ export class LocalControllerClient {
             });
             const payload = await response.json() as { error?: unknown; [key: string]: unknown };
             if (!response.ok || typeof payload.error === "string") {
-                throw new Error(typeof payload.error === "string" ? payload.error : `Controller 请求失败（HTTP ${response.status}）`);
+                throw new Error(typeof payload.error === "string" ? payload.error : `Web 控制台后台请求失败（HTTP ${response.status}）`);
             }
             return payload;
         } catch (error) {
-            if (error instanceof Error && error.name === "AbortError") throw new Error("连接本机 Controller 超时");
+            if (error instanceof Error && error.name === "AbortError") throw new Error("连接本机 Web 控制台后台服务超时；请运行 `codex-mcp open` 重新打开，或运行 `codex-mcp doctor` 检查");
             throw error;
         } finally {
             clearTimeout(timer);
@@ -140,12 +140,12 @@ export async function contactRunningController(): Promise<ControllerContact | un
         const probe = new LocalControllerClient(state, 5_000);
         const status = await probe.status();
         if (status.apiVersion !== CONTROLLER_API_VERSION || status.pid !== state.pid) {
-            throw new Error("Controller 状态文件与控制接口不一致");
+            throw new Error("Web 控制台记录的后台状态与实际运行状态不一致；请运行 `codex-mcp open` 重新启动控制台");
         }
         return { state, client: new LocalControllerClient(state) };
     } catch (error) {
         if (!isProcessAlive(state.pid)) return undefined;
-        throw new Error(`Controller pid ${state.pid} 仍存在，但本机控制接口不可用：${readableError(error)}`);
+        throw new Error(`Web 控制台后台进程仍在运行，但已经无法正常通信：${readableError(error)}。请运行 \`codex-mcp doctor\` 检查，必要时执行 \`codex-mcp shutdown\` 后重新打开`);
     }
 }
 
@@ -236,10 +236,10 @@ async function waitForControllerStart(
     const deadline = Date.now() + CONTROLLER_START_TIMEOUT_MS;
     let exitResult: Awaited<typeof exited> | undefined;
     void exited.then((value) => { exitResult = value; });
-    let lastError = "Controller 尚未写入状态";
+    let lastError = "Web 控制台后台服务还没有完成启动";
     while (Date.now() < deadline) {
-        if (exitResult) throw new Error(`Controller 启动后立即退出：${describeExit(exitResult)}`);
-        if (!isProcessAlive(pid)) throw new Error("Controller 启动后立即退出");
+        if (exitResult) throw new Error(`Web 控制台后台服务启动后立即退出：${describeExit(exitResult)}`);
+        if (!isProcessAlive(pid)) throw new Error("Web 控制台后台服务启动后立即退出；请运行 `codex-mcp doctor` 检查本机环境");
         let state: ControllerState | undefined;
         try {
             state = loadControllerState();
@@ -255,11 +255,11 @@ async function waitForControllerStart(
                 lastError = readableError(error);
             }
         } else if (state && !replacing && isProcessAlive(state.pid)) {
-            throw new Error(`检测到另一个 Controller pid ${state.pid}`);
+            throw new Error("检测到另一个 codex-mcp Web 控制台正在启动；请稍后重试");
         }
         await sleep(200);
     }
-    throw new Error(`Controller 启动超时：${lastError}`);
+    throw new Error(`Web 控制台启动超时：${lastError}。请运行 \`codex-mcp doctor\` 检查`);
 }
 
 export async function withControllerLifecycleLock<T>(run: () => Promise<T>): Promise<T> {
@@ -283,7 +283,7 @@ export async function withControllerLifecycleLock<T>(run: () => Promise<T>): Pro
             release();
         }
     }
-    throw new Error("另一个 codex-mcp 正在启动或替换本机 Controller；等待 30 秒后仍未完成");
+    throw new Error("另一个 codex-mcp 操作正在启动或更新 Web 控制台，30 秒后仍未完成。请稍后重试；如果一直出现，运行 `codex-mcp doctor`");
 }
 
 function tryAcquireControllerLock(): () => void {

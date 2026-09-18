@@ -32,12 +32,12 @@ export function loadControllerState(): ControllerState | undefined {
     try {
         const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-            throw new Error("controller state must be an object");
+            throw new Error("Web 控制台后台状态文件格式不正确");
         }
         const state = raw as Record<string, unknown>;
         const allowed = ["schemaVersion", "apiVersion", "pid", "host", "port", "controlToken", "startedAt", "version"];
         const unknown = Object.keys(state).filter((key) => !allowed.includes(key));
-        if (unknown.length > 0) throw new Error(`unsupported fields: ${unknown.join(", ")}`);
+        if (unknown.length > 0) throw new Error(`Web 控制台后台状态包含当前版本不认识的字段：${unknown.join(", ")}`);
         if (
             state.schemaVersion !== 1 ||
             state.apiVersion !== CONTROLLER_API_VERSION ||
@@ -48,7 +48,7 @@ export function loadControllerState(): ControllerState | undefined {
             typeof state.startedAt !== "string" || !state.startedAt ||
             typeof state.version !== "string" || !state.version
         ) {
-            throw new Error("unsupported or malformed controller state");
+            throw new Error("Web 控制台后台状态与当前版本不兼容或内容损坏");
         }
         return {
             schemaVersion: 1,
@@ -61,7 +61,7 @@ export function loadControllerState(): ControllerState | undefined {
             version: state.version,
         };
     } catch (error) {
-        throw new Error(`无法读取有效的 Controller 状态：${path}：${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`无法读取 Web 控制台后台状态：${path}：${error instanceof Error ? error.message : String(error)}。运行 \`codex-mcp open\` 可尝试重新启动`);
     }
 }
 

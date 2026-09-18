@@ -12,7 +12,7 @@ import { stopRuntime } from "./services.js";
 /** Internal detached process. User commands talk to it; it is not a public CLI surface. */
 export async function runControllerProcess(): Promise<void> {
     if (typeof process.send !== "function" || !process.connected) {
-        throw new Error("controller 是内部入口；请运行 codex-mcp start");
+        throw new Error("这个命令是 codex-mcp 内部使用的入口。普通使用请运行 `codex-mcp start`");
     }
 
     const startedAt = new Date().toISOString();

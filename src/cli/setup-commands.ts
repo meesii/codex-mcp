@@ -7,6 +7,7 @@ import {
     configureCapabilitySources,
     describeCapabilitiesConfig,
 } from "../capabilities/setup.js";
+import { applyLegacyCleanup, inspectLegacyCleanup } from "../config/legacy-cleanup.js";
 import { loadUserConfig, resolveTunnelProtocol } from "../config/user-config.js";
 import {
     printInfo,
@@ -21,7 +22,7 @@ import {
     checkPublicAccess,
     configurePublicAccess,
 } from "../tunnel/public-access-manager.js";
-import { askSecret, askSelect, canPromptInteractively, withSpinner } from "../tunnel/prompt.js";
+import { askSecret, askSelect, askYesNo, canPromptInteractively, withSpinner } from "../tunnel/prompt.js";
 import {
     isPublicSetupConfigured,
     type AppliedTunnelSetup,
@@ -34,6 +35,36 @@ export async function runFirstTimeSetup(): Promise<void> {
         throw new Error("首次设置需要在可以输入内容的终端里运行");
     }
 
+    const cleanupPlan = inspectLegacyCleanup();
+    if (cleanupPlan.items.length > 0) {
+        printIntro(cleanupPlan.breakingUpdate ? "codex-mcp 破坏性更新" : "清理旧版文件");
+        if (cleanupPlan.breakingUpdate) {
+            printWarning("检测到 1.0 之前留下的本机状态。当前版本是破坏性更新，不再兼容或迁移这些旧状态；需要先清理，再按当前版本重新设置。");
+        } else {
+            printInfo("检测到新版不再使用的旧文件，可以先清理再继续。");
+        }
+        printNote(
+            "确认前不会删除任何内容",
+            cleanupPlan.items
+                .map((item, index) => `${index + 1}. ${item.path}\n   ${item.reason}`)
+                .join("\n"),
+        );
+        if (cleanupPlan.preservedSystemPaths.length > 0) {
+            printNote(
+                "这些系统级 Cloudflare 文件会保留",
+                cleanupPlan.preservedSystemPaths.join("\n"),
+            );
+        }
+        printInfo("不会删除项目、ChatGPT 会话关联、连接密码或日志，也不会删除 Cloudflare 远端 Tunnel 和 DNS。");
+        const confirmed = await askYesNo("确认删除以上旧文件/目录并继续重新配置？", false);
+        if (!confirmed) {
+            printOutro("已取消；未删除任何文件");
+            return;
+        }
+        const removed = applyLegacyCleanup(cleanupPlan);
+        printSuccess(`旧版本机状态已清理：${removed.length} 项`);
+    }
+
     const current = loadUserConfig();
     const passwordConfigured = await hasAdminPassword();
     if (isPublicSetupConfigured(current)) {
@@ -42,14 +73,14 @@ export async function runFirstTimeSetup(): Promise<void> {
     }
 
     printIntro("设置 codex-mcp");
-    printInfo("先完成并验证公网连接，再生成 ChatGPT 连接密码；外部能力属于可选增强项。");
+    printInfo("先完成并验证 ChatGPT 公网连接，再生成连接密码；读取 Codex / Claude Code 的 MCP 和 Skills 是可选项。");
 
     const { result, verification } = await configurePublicAccess({ forceWizard: false });
     const generatedPassword = await ensureGeneratedAdminPassword({ display: false });
     try {
         await configureCapabilitySources();
     } catch (error) {
-        printWarning(`核心连接已经设置完成；外部能力保持原设置：${readableError(error)}`);
+        printWarning(`核心连接已经设置完成；外部工具与技能设置保持不变：${readableError(error)}`);
     }
     printCompletedSetup(result, verification, generatedPassword);
 }
@@ -68,7 +99,7 @@ async function runSetupManager(
             value: access.kind === "external" ? "自定义 HTTPS" : "Cloudflare Tunnel",
         },
         ...(access.kind === "cloudflare" ? [
-            { label: "Tunnel", value: access.tunnelName },
+            { label: "Cloudflare Tunnel", value: access.tunnelName },
             { label: "传输协议", value: resolveTunnelProtocol(current.runtime?.tunnelProtocol) === "http2" ? "HTTP/2" : "QUIC" },
         ] : []),
         { label: "连接密码", value: passwordConfigured ? "已设置" : "未设置" },
@@ -85,13 +116,13 @@ async function runSetupManager(
                 : [
                       {
                           value: "protocol",
-                          label: "修改 Tunnel 传输协议",
+                          label: "修改 Cloudflare 连接协议",
                           hint: `当前 ${resolveTunnelProtocol(current.runtime?.tunnelProtocol) === "http2" ? "HTTP/2" : "QUIC"}`,
                       },
                       {
                           value: "cloudflare",
                           label: "重新登录 / 切换 Cloudflare 账号",
-                          hint: "只重置 codex-mcp 私有登录，不修改系统 ~/.cloudflared",
+                          hint: "只重新登录 codex-mcp 使用的 Cloudflare 账号，不影响电脑上其他 cloudflared 配置",
                       },
                   ]),
             {
@@ -99,7 +130,7 @@ async function runSetupManager(
                 label: passwordConfigured ? "修改连接密码" : "生成连接密码",
                 hint: passwordConfigured ? undefined : "补齐 ChatGPT 连接所需的密码",
             },
-            { value: "capabilities", label: "管理外部能力", hint: "Codex / Claude Code / Agent Skills" },
+            { value: "capabilities", label: "管理外部工具与技能", hint: "Codex / Claude Code / Agent Skills" },
             { value: "exit", label: "退出，不做修改" },
         ],
         passwordConfigured ? "check" : "password",
@@ -119,7 +150,7 @@ async function runSetupManager(
     }
     if (action === "capabilities") {
         const result = await configureCapabilitySources();
-        printOutro(result.changed ? "外部能力设置已保存" : "外部能力设置保持不变");
+        printOutro(result.changed ? "外部工具与技能设置已保存" : "外部工具与技能设置保持不变");
         return;
     }
     if (action === "protocol") {
@@ -132,7 +163,7 @@ async function runSetupManager(
             resolveTunnelProtocol(current.runtime?.tunnelProtocol),
         ));
         const result = await setTunnelProtocol(protocol);
-        printOutro(`Tunnel 已切换为 ${result.protocol === "http2" ? "HTTP/2" : "QUIC"}${result.restarted ? "，Runtime 已重启" : ""}`);
+        printOutro(`Cloudflare 连接协议已切换为 ${result.protocol === "http2" ? "HTTP/2" : "QUIC"}${result.restarted ? "，MCP 服务已自动重启" : ""}`);
         return;
     }
 
@@ -144,7 +175,7 @@ async function runSetupManager(
         );
         printSummary("检查完成", [
             { label: "公网地址", value: verification.publicMcpUrl },
-            { label: "状态", value: "已确认到达当前 codex-mcp 实例" },
+            { label: "状态", value: "已确认公网地址连接到这台电脑上的 codex-mcp" },
         ]);
         printOutro("未修改配置");
         return;
@@ -173,18 +204,18 @@ function printCompletedSetup(
         },
     ];
     if (result.publicAccess.kind === "cloudflare") {
-        rows.push({ label: "Tunnel", value: result.publicAccess.tunnelName });
+        rows.push({ label: "Cloudflare Tunnel", value: result.publicAccess.tunnelName });
     }
     rows.push({
         label: "连接密码",
         value: generatedPassword ?? "已设置（保持不变）",
     });
 
-    printSummary("Setup 完成", rows);
+    printSummary("设置完成", rows);
     if (generatedPassword) {
         printWarning("请保存上面的连接密码；电脑只保存密码哈希，忘记后需要重新设置。");
     }
-    printInfo("下一步：可运行 codex-mcp open 在 Web Console 添加项目并启动，也可以进入项目目录运行 codex-mcp start。");
+    printInfo("下一步：运行 `codex-mcp open` 可以在 Web 控制台添加项目；也可以直接进入项目目录运行 `codex-mcp start`。");
     printOutro("设置完成");
 }
 
@@ -194,7 +225,7 @@ export async function configureAdminPassword(): Promise<void> {
         throw new Error("修改连接密码需要在可以输入内容的终端里运行");
     }
     printIntro("修改连接密码");
-    printInfo("修改连接密码。");
+    printInfo("这个密码用于 ChatGPT 连接这台电脑上的 codex-mcp。修改后，之前保存的密码会立即失效。");
     printWarning("密码要求：至少 12 个字符。");
     const password = await askSecret("新密码");
     const confirmation = await askSecret("再输入一次");

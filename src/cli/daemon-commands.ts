@@ -26,7 +26,7 @@ export async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
     const projectRoot = resolveProjectRoot(flags.root);
     const registered = await addProject(projectRoot);
     const controller = await ensureControllerRunning();
-    printInfo("项目已注册，正在通过本机 Controller 准备 Runtime…");
+    printInfo("项目已添加，正在启动 MCP 服务…");
     let result: Awaited<ReturnType<typeof controller.client.start>>;
     try {
         result = await controller.client.start({
@@ -37,10 +37,10 @@ export async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
         });
     } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(`${detail}\n项目已注册。可打开 Web Console 继续处理：http://127.0.0.1:${controller.state.port}/`);
+        throw new Error(`${detail}\n项目已经添加。可以打开 Web 控制台继续处理：http://127.0.0.1:${controller.state.port}/`);
     }
     const status = result.status.runtime;
-    if (!status) throw new Error("Runtime 启动后没有返回运行状态");
+    if (!status) throw new Error("MCP 服务启动后没有返回运行状态。请运行 `codex-mcp status` 检查；如果仍未运行，再执行 `codex-mcp doctor`");
     const canonicalRoot = canonicalProjectPath(projectRoot);
     const project = status.projects.find((item) => item.path === canonicalRoot) ?? registered;
     printRegistrationBanner(status, project, controller.state.port);
@@ -55,7 +55,7 @@ export async function ensureDaemonAndRegister(flags: CliFlags): Promise<void> {
 export async function runOpen(): Promise<void> {
     const controller = await ensureControllerRunning();
     const url = `http://127.0.0.1:${controller.state.port}/`;
-    printSuccess(`Web Console：${url}`);
+    printSuccess(`Web 控制台：${url}`);
     if (process.env.CODEX_MCP_NO_BROWSER === "1") return;
     tryOpenBrowser(url);
 }
@@ -114,55 +114,54 @@ export async function runStatus(flags: CliFlags): Promise<void> {
 
     printIntro("codex-mcp status");
     if (!status) {
-        printWarning("MCP Runtime 没有在运行。");
+        printWarning("MCP 服务当前没有运行。");
         if (controllerStatus) {
-            printInfo(`本机 Controller 仍在运行：pid ${controllerStatus.pid} · ${controllerStatus.panelUrl}`);
+            printInfo(`Web 控制台仍可使用：${controllerStatus.panelUrl}`);
         } else {
-            printInfo("本机 Controller 尚未运行；运行 codex-mcp open 打开控制台，或运行 codex-mcp start 启动当前项目。");
+            printInfo("Web 控制台也没有运行。运行 `codex-mcp open` 打开控制台，或在项目目录运行 `codex-mcp start` 启动服务。");
         }
         printInfo(`下次启动模式：${describeRuntimeIntent(preferredIntent)}`);
         if (control.projects.length > 0) {
-            printInfo(`已保存 ${control.projects.length} 个项目注册记录；Runtime 启动后可继续使用。`);
+            printInfo(`已经保存 ${control.projects.length} 个项目；下次启动 MCP 服务后可继续使用。`);
         }
         printOutro("状态检查完成");
         return;
     }
 
-    printSummary("本机控制面", [
-        { label: "Controller", value: controllerStatus ? `pid ${controllerStatus.pid} · ${controllerStatus.version}` : "未运行" },
-        { label: "Web Console", value: controllerStatus?.panelUrl ?? "未运行" },
-        { label: "Runtime", value: `pid ${status.pid} · ${status.mode === "local" ? "本机" : "公网"}` },
+    printSummary("当前状态", [
+        { label: "MCP 服务", value: `运行中 · ${status.mode === "local" ? "仅本机" : "公网"}` },
+        { label: "Web 控制台", value: controllerStatus?.panelUrl ?? "未运行" },
         { label: "默认启动", value: describeRuntimeIntent(preferredIntent) },
         { label: "运行时长", value: formatUptime(status.uptimeMs) },
         { label: "CLI 版本", value: cliVersion },
-        { label: "Runtime 版本", value: status.version },
-        { label: "本机 MCP", value: status.localUrl },
-        { label: "OAuth", value: status.auth.required ? (status.auth.configured ? "已配置" : "未配置") : "未启用" },
-        { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
+        { label: "服务版本", value: status.version },
+        { label: "本机地址", value: status.localUrl },
+        { label: "登录保护", value: status.auth.required ? (status.auth.configured ? "已启用" : "缺少连接密码") : "仅本机，无需登录" },
+        { label: "ChatGPT 地址", value: status.publicMcpUrl ?? "未启用" },
         ...(userConfig.publicAccess?.kind === "cloudflare" ? [{
-            label: "Tunnel 协议",
+            label: "Cloudflare 协议",
             value: resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol) === "http2" ? "HTTP/2" : "QUIC",
         }] : []),
-        { label: "公网连接", value: describeTunnelStatus(status.tunnel) },
+        { label: "公网方式", value: userConfig.publicAccess?.kind === "cloudflare" ? `Cloudflare · ${describeTunnelStatus(status.tunnel)}` : userConfig.publicAccess?.kind === "external" ? "自有 HTTPS" : "未配置" },
     ]);
 
     if (versionMismatch) {
-        printWarning("CLI、Controller 或 Runtime 版本不一致。先运行 codex-mcp update，再运行 codex-mcp restart。" );
+        printWarning("正在运行的 codex-mcp 与当前命令行版本不一致。先运行 `codex-mcp update`，再运行 `codex-mcp restart` 让新版本完全生效。" );
     }
 
     const active = status.projects.filter((item) => item.active);
     if (status.projects.length === 0) {
-        printInfo("还没有注册项目。进入项目目录运行 codex-mcp start 注册第一个项目。");
+        printInfo("还没有添加项目。进入项目目录运行 `codex-mcp start`，或运行 `codex-mcp project add [目录]` 添加第一个项目。");
     } else {
-        printInfo("已注册项目：");
+        printInfo("已添加项目：");
         for (const item of status.projects) {
-            printInfo(`- ${item.name}${item.active ? "" : "（已停用）"} ${item.path} · ${item.boundSessions} 个会话绑定`);
+            printInfo(`- ${item.name}${item.active ? "" : "（已停用）"} ${item.path} · ${item.boundSessions} 个 ChatGPT 会话关联`);
         }
-        if (active.length === 0) printWarning("没有活动项目。运行 codex-mcp project add [目录] 重新启用。");
+        if (active.length === 0) printWarning("当前没有可用项目。运行 `codex-mcp project add [目录]` 添加或重新启用项目。");
     }
 
     if (status.publicMcpUrl && !(await checkPublicHealthz(status.localUrl, status.publicMcpUrl))) {
-        printWarning(`公网地址暂时无法验证（${status.publicMcpUrl}）。请运行 codex-mcp doctor 检查公网连接。`);
+        printWarning(`ChatGPT 公网地址暂时无法确认是否连接到这台电脑（${status.publicMcpUrl}）。请运行 \`codex-mcp doctor\` 查看具体原因。`);
     }
     printOutro("状态检查完成");
 }
@@ -170,22 +169,22 @@ export async function runStatus(flags: CliFlags): Promise<void> {
 /** Stop only the MCP Runtime; the persistent local Controller and Web Console stay online. */
 export async function runStop(): Promise<void> {
     const controller = await contactRunningController();
-    printInfo("正在停止 MCP Runtime（Tunnel、托管进程和 MCP 服务会一起关闭）…");
+    printInfo("正在停止 MCP 服务；如果正在使用 Cloudflare 公网连接，也会一起停止…");
     if (!controller) {
         const stopped = await stopRuntime();
         if (!stopped) {
-            printWarning("MCP Runtime 没有在运行；本机 Controller 也未启动。");
+            printWarning("MCP 服务本来就没有运行，Web 控制台也没有启动。");
             return;
         }
-        printSuccess("MCP Runtime 已停止；项目注册状态已保留。Controller 原本没有运行。");
+        printSuccess("MCP 服务已停止；项目设置已保留。Web 控制台原本没有运行。");
         return;
     }
     const result = await controller.client.stop();
     if (!result.stopped) {
-        printWarning("MCP Runtime 没有在运行；本机 Controller 保持在线。");
+        printWarning("MCP 服务本来就没有运行；Web 控制台仍然可以使用。");
         return;
     }
-    printSuccess(`MCP Runtime 已停止；项目注册状态已保留。Web Console：http://127.0.0.1:${controller.state.port}/`);
+    printSuccess(`MCP 服务已停止；项目设置已保留。Web 控制台仍可使用：http://127.0.0.1:${controller.state.port}/`);
 }
 
 /** Stop the whole local control plane, including any running Runtime. */
@@ -195,13 +194,13 @@ export async function runShutdown(): Promise<void> {
         const control = await getControlStatus();
         if (control.running) {
             await stopRuntime();
-            printSuccess("MCP Runtime 已停止；没有运行中的 Controller。");
+            printSuccess("MCP 服务已停止；Web 控制台没有运行。");
         } else {
-            printWarning("Controller 和 MCP Runtime 都没有在运行。");
+            printWarning("MCP 服务和 Web 控制台都没有在运行。");
         }
         return;
     }
-    printInfo("正在关闭 MCP Runtime 和本机 Controller…");
+    printInfo("正在完全关闭 MCP 服务和 Web 控制台…");
     await controller.client.shutdown();
     await waitForProcessExit(controller.state.pid, 30_000);
     printSuccess("codex-mcp 已完全关闭。");
@@ -210,13 +209,13 @@ export async function runShutdown(): Promise<void> {
 /** Restart a running Runtime in the same mode through the persistent Controller. */
 export async function runRestart(): Promise<void> {
     const existing = await contactRunningController();
-    printInfo("正在按原运行参数重启 Runtime…");
+    printInfo("正在按原来的运行方式重启 MCP 服务…");
     const control = existing
         ? (await (await ensureControllerRunning()).client.restart()).status
         : await restartRuntime();
     const status = control.runtime;
-    if (!status) throw new Error("Runtime 重启后没有返回运行状态");
-    printSuccess(`Runtime 已重启：pid ${status.pid} · ${status.version} · ${status.projects.filter((item) => item.active).length} 个活动项目。`);
+    if (!status) throw new Error("MCP 服务重启后没有返回运行状态；请运行 `codex-mcp status` 检查，如果仍未运行再执行 `codex-mcp doctor`");
+    printSuccess(`MCP 服务已重启 · 版本 ${status.version} · ${status.projects.filter((item) => item.active).length} 个可用项目。`);
 }
 
 export function getPackageVersion(): string {
@@ -237,10 +236,10 @@ function printRegistrationBanner(
 ): void {
     printIntro("codex-mcp");
     printSummary("已就绪", [
-        { label: "MCP Runtime", value: `pid ${status.pid} · 已运行 ${formatUptime(status.uptimeMs)}` },
+        { label: "MCP 服务", value: `已运行 ${formatUptime(status.uptimeMs)}` },
         { label: "运行方式", value: status.mode === "local" ? "仅本机" : "公网" },
         { label: "本机地址", value: status.localUrl },
-        { label: "Web Console", value: `http://127.0.0.1:${controllerPort}/` },
+        { label: "Web 控制台", value: `http://127.0.0.1:${controllerPort}/` },
         { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
         { label: "当前项目", value: project.name },
         { label: "已注册项目", value: `${status.projects.length} 个` },
@@ -273,7 +272,7 @@ async function checkPublicHealthz(
 
 function describeRuntimeIntent(intent: { local: boolean; noTunnel: boolean; tunnelLogs: boolean }): string {
     if (intent.local) return "本机模式";
-    return intent.noTunnel ? "公网模式（外部入口）" : "公网模式（托管 Tunnel）";
+    return intent.noTunnel ? "公网模式（自有 HTTPS）" : "公网模式（Cloudflare）";
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
@@ -287,7 +286,7 @@ async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void>
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error(`Controller pid ${pid} 在 ${timeoutMs}ms 内没有退出`);
+    throw new Error("Web 控制台后台服务没有正常退出；请稍后再试，如果一直存在请运行 `codex-mcp doctor`");
 }
 
 function tryOpenBrowser(url: string): void {
@@ -305,7 +304,7 @@ function tryOpenBrowser(url: string): void {
         child.once("error", () => undefined);
         child.unref();
     } catch {
-        printInfo("浏览器没有自动打开，请复制上面的 Web Console 地址。");
+        printInfo("浏览器没有自动打开，请复制上面的 Web 控制台地址到浏览器。");
     }
 }
 

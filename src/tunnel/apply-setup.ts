@@ -1,6 +1,6 @@
 import { printSuccess, printWarning } from "../lib/util/terminal.js";
 import { withSpinner } from "./prompt.js";
-import { getUserConfigPath, saveUserConfig } from "../config/user-config.js";
+import { saveUserConfig } from "../config/user-config.js";
 import { cutoverCloudflareDns, dnsSnapshotReferencesTunnel, dnsSnapshotPointsToTunnel, removeCloudflareManagedDnsIfOwned, restoreCloudflareDns, snapshotCloudflareDns, type CloudflareDnsSnapshot } from "./cloudflare-api.js";
 import { requireDnsOverwriteConfirmation } from "./confirm.js";
 import { assertSetupPortAvailable, verifySetupPublicRoute } from "./setup-verify.js";
@@ -37,7 +37,7 @@ export async function applyTunnelSetup(
     let dnsSnapshot: CloudflareDnsSnapshot | undefined;
     let committedDns: CloudflareDnsSnapshot | undefined;
     let dnsChanged = false;
-    let phase = "本机端口预检";
+    let phase = "检查本机服务端口";
     const setPhase = (next: string): void => {
         phase = next;
         options.onPhase?.(next);
@@ -46,15 +46,15 @@ export async function applyTunnelSetup(
     try {
         await operations.assertSetupPortAvailable(host, port);
         cancellation.throwIfRequested();
-        setPhase(candidate.useCloudflared ? "candidate connector 启动" : "公网验证");
+        setPhase(candidate.useCloudflared ? "启动 Cloudflare 连接" : "验证公网地址");
         const verification = await operations.verifySetupPublicRoute(candidate, host, port, {
             signal: cancellation.signal,
             beforePublicVerify: candidate.useCloudflared
                 ? async () => {
                       cancellation.throwIfRequested();
-                      setPhase("DNS 快照");
+                      setPhase("检查当前域名 DNS");
                       if (!candidate.zoneId || !candidate.tunnelId) {
-                          throw new Error("Cloudflare DNS 配置缺少 zone 或 Tunnel ID");
+                          throw new Error("Cloudflare 域名信息不完整，无法安全修改 DNS。请重新运行 `codex-mcp setup`");
                       }
                       dnsSnapshot = await operations.snapshotCloudflareDns(candidate.zoneId, candidate.domain);
                       if (
@@ -69,22 +69,22 @@ export async function applyTunnelSetup(
                           }
                       }
                       cancellation.throwIfRequested();
-                      setPhase("DNS cutover");
+                      setPhase("更新 Cloudflare DNS");
                       const cutover = await withSpinner(
-                          `正在把域名 ${candidate.domain} 连接到已就绪的 Tunnel…`,
-                          "DNS 路由切换完成",
+                          `正在把域名 ${candidate.domain} 连接到新的 Cloudflare Tunnel…`,
+                          "Cloudflare DNS 已更新",
                           () => operations.cutoverCloudflareDns(dnsSnapshot!, candidate.tunnelId!),
                       );
                       dnsChanged = cutover.changed;
                       committedDns = cutover.committed;
                       cancellation.throwIfRequested();
-                      setPhase("公网验证");
+                      setPhase("验证 ChatGPT 公网地址");
                   }
                 : undefined,
         });
 
         cancellation.throwIfRequested();
-        setPhase("本机配置提交");
+        setPhase("保存新连接设置");
         const committedConfig = operations.saveUserConfig({
             host,
             port,
@@ -97,13 +97,13 @@ export async function applyTunnelSetup(
             try {
                 operations.removeCloudflaredRevision(candidate.previousConfigRevision);
             } catch (error) {
-                printWarning(`上一个 Tunnel 配置 revision 清理失败，可稍后手动检查：${readableError(error)}`);
+                printWarning(`旧的 Cloudflare 本机配置没有清理干净，但新连接已经生效：${readableError(error)}。可稍后运行 \`codex-mcp doctor\` 检查`);
             }
         }
         const previousManaged = candidate.previousManagedAccess;
         if (previousManaged && previousManaged.domain !== candidate.domain) {
             try {
-                setPhase("清理旧公网 DNS");
+                setPhase("清理旧公网地址");
                 const removed = await operations.removeCloudflareManagedDnsIfOwned(
                     previousManaged.zoneId,
                     previousManaged.domain,
@@ -111,10 +111,10 @@ export async function applyTunnelSetup(
                 );
                 if (removed) printSuccess(`已清理旧公网地址：${previousManaged.domain}`);
             } catch (error) {
-                printWarning(`新公网配置已提交，但旧 DNS 清理失败：${readableError(error)}`);
+                printWarning(`新公网地址已经生效，但旧地址的 DNS 没有清理成功：${readableError(error)}。新连接不受影响，可稍后运行 \`codex-mcp doctor\` 检查`);
             }
         }
-        printSuccess(`codex-mcp 配置已原子提交：${getUserConfigPath()}`);
+        printSuccess("新的公网连接设置已保存。");
         return {
             result: { ...candidate, userConfig: committedConfig },
             verification,
@@ -147,17 +147,17 @@ export async function applyTunnelSetup(
                 }
             } catch (inspectError) {
                 mayDeleteCreatedTunnel = false;
-                recoveryErrors.push(`candidate DNS 引用检查失败：${readableError(inspectError)}`);
+                recoveryErrors.push(`无法确认新建的 Cloudflare Tunnel 是否仍被 DNS 使用：${readableError(inspectError)}`);
             }
         }
         await operations.cleanupFailedCandidate(candidate, recoveryErrors, mayDeleteCreatedTunnel);
         if (recoveryErrors.length > 0) {
             throw new Error(
-                `公网配置失败（阶段：${phase}）：${readableError(error)}；${recoveryErrors.join("；")}。` +
-                "Cloudflare 可能处于部分变更状态，请先运行 `codex-mcp doctor`，不要重复覆盖 DNS。",
+                `公网连接设置失败（进行到“${phase}”时出错）：${readableError(error)}；${recoveryErrors.join("；")}。` +
+                "部分 Cloudflare 修改可能已经发生。请先运行 `codex-mcp doctor` 查看当前状态，不要连续重复配置，以免覆盖仍在使用的 DNS。",
             );
         }
-        throw new Error(`公网配置失败（阶段：${phase}）：${readableError(error)}`, {
+        throw new Error(`公网连接设置失败（进行到“${phase}”时出错）：${readableError(error)}`, {
             cause: error,
         });
     } finally {
@@ -182,13 +182,13 @@ async function cleanupFailedCandidate(
         try {
             removeCloudflaredRevision(candidate.configRevision);
         } catch (error) {
-            recoveryErrors.push(`candidate YAML 清理失败：${readableError(error)}`);
+            recoveryErrors.push(`本次失败配置留下的本机 Cloudflare 文件没有清理成功：${readableError(error)}`);
         }
     }
     if (!candidate.candidateSession?.createdTunnel || !candidate.bin || !candidate.tunnelId) return;
     if (!mayDeleteCreatedTunnel) {
         recoveryErrors.push(
-            "candidate Tunnel 仍可能被 DNS 引用，为避免扩大故障未自动删除",
+            "新建的 Cloudflare Tunnel 可能仍被 DNS 使用，因此没有自动删除；请先运行 `codex-mcp doctor` 确认当前状态",
         );
         return;
     }

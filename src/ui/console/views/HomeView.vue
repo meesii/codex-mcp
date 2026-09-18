@@ -50,7 +50,7 @@ async function copyUrl(): Promise<void> {
             <div class="overview-metric"><span>MCP 服务</span><strong>{{ loading ? "…" : running ? (liveMode === 'public' ? '公网运行' : '本机运行') : "未启动" }}</strong></div>
             <div class="overview-metric"><span>ChatGPT</span><strong>{{ configured ? "已配置" : "未配置" }}</strong><small v-if="connectionDetail">{{ connectionDetail }}</small></div>
             <div class="overview-metric"><span>项目</span><strong>{{ activeProjects.length }}</strong><small v-if="projects.length - activeProjects.length">{{ projects.length - activeProjects.length }} 个停用</small></div>
-            <div class="overview-metric"><span>会话绑定</span><strong>{{ conversationCount }}</strong></div>
+            <div class="overview-metric"><span>ChatGPT 会话</span><strong>{{ conversationCount }}</strong></div>
         </div>
 
         <div class="page-surface workspace-panel">

@@ -231,7 +231,7 @@ export async function runDoctorService(fix = false): Promise<DoctorServiceResult
         ensureUserConfigDirs();
         cleanStaleDaemonState();
         fixes.push("已确保 ~/.codex-mcp 和日志目录存在");
-        if (stale) fixes.push("已清理失效的 daemon 状态文件");
+        if (stale) fixes.push("已清理失效的后台服务状态文件");
         if (!(await findRipgrep())) {
             try {
                 const installed = await ensureManagedTool("ripgrep");
@@ -438,8 +438,8 @@ async function ensureRuntime(intent: RuntimeIntent, intentSpecified: boolean) {
 async function assertIntentReady(intent: Pick<RuntimeIntent, "local" | "noTunnel">): Promise<void> {
     if (intent.local) return;
     const config = loadUserConfig();
-    if (!config.publicAccess) throw new Error("还没有配置公网连接；请打开 Web Console 的“连接”页面，或运行 `codex-mcp setup`");
-    if (!(await hasAdminPassword())) throw new Error("还没有设置连接密码；请在 Web Console 的“连接”页面设置，或运行 `codex-mcp auth`");
+    if (!config.publicAccess) throw new Error("还没有配置 ChatGPT 公网连接；请打开 Web 控制台的“连接”页面，或运行 `codex-mcp setup`");
+    if (!(await hasAdminPassword())) throw new Error("还没有设置连接密码；请在 Web 控制台的“连接”页面设置，或运行 `codex-mcp auth`");
     if (!intent.noTunnel && config.publicAccess.kind === "cloudflare") {
         await loadCommittedTunnelSetup(config, config.host ?? "127.0.0.1", config.port ?? 3920);
     }

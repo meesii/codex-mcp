@@ -58,7 +58,7 @@ test("a daemon whose starting parent disconnects before initialization exits wit
 test("managed tunnel defaults to HTTP/2 and only switches when QUIC is explicit", () => {
     assert.equal(resolveTunnelProtocol(undefined), "http2");
     assert.equal(resolveTunnelProtocol("quic"), "quic");
-    assert.throws(() => resolveTunnelProtocol("auto"), /http2 or quic/);
+    assert.throws(() => resolveTunnelProtocol("auto"), /http2.*quic/);
     assert.deepEqual(
         cloudflaredRunArgs("config.yml", "tunnel-id"),
         ["tunnel", "--config", "config.yml", "--edge-ip-version", "4", "--protocol", "http2", "run", "tunnel-id"],

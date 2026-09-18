@@ -68,7 +68,7 @@ export async function ensureLogin(
         }
         const token = parseCloudflareOriginToken(readFileSync(candidateCert, "utf8"));
         copyPrivateFileAtomic(candidateCert, getCloudflareOriginCertPath());
-        printSuccess("Cloudflare 登录凭据已安全更新。");
+        printSuccess("Cloudflare 登录已更新。");
         return token;
     } finally {
         rmSync(candidateHome, { recursive: true, force: true });
@@ -87,7 +87,7 @@ export async function ensureTunnelCreated(
         () => listTunnels(bin),
     );
     const exactMatches = tunnels.filter((item) => item.name === preferredName);
-    if (exactMatches.length > 1) throw new Error(`存在多个同名 Tunnel：${preferredName}`);
+    if (exactMatches.length > 1) throw new Error(`Cloudflare 中存在多个同名 Tunnel（${preferredName}），无法安全判断该使用哪一个。请在 Cloudflare 控制台确认后再运行 \`codex-mcp setup\``);
     const reusable = selectReusableTunnel(
         tunnels,
         preferredName,
@@ -96,7 +96,7 @@ export async function ensureTunnelCreated(
     );
     if (reusable) {
         if (reusable.name !== preferredName) {
-            printInfo(`找到本机已有的历史 Tunnel：${reusable.name}`);
+            printInfo(`找到这台电脑之前使用过的 Cloudflare Tunnel：${reusable.name}`);
         }
         printSuccess(`继续使用现有 Tunnel：${reusable.name}`);
         return { id: reusable.id, name: reusable.name, created: false };
@@ -107,7 +107,7 @@ export async function ensureTunnelCreated(
     if (existing) {
         name = `${preferredName}-${randomUUID().slice(0, 8)}`;
         printWarning(
-            `Cloudflare 上已有同名 Tunnel，但本机没有它的凭据；不会删除远端资源，将创建替代 Tunnel：${name}`,
+            `Cloudflare 上已有同名 Tunnel，但这台电脑没有它的连接凭据。为了不误删别的 Tunnel，程序会保留它并创建一个新的 Tunnel：${name}`,
         );
     }
     const result = await withSpinner(
@@ -130,34 +130,34 @@ export async function ensureTunnelCreated(
         try {
             assertCredentialMatches(getCredentialsPath(created), created, accountId);
             if (result.code !== 0 || !outputId) {
-                printWarning("Tunnel 创建结果已通过远端列表与本机凭据核对。");
+                printWarning("创建命令的返回结果不完整，但已经通过 Cloudflare 远端状态和本机连接凭据确认 Tunnel 创建成功。");
             }
             printSuccess("Tunnel 已创建。");
             return { id: created, name, created: true };
         } catch (credentialError) {
             if (result.code !== 0) {
                 throw new Error(
-                    `Tunnel 创建命令失败后发现同名远端资源，但无法证明它属于本次请求；` +
-                    `为避免删除并发创建的 Tunnel，未自动清理：${readableError(credentialError)}。` +
-                    "请先运行 `codex-mcp doctor` 并在 Cloudflare 控制台核对",
+                    `创建 Cloudflare Tunnel 时命令报错，但远端又出现了同名 Tunnel，程序无法确认它是不是本次创建的。` +
+                    `为了避免误删其它 Tunnel，没有自动删除：${readableError(credentialError)}。` +
+                    "请先运行 `codex-mcp doctor` 查看状态；如果仍无法确认，再到 Cloudflare 控制台核对",
                 );
             }
             const cleanupErrors: string[] = [];
             await cleanupCreatedTunnel(bin, created, cleanupErrors);
             throw new Error(
-                `Tunnel 已在远端创建，但本机凭据不可用：${readableError(credentialError)}` +
-                (cleanupErrors.length > 0 ? `；${cleanupErrors.join("；")}` : "；已清理远端 Tunnel"),
+                `Cloudflare Tunnel 已创建，但这台电脑没有拿到可用的连接凭据：${readableError(credentialError)}` +
+                (cleanupErrors.length > 0 ? `；${cleanupErrors.join("；")}` : "；已自动清理刚创建的远端 Tunnel，可以重新运行 setup"),
             );
         }
     }
     if (reconciliationError || result.code === 0) {
         throw new Error(
-            `Tunnel 创建请求后无法确认远端状态（名称：${name}）：` +
-            `${reconciliationError ? readableError(reconciliationError) : "远端列表暂未返回新 Tunnel"}。` +
-            "Cloudflare 可能已创建资源，请先运行 `codex-mcp doctor` 后再重试",
+            `创建 Cloudflare Tunnel 后暂时无法确认最终结果（名称：${name}）：` +
+            `${reconciliationError ? readableError(reconciliationError) : "Cloudflare 暂时还没有返回新 Tunnel"}。` +
+            "Tunnel 可能其实已经创建成功，请先运行 `codex-mcp doctor` 查看状态，再决定是否重试",
         );
     }
-    throw new Error(`创建 Tunnel 失败：${(result.stderr || result.stdout).trim()}`);
+    throw new Error(`创建 Cloudflare Tunnel 失败：${(result.stderr || result.stdout).trim()}。请检查网络和 Cloudflare 登录状态后重试`);
 }
 
 export function assertCredentialMatches(
@@ -167,10 +167,10 @@ export function assertCredentialMatches(
 ): void {
     const identity = readTunnelCredentialIdentity(path);
     if (identity.tunnelId !== tunnelId.toLowerCase()) {
-        throw new Error(`Tunnel 凭据 ID 与已提交配置不一致：${path}`);
+        throw new Error(`本机 Cloudflare Tunnel 连接文件与当前配置不匹配：${path}。请运行 \`codex-mcp setup\` 重新配置 Cloudflare`);
     }
     if (accountId && identity.accountId !== accountId) {
-        throw new Error(`Tunnel 凭据账号与已提交配置不一致：${path}`);
+        throw new Error(`本机 Cloudflare Tunnel 连接文件属于另一个 Cloudflare 账号：${path}。请运行 \`codex-mcp setup\` 并重新登录正确账号`);
     }
 }
 
@@ -182,9 +182,9 @@ export async function cleanupCreatedTunnel(
     try {
         await deleteTunnel(bin, tunnelId);
         rmSync(getCredentialsPath(tunnelId), { force: true });
-        printWarning("已清理本次新建且未提交的 Tunnel。");
+        printWarning("已清理本次配置过程中刚创建、但尚未使用的 Cloudflare Tunnel。");
     } catch (error) {
-        recoveryErrors.push(`candidate Tunnel 清理失败：${readableError(error)}`);
+        recoveryErrors.push(`本次配置中新建的 Cloudflare Tunnel 没有清理成功：${readableError(error)}`);
     }
 }
 
@@ -256,16 +256,23 @@ async function listTunnels(bin: string): Promise<ListedTunnel[]> {
             jsonAttempt.code,
         ));
     }
+    return parseCloudflaredTunnelList(jsonAttempt.stdout);
+}
 
+export function parseCloudflaredTunnelList(output: string): ListedTunnel[] {
     let rows: unknown;
     try {
-        rows = JSON.parse(jsonAttempt.stdout);
+        rows = JSON.parse(output);
     } catch {
         throw new Error(
             "cloudflared 返回的 Tunnel 列表不是可识别的 JSON。" +
             "请运行 `codex-mcp doctor` 检查 cloudflared 状态；如果问题仍存在，请重新登录 Cloudflare 后重试。",
         );
     }
+
+    // cloudflared can encode an empty/nil Go slice as JSON null.
+    if (rows === null) return [];
+
     if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.id !== "string" || typeof row.name !== "string")) {
         const embeddedError = extractCloudflaredErrorMessage(rows);
         if (embeddedError) {

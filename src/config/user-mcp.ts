@@ -70,7 +70,7 @@ export function loadUserMcpOverrides(): UserMcpOverrides {
         return normalizeUserMcpOverrides(raw);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Invalid ${path}: ${message}`);
+        throw new Error(`MCP 配置文件有问题：${path}：${message}`);
     }
 }
 
@@ -82,7 +82,7 @@ export function listEnabledMcpServers(config: UserMcpConfig): NamedMcpServer[] {
 
 function normalizeUserMcpOverrides(raw: unknown): UserMcpOverrides {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-        throw new Error("root must be an object");
+        throw new Error("MCP 配置最外层必须是对象");
     }
 
     const root = raw as Record<string, unknown>;
@@ -91,7 +91,7 @@ function normalizeUserMcpOverrides(raw: unknown): UserMcpOverrides {
         return { mcpServers: {}, disabledServers: [] };
     }
     if (!serversRaw || typeof serversRaw !== "object" || Array.isArray(serversRaw)) {
-        throw new Error("mcpServers must be an object");
+        throw new Error("配置项 mcpServers 必须是对象");
     }
 
     const mcpServers: Record<string, McpServerConfig> = {};
@@ -116,7 +116,7 @@ function normalizeUserMcpOverrides(raw: unknown): UserMcpOverrides {
 export function assertServerName(name: string): void {
     if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
         throw new Error(
-            `invalid server name "${name}" (use letters, digits, _ or -)`,
+            `MCP 服务名称“${name}”格式不正确，只能使用字母、数字、下划线和短横线`,
         );
     }
 }
@@ -127,7 +127,7 @@ export function normalizeMcpServerEntry(
     protectSensitiveValues = true,
 ): McpServerConfig {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-        throw new Error(`mcpServers.${name} must be an object`);
+        throw new Error(`配置项 mcpServers.${name} 必须是对象`);
     }
 
     const raw = entry as Record<string, unknown>;
@@ -135,10 +135,10 @@ export function normalizeMcpServerEntry(
     const hasUrl = typeof raw.url === "string" && raw.url.trim();
 
     if (hasCommand && hasUrl) {
-        throw new Error(`mcpServers.${name}: use either command or url, not both`);
+        throw new Error(`MCP 服务 ${name} 不能同时配置 command 和 url，请只选择一种连接方式`);
     }
     if (!hasCommand && !hasUrl) {
-        throw new Error(`mcpServers.${name}: requires command or url`);
+        throw new Error(`MCP 服务 ${name} 缺少连接方式：需要配置 command 或 url`);
     }
 
     if (hasCommand) {
@@ -148,7 +148,7 @@ export function normalizeMcpServerEntry(
         if (Array.isArray(raw.args)) {
             config.args = raw.args.map((item, index) => {
                 if (typeof item !== "string") {
-                    throw new Error(`mcpServers.${name}.args[${index}] must be a string`);
+                    throw new Error(`配置项 mcpServers.${name}.args[${index}] 必须是字符串`);
                 }
                 return item;
             });
@@ -185,16 +185,16 @@ function normalizeStringMap(
     protectSensitiveValues = false,
 ): Record<string, string> {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error(`${label} must be an object`);
+        throw new Error(`${label} 必须是对象`);
     }
     const result: Record<string, string> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
         if (typeof entry !== "string") {
-            throw new Error(`${label}.${key} must be a string`);
+            throw new Error(`${label}.${key} 必须是字符串`);
         }
         if (protectSensitiveValues && isSensitiveConfigKey(key) && !hasEnvironmentReference(entry)) {
             throw new Error(
-                `${label}.${key} is sensitive; use an environment reference such as \${ENV_VAR}`,
+                `${label}.${key} 看起来包含密码、令牌或密钥。不要把敏感值直接写进配置，请改用环境变量引用，例如 \${ENV_VAR}`,
             );
         }
         result[key] = expandEnvironmentReferences(entry, `${label}.${key}`);
@@ -207,10 +207,10 @@ function normalizeRemoteMcpUrl(value: string, label: string): string {
     try {
         url = new URL(value);
     } catch {
-        throw new Error(`${label} is not a valid URL`);
+        throw new Error(`${label} 不是有效 URL`);
     }
     if (url.username || url.password || url.hash) {
-        throw new Error(`${label} must not contain credentials or a fragment`);
+        throw new Error(`${label} 不能在 URL 中包含用户名、密码或 # 片段`);
     }
     const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
     const loopback =
@@ -218,10 +218,10 @@ function normalizeRemoteMcpUrl(value: string, label: string): string {
         hostname === "127.0.0.1" ||
         hostname === "::1";
     if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
-        throw new Error(`${label} must use HTTPS (HTTP is allowed only for loopback)`);
+        throw new Error(`${label} 必须使用 HTTPS；只有 localhost/127.0.0.1/::1 这类本机地址允许使用 HTTP`);
     }
     if (isIP(hostname) !== 0 && !loopback && url.protocol !== "https:") {
-        throw new Error(`${label} must use HTTPS for non-loopback IP addresses`);
+        throw new Error(`${label} 指向非本机 IP 时必须使用 HTTPS`);
     }
     return url.href;
 }
@@ -241,7 +241,7 @@ function expandEnvironmentReferences(value: string, label: string): string {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
         const resolved = process.env[name];
         if (resolved === undefined) {
-            throw new Error(`${label} references missing environment variable ${name}`);
+            throw new Error(`${label} 引用了环境变量 ${name}，但当前环境没有设置这个变量`);
         }
         return resolved;
     });

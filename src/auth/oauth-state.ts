@@ -100,7 +100,25 @@ export class OAuthStateStore {
         };
         const state = await readJsonFile<unknown>(path, fallback);
         if (!isPersistedOAuthState(state)) {
-            throw new Error(`Unsupported OAuth state version in ${path}`);
+            const version = state && typeof state === "object" && !Array.isArray(state)
+                ? (state as Record<string, unknown>).version
+                : undefined;
+            if (version === 1) {
+                throw new Error(
+                    `检测到旧版 ChatGPT 授权状态：${path}。当前版本不再兼容旧授权。` +
+                    "请运行 `codex-mcp setup`；程序会先列出准备删除的旧授权文件，确认后清理。清理后需要在 ChatGPT 中重新连接 codex-mcp。",
+                );
+            }
+            if (typeof version === "number" && version !== STATE_VERSION) {
+                throw new Error(
+                    `ChatGPT 授权状态来自不兼容的版本（版本 ${version}）：${path}。` +
+                    "请先运行 `codex-mcp update`。如果已经是最新版，请不要手工修改该文件，保留它用于排查。",
+                );
+            }
+            throw new Error(
+                `ChatGPT 授权状态文件无法识别或已经损坏：${path}。` +
+                "为避免误删现有授权，程序没有自动处理。确认可以让 ChatGPT 重新连接后，可删除这个文件并重新打开 codex-mcp。",
+            );
         }
         const store = new OAuthStateStore(state, path, options.writeState ?? writePrivateJson);
         await store.cleanup();

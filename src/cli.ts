@@ -68,12 +68,12 @@ function printUsage(): void {
     printNote(
         "常用命令",
         [
-            "codex-mcp start                   注册当前项目并确保后台服务运行",
-            "codex-mcp open                    打开本机 Web Console（不启动 Runtime）",
-            "codex-mcp status                  查看控制面、Runtime、Tunnel 和项目状态",
-            "codex-mcp restart                 重启 MCP Runtime 并保留项目注册状态",
-            "codex-mcp stop                    停止 MCP Runtime；Web Console 保持在线",
-            "codex-mcp shutdown                完全关闭 Runtime 和 Web Console",
+            "codex-mcp start                   添加当前项目并启动 MCP 服务",
+            "codex-mcp open                    打开本机 Web 控制台（不启动 MCP 服务）",
+            "codex-mcp status                  查看 MCP 服务、ChatGPT 连接和项目状态",
+            "codex-mcp restart                 重启 MCP 服务（项目设置不会丢失）",
+            "codex-mcp stop                    停止 MCP 服务；Web 控制台继续可用",
+            "codex-mcp shutdown                完全关闭 MCP 服务和 Web 控制台",
             "codex-mcp project list            查看已注册项目",
             "codex-mcp project add [目录]      注册项目（默认当前目录）",
             "codex-mcp project remove [项目]   停用项目（默认当前目录）",
@@ -91,14 +91,14 @@ function printUsage(): void {
         "其他",
         [
             "codex-mcp status --json           输出机器可读状态",
-            "codex-mcp start --local           注册当前项目并切换为本机模式",
-            "codex-mcp start --public          注册当前项目并切换为公网模式",
+            "codex-mcp start --local           添加当前项目并只在本机启动",
+            "codex-mcp start --public          添加当前项目并启动 ChatGPT 公网连接",
             "codex-mcp start --root <目录>     指定 start 的项目目录",
             "codex-mcp --version               查看版本",
         ].join("\n"),
     );
-    printInfo("多数情况下：进入项目目录运行 codex-mcp start；想用图形界面则运行 codex-mcp open。");
-    printOutro("未配置公网连接时，start 默认使用本机模式；需要连接 ChatGPT 再运行 setup 或在 Web Console 配置");
+    printInfo("最常用：进入项目目录运行 `codex-mcp start`。想用图形界面管理项目和连接，运行 `codex-mcp open`。");
+    printOutro("没有配置 ChatGPT 公网连接时，start 会只在本机启动；需要从 ChatGPT 连接时再运行 setup 或打开 Web 控制台配置");
 }
 
 /**
@@ -384,7 +384,7 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
         signal.removeEventListener("abort", cancelSidecar);
     }
 
-    if (!capabilityWatcher) throw new Error("Capability watcher 没有启动");
+    if (!capabilityWatcher) throw new Error("外部工具与技能同步服务没有启动；请重新运行 `codex-mcp start`，如果仍失败再运行 `codex-mcp doctor`");
     return { config, server, hub, skills, capabilityWatcher, sidecar, tunnelReady, logDirectory, userConfig };
 }
 
@@ -394,7 +394,7 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
  */
 async function runDaemonProcess(flags: CliFlags): Promise<void> {
     if (typeof process.send !== "function" || !process.connected) {
-        throw new Error("daemon 是内部入口；请运行 codex-mcp start");
+        throw new Error("这个命令是 codex-mcp 内部使用的入口。普通使用请运行 `codex-mcp start`");
     }
     const startup = new AbortController();
     const cancel = () => startup.abort(new Error("已取消守护进程启动"));
@@ -421,7 +421,7 @@ async function runDaemonProcess(flags: CliFlags): Promise<void> {
 async function runDaemonServices(flags: CliFlags, signal: AbortSignal, ready: () => void): Promise<void> {
     const userConfig = loadUserConfig();
     if (!flags.local && !userConfig.publicAccess) {
-        throw new Error("daemon 只读取已提交配置；请先在前台运行 `codex-mcp setup`");
+        throw new Error("公网连接还没有完成设置。请先运行 `codex-mcp setup`，设置完成后再启动 MCP 服务");
     }
 
     if (!flags.local) {

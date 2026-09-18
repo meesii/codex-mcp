@@ -390,11 +390,11 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
                 });
                 context.signal.throwIfAborted();
                 if (intent) {
-                    context.phase("重启 MCP Runtime");
+                    context.phase("重启 MCP 服务");
                     await stopRuntime();
                     await startRuntime({ ...intent, intentSpecified: true });
                 }
-                context.phase("启动新版 Controller");
+                context.phase("切换到新版 Web 控制台");
                 const replacement = await spawnReplacementController();
                 const reloadUrl = controllerPanelUrl(replacement.state);
                 setTimeout(() => { void options.onReplaced(); }, 5_000).unref?.();

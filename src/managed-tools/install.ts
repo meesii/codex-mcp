@@ -63,7 +63,7 @@ export async function ensureManagedTool(
                 await tar.x({ file: assetPath, cwd: extractDir });
             }
             if (!spec.archiveEntry) {
-                throw new Error(`${spec.label} 安装包缺少目标文件信息`);
+                throw new Error(`${spec.label} 的安装包内容不完整，缺少需要安装的程序文件。请重新运行安装；如果再次出现，请保留日志用于排查`);
             }
             sourcePath = join(extractDir, ...spec.archiveEntry.split("/"));
         }
@@ -123,11 +123,11 @@ async function downloadVerified(
         headers: { "user-agent": "codex-mcp-managed-tools" },
     });
     if (response.status !== 200) {
-        throw new Error(`下载失败（HTTP ${response.status}）`);
+        throw new Error(`组件下载失败（HTTP ${response.status}）。请检查网络或代理设置后重试`);
     }
     const actual = createHash("sha256").update(response.body).digest("hex");
     if (actual !== expectedSha256) {
-        throw new Error("下载文件校验失败，请重新尝试");
+        throw new Error("下载的组件文件校验失败，可能是下载不完整或被代理缓存替换。请删除这次下载结果并重试；程序不会安装校验失败的文件");
     }
     await writeFile(destination, response.body, { mode: 0o600 });
 }
@@ -161,7 +161,7 @@ async function replaceManagedBinary(
 
         const installedVersion = await probeVersion(target);
         if (!installedVersion?.includes(expectedVersion)) {
-            throw new Error(`${label} 安装后无法正常启动`);
+            throw new Error(`${label} 已下载，但安装后无法正常启动。旧版本已自动恢复；请运行 \`codex-mcp doctor\` 查看环境信息`);
         }
     } catch (error) {
         if (backedUp) {

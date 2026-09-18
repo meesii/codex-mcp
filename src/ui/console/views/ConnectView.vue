@@ -76,7 +76,7 @@ async function generate(): Promise<void> {
                             <el-option label="HTTP/2" value="http2" />
                             <el-option label="QUIC" value="quic" />
                         </el-select>
-                        <el-button :disabled="!tunnelProtocolChanged || busy" :loading="busy" @click="emit('updateTunnelProtocol', tunnelProtocol)">应用协议</el-button>
+                        <el-button :disabled="!tunnelProtocolChanged || busy" :loading="busy" @click="emit('updateTunnelProtocol', tunnelProtocol)">应用 Cloudflare 协议</el-button>
                     </template>
                 </div>
                 <OperationPanel :operation="operation" @cancel="emit('cancelOperation', $event)" />

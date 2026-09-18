@@ -59,7 +59,7 @@ export async function runSelfUpdate(options: SelfUpdateOptions = {}): Promise<vo
     printInfo("正在检查并安装最新版 codex-mcp…");
     const exitCode = await runInstaller(invocation, options);
     if (exitCode !== 0) {
-        throw new Error(`更新没有完成（退出码 ${exitCode}）`);
+        throw new Error(`codex-mcp 更新没有完成（安装程序退出代码 ${exitCode}）。当前配置不会被删除；请查看上方更新日志，修复网络、代理或权限问题后重试`);
     }
 }
 

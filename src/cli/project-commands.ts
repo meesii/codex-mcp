@@ -26,10 +26,10 @@ export async function runProjectCommand(flags: CliFlags): Promise<void> {
 
 export async function runBindingsCommand(flags: CliFlags): Promise<void> {
     if (flags.bindingsAction !== "clean") {
-        throw new Error("bindings 命令需要 clean 子命令");
+        throw new Error("用法：`codex-mcp bindings clean [项目]`，用于清理项目与 ChatGPT 会话之间的关联记录");
     }
     if (!canPromptInteractively()) {
-        throw new Error("清理会话绑定需要在可以输入内容的终端里运行");
+        throw new Error("清理 ChatGPT 会话关联需要在可以选择项目的交互式终端里运行");
     }
     const target = flags.target ?? resolveProjectRoot(undefined);
     const current = await listProjectConversations(target);
@@ -37,13 +37,13 @@ export async function runBindingsCommand(flags: CliFlags): Promise<void> {
 
     printIntro("codex-mcp bindings clean");
     if (current.conversations.length === 0) {
-        printInfo(`项目 ${current.project.name} 当前没有会话绑定。`);
+        printInfo(`项目 ${current.project.name} 当前没有 ChatGPT 会话关联。`);
         printOutro("无需清理");
         return;
     }
 
     const selected = await multiselect<string>({
-        message: "空格选中要清理的会话；未选中项会保留",
+        message: "用空格选择要解除项目关联的 ChatGPT 会话；未选中的会保留",
         options: current.conversations.map((conversation) => ({
             value: conversation.id,
             label: `${conversation.label} ${conversation.id.slice(0, 6)}`,
@@ -52,17 +52,17 @@ export async function runBindingsCommand(flags: CliFlags): Promise<void> {
         initialValues: [],
         required: false,
     });
-    if (isCancel(selected)) throw new Error("已取消清理会话绑定");
+    if (isCancel(selected)) throw new Error("已取消清理 ChatGPT 会话关联");
     if (selected.length === 0) {
-        printInfo("没有选择要清理的会话，未做任何修改。");
-        printOutro("会话绑定未修改");
+        printInfo("没有选择要解除关联的会话，未做任何修改。");
+        printOutro("ChatGPT 会话关联未修改");
         return;
     }
 
     const result = await cleanupProjectConversations(target, selected);
-    printSuccess(`已清理项目 ${current.project.name} 的 ${result.removed} 个会话绑定。`);
-    printInfo(`当前保留 ${result.conversations.length} 个会话绑定。`);
-    printOutro("会话绑定清理完成");
+    printSuccess(`已解除项目 ${current.project.name} 与 ${result.removed} 个 ChatGPT 会话的关联。`);
+    printInfo(`当前还保留 ${result.conversations.length} 个 ChatGPT 会话关联。`);
+    printOutro("ChatGPT 会话关联清理完成");
 }
 
 async function runProjectAction(flags: CliFlags): Promise<void> {
@@ -70,8 +70,7 @@ async function runProjectAction(flags: CliFlags): Promise<void> {
     if (action === "add") {
         const projectRoot = resolveProjectRoot(flags.target);
         const project = await addProject(projectRoot);
-        printSuccess(`已注册项目 ${project.name}（${project.path}）。`);
-        printInfo(`项目 ID：${project.id}`);
+        printSuccess(`已添加项目 ${project.name}（${project.path}）。`);
         return;
     }
 
@@ -87,10 +86,10 @@ async function runProjectAction(flags: CliFlags): Promise<void> {
         printIntro("codex-mcp project info");
         printSummary("项目", [
             { label: "名称", value: project.name },
-            { label: "ID", value: project.id },
+            { label: "项目标识", value: project.id },
             { label: "目录", value: project.path },
-            { label: "状态", value: project.active ? "活动" : "已停用" },
-            { label: "会话绑定", value: project.boundSessions == null ? "Runtime 未运行" : String(project.boundSessions) },
+            { label: "状态", value: project.active ? "可用" : "已停用" },
+            { label: "ChatGPT 会话关联", value: project.boundSessions == null ? "MCP 服务未运行，暂时无法统计" : String(project.boundSessions) },
             { label: "最后使用", value: project.lastSeenAt },
         ]);
         printOutro("项目详情");
@@ -120,13 +119,13 @@ function formatBindingTime(value: string): string {
 function printProjectList(projects: Array<RegisteredProject & { boundSessions?: number | null }>): void {
     printIntro("codex-mcp project list");
     if (projects.length === 0) {
-        printInfo("还没有注册项目。运行 `codex-mcp project add [目录]` 添加。");
+        printInfo("还没有添加项目。运行 `codex-mcp project add [目录]` 添加。");
         printOutro("项目列表");
         return;
     }
     for (const project of projects) {
-        const sessions = project.boundSessions == null ? " · Runtime 未运行" : ` · ${project.boundSessions} 个会话绑定`;
-        printInfo(`- ${project.name}${project.active ? "" : "（已停用）"} · ${project.id} · ${project.path}${sessions}`);
+        const sessions = project.boundSessions == null ? " · MCP 服务未运行，无法统计 ChatGPT 会话" : ` · ${project.boundSessions} 个 ChatGPT 会话关联`;
+        printInfo(`- ${project.name}${project.active ? "" : "（已停用）"} · ${project.path}${sessions}`);
     }
     printOutro(`${projects.length} 个项目`);
 }

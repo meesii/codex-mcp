@@ -49,14 +49,14 @@ watch(() => props.projects, (items) => {
                     <el-descriptions-item label="目录"><span class="break-all mono small">{{ drawerProject.path }}</span></el-descriptions-item>
                 </el-descriptions>
                 <div class="section-heading" style="margin-top: 24px">
-                    <h2>会话绑定</h2>
-                    <el-button v-if="activeConversations.length > 1" text type="danger" :disabled="busy" @click="emit('cleanup', drawerProject, activeConversations.map((item) => item.id))">清理全部</el-button>
+                    <h2>ChatGPT 会话关联</h2>
+                    <el-button v-if="activeConversations.length > 1" text type="danger" :disabled="busy" @click="emit('cleanup', drawerProject, activeConversations.map((item) => item.id))">解除全部关联</el-button>
                 </div>
                 <el-empty v-if="!activeConversations.length" :image-size="60" description="还没有会话选择过这个项目" />
                 <div v-for="item in activeConversations" v-else :key="item.id" class="conversation-row">
                     <el-icon><ChatDotRound /></el-icon>
                     <div class="conversation-meta"><div>{{ item.label }} · {{ item.id.slice(0, 8) }}</div><div class="muted small">最近使用 {{ new Date(item.lastSeenAt).toLocaleString("zh-CN") }}</div></div>
-                    <el-button text type="danger" :icon="Delete" :disabled="busy" @click="emit('cleanup', drawerProject, [item.id])">清除</el-button>
+                    <el-button text type="danger" :icon="Delete" :disabled="busy" @click="emit('cleanup', drawerProject, [item.id])">解除关联</el-button>
                 </div>
                 <el-button v-if="drawerProject.active" style="margin-top: 24px" type="danger" plain :disabled="busy" @click="emit('remove', drawerProject)">停用这个项目</el-button>
                 <el-button v-else style="margin-top: 24px" type="primary" :disabled="busy" @click="emit('reactivate', drawerProject)">重新启用这个项目</el-button>

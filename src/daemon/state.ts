@@ -53,7 +53,7 @@ export interface BindingStateFile {
 const STATE_VERSION = 1 as const;
 
 function requireString(value: unknown, name: string): string {
-    if (typeof value !== "string" || !value) throw new Error(`malformed ${name}`);
+    if (typeof value !== "string" || !value) throw new Error(`后台服务状态字段格式不正确：${name}`);
     return value;
 }
 
@@ -75,10 +75,10 @@ export function loadDaemonState(): DaemonState | undefined {
     try {
         const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-            throw new Error("daemon state must be an object");
+            throw new Error("后台服务状态文件格式不正确");
         }
         const state = raw as Record<string, unknown>;
-        assertExactKeys(state, "daemon state", [
+        assertExactKeys(state, "后台服务状态", [
             "schemaVersion", "pid", "host", "port", "controlToken", "publicMcpUrl",
             "startedAt", "version", "runtimeIntent",
         ]);
@@ -92,11 +92,11 @@ export function loadDaemonState(): DaemonState | undefined {
             state.controlToken.length < 32 ||
             !Number.isInteger(state.port) || state.port < 0 || state.port > 65535
         ) {
-            throw new Error("unsupported or malformed daemon state");
+            throw new Error("后台服务状态与当前版本不兼容或内容损坏");
         }
         if (Object.prototype.hasOwnProperty.call(state, "publicMcpUrl") &&
             (typeof state.publicMcpUrl !== "string" || !state.publicMcpUrl)) {
-            throw new Error("malformed publicMcpUrl");
+            throw new Error("后台服务记录的公网地址格式不正确");
         }
         return {
             schemaVersion: STATE_VERSION,
@@ -110,14 +110,14 @@ export function loadDaemonState(): DaemonState | undefined {
             runtimeIntent: parseRuntimeIntent(state.runtimeIntent),
         };
     } catch {
-        throw new Error(`无法读取有效的 daemon 状态：${path}`);
+        throw new Error(`无法读取后台服务状态：${path}。这个文件只记录当前运行状态，不包含项目、连接设置或密码。请先完全关闭仍在运行的 codex-mcp；如果问题仍存在，可删除这个文件后运行 \`codex-mcp open\` 重新生成`);
     }
 }
 
 function parseRuntimeIntent(value: unknown): RuntimeIntent {
     if (value && typeof value === "object" && !Array.isArray(value)) {
         const input = value as Record<string, unknown>;
-        assertExactKeys(input, "runtime intent", ["local", "noTunnel", "tunnelLogs"]);
+        assertExactKeys(input, "后台服务启动设置", ["local", "noTunnel", "tunnelLogs"]);
         if (
             typeof input.local === "boolean" &&
             typeof input.noTunnel === "boolean" &&
@@ -130,7 +130,7 @@ function parseRuntimeIntent(value: unknown): RuntimeIntent {
             };
         }
     }
-    throw new Error("malformed runtime intent");
+    throw new Error("后台服务记录的启动方式格式不正确");
 }
 
 export async function saveDaemonState(state: DaemonState): Promise<void> {
@@ -149,12 +149,12 @@ export function loadProjectsFile(): RegisteredProject[] {
         if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
             (raw as Record<string, unknown>).schemaVersion !== STATE_VERSION ||
             !Array.isArray((raw as { projects?: unknown }).projects)) {
-            throw new Error("unsupported or malformed projects state");
+            throw new Error("项目列表格式与当前版本不兼容或内容损坏");
         }
-        assertExactKeys(raw as Record<string, unknown>, "projects state", ["schemaVersion", "projects"]);
+        assertExactKeys(raw as Record<string, unknown>, "项目列表", ["schemaVersion", "projects"]);
         const records = (raw as ProjectStateFile).projects;
         if (!records.every(isRegisteredProjectRecord)) {
-            throw new Error("projects state contains an invalid record");
+            throw new Error("项目列表中存在无法识别的项目记录");
         }
         assertUniqueProjects(records);
         return records.map((item) => ({
@@ -166,7 +166,7 @@ export function loadProjectsFile(): RegisteredProject[] {
                 lastSeenAt: item.lastSeenAt,
             }));
     } catch (error) {
-        throw new Error(`无法读取有效的项目状态：${path}：${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`无法读取项目列表：${path}：${error instanceof Error ? error.message : String(error)}。项目记录不会被自动删除，请先修正或恢复这个文件`);
     }
 }
 
@@ -182,12 +182,12 @@ export function loadBindingsFile(): SessionBinding[] {
         if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
             (raw as Record<string, unknown>).schemaVersion !== STATE_VERSION ||
             !Array.isArray((raw as { bindings?: unknown }).bindings)) {
-            throw new Error("unsupported or malformed bindings state");
+            throw new Error("会话绑定记录与当前版本不兼容或内容损坏");
         }
-        assertExactKeys(raw as Record<string, unknown>, "bindings state", ["schemaVersion", "bindings"]);
+        assertExactKeys(raw as Record<string, unknown>, "会话绑定", ["schemaVersion", "bindings"]);
         const records = (raw as BindingStateFile).bindings;
         if (!records.every(isSessionBindingRecord)) {
-            throw new Error("bindings state contains an invalid record");
+            throw new Error("会话绑定中存在无法识别的记录");
         }
         assertUniqueBindings(records);
         return records.map((item) => ({
@@ -197,7 +197,7 @@ export function loadBindingsFile(): SessionBinding[] {
             lastSeenAt: item.lastSeenAt,
         }));
     } catch (error) {
-        throw new Error(`无法读取有效的会话绑定状态：${path}：${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`无法读取 ChatGPT 会话关联记录：${path}：${error instanceof Error ? error.message : String(error)}。程序不会自动删除这些关联记录`);
     }
 }
 
@@ -232,7 +232,7 @@ function isRegisteredProjectRecord(value: unknown): value is RegisteredProject {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const item = value as Record<string, unknown>;
     try {
-        assertExactKeys(item, "project record", ["id", "name", "path", "active", "addedAt", "lastSeenAt"]);
+        assertExactKeys(item, "项目记录", ["id", "name", "path", "active", "addedAt", "lastSeenAt"]);
     } catch {
         return false;
     }
@@ -250,7 +250,7 @@ function isSessionBindingRecord(value: unknown): value is SessionBinding {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const item = value as Record<string, unknown>;
     try {
-        assertExactKeys(item, "binding record", ["ownerKey", "projectId", "boundAt", "lastSeenAt"]);
+        assertExactKeys(item, "会话绑定记录", ["ownerKey", "projectId", "boundAt", "lastSeenAt"]);
     } catch {
         return false;
     }
@@ -266,8 +266,8 @@ function assertUniqueProjects(projects: RegisteredProject[]): void {
     const ids = new Set<string>();
     const paths = new Set<string>();
     for (const project of projects) {
-        if (ids.has(project.id)) throw new Error(`projects state contains duplicate id: ${project.id}`);
-        if (paths.has(project.path)) throw new Error(`projects state contains duplicate path: ${project.path}`);
+        if (ids.has(project.id)) throw new Error(`项目列表里出现重复项目 ID：${project.id}`);
+        if (paths.has(project.path)) throw new Error(`项目列表里出现重复目录：${project.path}`);
         ids.add(project.id);
         paths.add(project.path);
     }
@@ -277,7 +277,7 @@ function assertUniqueBindings(bindings: SessionBinding[]): void {
     const owners = new Set<string>();
     for (const binding of bindings) {
         if (owners.has(binding.ownerKey)) {
-            throw new Error(`bindings state contains duplicate owner: ${binding.ownerKey}`);
+            throw new Error("会话绑定记录里出现重复项；请运行 `codex-mcp bindings clean` 清理不再需要的绑定");
         }
         owners.add(binding.ownerKey);
     }
@@ -285,5 +285,5 @@ function assertUniqueBindings(bindings: SessionBinding[]): void {
 
 function assertExactKeys(value: Record<string, unknown>, label: string, allowed: readonly string[]): void {
     const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
-    if (unknown.length > 0) throw new Error(`${label} contains unsupported fields: ${unknown.join(", ")}`);
+    if (unknown.length > 0) throw new Error(`${label} 包含当前版本不认识的字段：${unknown.join(", ")}`);
 }

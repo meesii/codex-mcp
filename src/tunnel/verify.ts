@@ -36,10 +36,10 @@ export async function verifyTunnelRoute(
         throw new Error("公网连接必须使用 HTTPS");
     }
     if (!probe.path.startsWith("/.well-known/codex-mcp-tunnel-check/")) {
-        throw new Error("Invalid tunnel verification probe path");
+        throw new Error("公网连接验证地址格式不正确；请重启 codex-mcp 后再试");
     }
     if (probe.expectedBody.length < 32) {
-        throw new Error("Invalid tunnel verification probe response");
+        throw new Error("公网连接验证信息不完整；请重启 codex-mcp 后再试");
     }
 
     const target = new URL(probe.path, mcpUrl);
@@ -67,7 +67,7 @@ export async function verifyTunnelRoute(
             });
             const body = response.body.toString("utf8");
             if (response.status === 200 && body === probe.expectedBody) return;
-            lastDetail = `HTTP ${response.status}，但返回的不是当前 codex-mcp 实例`;
+            lastDetail = `HTTP ${response.status}，但这个公网地址连接到的不是当前这台电脑上的 codex-mcp`;
         } catch (error) {
             throwIfAborted(options.signal);
             lastDetail = error instanceof Error ? error.message : "未知网络错误";
@@ -87,7 +87,7 @@ export function tunnelVerificationFailureMessage(origin: string, detail: string)
     if (isTlsHandshakeFailure(detail)) {
         return (
             prefix +
-            "HTTPS TLS 握手在到达 Tunnel 之前失败。若使用 Cloudflare 默认 Universal SSL，请确认 hostname 仅比所选 Cloudflare 域名多一级（例如 codex-mcp.example.com，而不是 codex.mcp.example.com）；否则请为该 hostname 配置可覆盖它的 Cloudflare Edge Certificate。"
+            "Cloudflare 还没有为这个公网域名提供可用的 HTTPS 证书。最常见的原因是子域名层级太深：优先使用类似 codex-mcp.example.com 的一级子域名。如果必须使用更深层级的地址，需要先在 Cloudflare 配置能覆盖该地址的证书。"
         );
     }
     return prefix + "请检查域名是否指向当前 Tunnel，以及 Tunnel 是否已经启动。";
@@ -105,7 +105,7 @@ function positiveSafeInteger(
     name: string,
 ): number {
     if (!Number.isSafeInteger(value) || value < min) {
-        throw new Error(`${name} must be an integer greater than or equal to ${min}`);
+        throw new Error(`公网验证参数 ${name} 必须是大于等于 ${min} 的整数`);
     }
     return value;
 }

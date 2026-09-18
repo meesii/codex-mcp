@@ -22,7 +22,7 @@ export async function extractZipFile(zipPath: string, destDir: string): Promise<
 
         const target = resolve(destRoot, relativeName);
         if (!isInside(destRoot, target) || target === destRoot) {
-            throw new Error(`zip 包含非法路径：${entryName}`);
+            throw new Error(`安装包包含不安全的文件路径，已停止解压：${entryName}`);
         }
 
         await mkdir(dirname(target), { recursive: true });
@@ -34,7 +34,7 @@ function unzipEntries(bytes: Uint8Array): Promise<Record<string, Uint8Array>> {
     return new Promise((resolveEntries, reject) => {
         unzip(bytes, (error, data) => {
             if (error || !data) {
-                reject(error ?? new Error("zip 解压失败"));
+                reject(error ?? new Error("安装包解压失败；请重新下载安装"));
                 return;
             }
             resolveEntries(data);

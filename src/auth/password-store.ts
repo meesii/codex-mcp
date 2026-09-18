@@ -83,7 +83,7 @@ async function readCredentialFile(): Promise<AuthCredentialFile | null> {
     const state = await readJsonFile<AuthCredentialFile | null>(getAuthCredentialPath(), null);
     if (state === null) return null;
     if (state.version !== AUTH_FILE_VERSION || typeof state.passwordHash !== "string") {
-        throw new Error(`Invalid OAuth credential file: ${getAuthCredentialPath()}`);
+        throw new Error(`连接密码文件无法识别：${getAuthCredentialPath()}。请运行 \`codex-mcp auth\` 重新设置连接密码`);
     }
     return state;
 }

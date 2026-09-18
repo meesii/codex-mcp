@@ -115,9 +115,11 @@ export function friendlyError(error: unknown): string {
     if (/EADDRINUSE|address already in use/i.test(message)) return "服务端口正在被其他程序使用，请先停止重复运行的服务。";
     if (/password.*12|至少 12/i.test(message)) return "连接密码至少需要 12 个字符。";
     if (/not configured|还没有配置公网/i.test(message)) return "请先完成 ChatGPT 连接设置。";
-    if (/timeout|超时/i.test(message)) return "操作等待超时，请检查网络后重试。";
+    if (/timeout|超时/i.test(message)) {
+        return /请|重新|运行 `|检查/i.test(message) ? message : "操作等待超时，请检查网络后重试。";
+    }
     if (/failed to fetch|fetch failed|networkerror|network request failed/i.test(message)) {
-        return "Web Console 与本机 Controller 的连接已中断；如果刚执行了 shutdown，请运行 codex-mcp open 重新打开。";
+        return "Web 控制台与本机后台服务的连接已中断；如果刚刚完全关闭了 codex-mcp，请运行 `codex-mcp open` 重新打开。";
     }
     return message;
 }

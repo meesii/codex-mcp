@@ -250,7 +250,7 @@ function stopRuntime(): void {
     }, "MCP 服务已停止"), true);
 }
 function shutdownAll(): void {
-    void confirmAction("完全关闭 codex-mcp？", "MCP Runtime、Tunnel 和 Web Console 都会退出。项目和连接配置会保留。", "完全关闭", () => runAction(async () => {
+    void confirmAction("完全关闭 codex-mcp？", "MCP 服务、Cloudflare 公网连接和 Web 控制台都会退出。项目、连接设置和密码都会保留。", "完全关闭", () => runAction(async () => {
         await api("/api/controller/shutdown", { method: "POST", body: {} });
         if (pollTimer !== undefined) window.clearInterval(pollTimer);
         pollTimer = undefined;
@@ -272,17 +272,17 @@ function reactivateProject(project: Project): void {
     }, "项目已重新启用");
 }
 function removeProject(project: Project): void {
-    void confirmAction(`停用“${project.name}”？`, "项目文件不会被删除，但 ChatGPT 将不能再使用它，已有会话绑定也会清除。", "停用项目", () => runAction(async () => {
+    void confirmAction(`停用“${project.name}”？`, "项目文件不会被删除，但 ChatGPT 将不能再选择这个项目；已有的 ChatGPT 会话关联记录也会清除。", "停用项目", () => runAction(async () => {
         await api(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE", body: {} });
         await refreshLive(false);
     }, "项目已停用"), true);
 }
 function cleanupConversations(project: Project, conversationIds: string[]): void {
     if (!conversationIds.length) return;
-    void confirmAction("清除会话绑定？", `将清除 ${conversationIds.length} 个会话的项目选择记录。不会删除 ChatGPT 对话或项目文件。`, "清除绑定", () => runAction(async () => {
+    void confirmAction("解除 ChatGPT 会话关联？", `将让 ${conversationIds.length} 个 ChatGPT 会话忘记之前选择的项目。不会删除 ChatGPT 对话，也不会删除项目文件。`, "解除关联", () => runAction(async () => {
         await api(`/api/projects/${encodeURIComponent(project.id)}/conversations/cleanup`, { method: "POST", body: { conversationIds } });
         await refreshLive(false);
-    }, "会话绑定已清理"), true);
+    }, "ChatGPT 会话关联已清理"), true);
 }
 function discoverCloudflare(): void {
     void startOperation("connect", "/api/setup/cloudflare/discover", { forceLogin: false }, "已读取可用域名", (result) => {
@@ -302,7 +302,7 @@ function updateTunnelProtocol(protocol: "http2" | "quic"): void {
         connectionResult.value = undefined;
         await api("/api/setup/tunnel-protocol", { method: "POST", body: { protocol } });
         await refreshLive(false);
-    }, `Tunnel 已切换为 ${protocol === "http2" ? "HTTP/2" : "QUIC"}`);
+    }, `Cloudflare 连接协议已切换为 ${protocol === "http2" ? "HTTP/2" : "QUIC"}`);
 }
 function checkPublicAccess(): void {
     void runAction(async () => {
@@ -337,7 +337,7 @@ function runDoctor(fix: boolean): void {
     void confirmAction("检查并修复常见问题？", "只会恢复缺失的文件搜索组件、创建缺失目录和清理失效状态，不会删除项目或配置。", "开始修复", action);
 }
 function selfUpdate(): void {
-    void confirmAction("检查并安装最新版本？", "更新期间 MCP 服务和控制面板会短暂重启，项目与连接设置会保留。", "检查并更新", () => startOperation("maintenance", "/api/update", {}, "新版本已安装", (result) => {
+    void confirmAction("检查并安装最新版本？", "更新期间 MCP 服务和 Web 控制台会短暂重启，项目、连接设置和密码都会保留。", "检查并更新", () => startOperation("maintenance", "/api/update", {}, "新版本已安装", (result) => {
         const reloadUrl = (result as { reloadUrl?: string } | undefined)?.reloadUrl;
         if (reloadUrl) window.setTimeout(() => { window.location.href = reloadUrl; }, 800);
     }));
@@ -359,7 +359,7 @@ function handleResultAction(action: "start" | "connect" | "projects" | "repair")
         <div class="console-closed-card">
             <div class="console-logo">C</div>
             <h1>codex-mcp 已关闭</h1>
-            <p>Runtime 和 Web Console 都已退出，项目与连接配置仍然保留。</p>
+            <p>MCP 服务和 Web 控制台都已退出，项目、连接设置和密码仍然保留。</p>
             <code>codex-mcp open</code>
         </div>
     </div>

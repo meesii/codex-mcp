@@ -139,6 +139,6 @@ function assertExecutable(candidate: string): void {
     try {
         accessSync(candidate, constants.F_OK);
     } catch {
-        throw new Error(`找不到 cloudflared：${candidate}`);
+        throw new Error(`找不到已经配置的 Cloudflare 连接组件：${candidate}。请运行 \`codex-mcp doctor --fix\` 自动恢复，或重新运行 \`codex-mcp setup\``);
     }
 }

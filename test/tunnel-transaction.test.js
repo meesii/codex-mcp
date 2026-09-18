@@ -7,10 +7,17 @@ const home = mkdtempSync(join(tmpdir(), "codex-mcp-tunnel-transaction-"));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 const { applyTunnelSetup } = await import("../dist/tunnel/apply-setup.js");
-const { isDeletedCloudflareTunnelRecord } = await import("../dist/tunnel/cloudflare-api.js");
+const {
+    isDeletedCloudflareTunnelRecord,
+    parseCloudflareConnectionList,
+    parseCloudflareDnsRecordList,
+    parseCloudflareTunnelDetail,
+} = await import("../dist/tunnel/cloudflare-api.js");
+const { parseCloudflareZoneList } = await import("../dist/tunnel/cloudflare-account.js");
 const {
     ensureTunnelCreated,
     formatCloudflaredManagementFailure,
+    parseCloudflaredTunnelList,
     selectReusableTunnel,
 } = await import("../dist/tunnel/cloudflare-session.js");
 
@@ -94,7 +101,11 @@ test("old managed DNS cleanup failure does not roll back a verified new route", 
 for (const phase of ["probe", "commit"]) {
     test(`Tunnel ${phase} failure restores DNS before deleting the candidate and preserves previous config`, async () => {
         const f = fixture(phase);
-        await assert.rejects(applyTunnelSetup(candidate, f.operations), /公网配置失败/);
+        const userStage = phase === "probe" ? "验证 ChatGPT 公网地址" : "保存新连接设置";
+        await assert.rejects(
+            applyTunnelSetup(candidate, f.operations),
+            new RegExp(`公网连接设置失败.*${userStage}`),
+        );
         assert.equal(f.committed(), false);
         assert.equal(f.dns(), before);
         assert.ok(f.events.indexOf("restore") > f.events.indexOf("cutover"));
@@ -105,7 +116,7 @@ for (const phase of ["probe", "commit"]) {
 
 test("failed DNS compensation retains a referenced candidate and reports partial state", async () => {
     const f = fixture("restore");
-    await assert.rejects(applyTunnelSetup(candidate, f.operations), /部分变更状态/);
+    await assert.rejects(applyTunnelSetup(candidate, f.operations), /部分 Cloudflare 修改可能已经发生/);
     assert.equal(f.committed(), false);
     assert.equal(f.dns(), after);
     assert.equal(f.events.at(-1), "retain-candidate");
@@ -117,6 +128,23 @@ test("failed local preflight makes no DNS change and never commits", async () =>
     await assert.rejects(applyTunnelSetup(candidate, f.operations), /port occupied/);
     assert.deepEqual(f.events, ["preflight", "delete-candidate"]);
     assert.equal(f.committed(), false);
+});
+
+test("Cloudflare REST list endpoints accept empty arrays but reject null/malformed shapes", () => {
+    assert.deepEqual(parseCloudflareDnsRecordList([]), []);
+    assert.deepEqual(parseCloudflareConnectionList([]), []);
+    assert.deepEqual(parseCloudflareZoneList([]), []);
+
+    assert.throws(() => parseCloudflareDnsRecordList(null), /DNS 列表返回格式异常/);
+    assert.throws(() => parseCloudflareConnectionList(null), /连接列表返回格式异常/);
+    assert.throws(() => parseCloudflareZoneList(null), /域名列表返回格式异常/);
+    assert.throws(() => parseCloudflareTunnelDetail(null), /Tunnel 详情返回格式异常/);
+
+    assert.throws(
+        () => parseCloudflareDnsRecordList([{ id: "id", type: "A", name: "x.example.com" }]),
+        /包含无法识别的记录/,
+    );
+    assert.deepEqual(parseCloudflareTunnelDetail({ status: "healthy" }), { status: "healthy" });
 });
 
 test("Cloudflare soft-deleted tunnel records are treated as absent", () => {
@@ -148,6 +176,23 @@ test("cloudflared origin-cert failures are translated instead of exposing raw tr
     assert.match(message, /Cloudflare 登录凭据缺失或已失效/);
     assert.match(message, /codex-mcp 使用独立的 Cloudflare 凭据目录/);
     assert.doesNotMatch(message, /Cannot determine default origin certificate path/);
+});
+
+test("cloudflared null Tunnel list is treated as empty without weakening validation", () => {
+    assert.deepEqual(parseCloudflaredTunnelList("null\n"), []);
+    assert.deepEqual(parseCloudflaredTunnelList("[]\n"), []);
+    assert.deepEqual(
+        parseCloudflaredTunnelList('[{"id":"tunnel-id","name":"fixture"}]\n'),
+        [{ id: "tunnel-id", name: "fixture" }],
+    );
+    assert.throws(
+        () => parseCloudflaredTunnelList("{}"),
+        /不受支持的 Tunnel 列表格式/,
+    );
+    assert.throws(
+        () => parseCloudflaredTunnelList('[{"id":"missing-name"}]'),
+        /不受支持的 Tunnel 列表格式/,
+    );
 });
 
 test("managed Tunnel reuse recognizes locally-owned historical suffixes", () => {

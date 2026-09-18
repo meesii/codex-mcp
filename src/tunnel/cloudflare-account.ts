@@ -75,7 +75,7 @@ export function readTunnelCredentialIdentity(
     try {
         value = JSON.parse(readFileSync(path, "utf8")) as unknown;
     } catch (error) {
-        throw new Error(`Tunnel 凭据无法解析：${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`本机 Cloudflare Tunnel 连接文件无法读取：${error instanceof Error ? error.message : String(error)}。请运行 \`codex-mcp setup\` 重新配置 Cloudflare`);
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Tunnel 凭据格式不正确");
@@ -84,7 +84,7 @@ export function readTunnelCredentialIdentity(
     const accountId = typeof record.AccountTag === "string" ? record.AccountTag.trim() : "";
     const tunnelSecret = typeof record.TunnelSecret === "string" ? record.TunnelSecret.trim() : "";
     if (!accountId || !tunnelSecret) {
-        throw new Error("Tunnel 凭据缺少 AccountTag 或 TunnelSecret");
+        throw new Error("本机 Cloudflare Tunnel 连接文件缺少必要信息，无法继续使用。请运行 `codex-mcp setup` 重新配置 Cloudflare");
     }
     return {
         accountId,
@@ -166,8 +166,9 @@ async function listAccountZones(
         url.searchParams.set("direction", "asc");
         url.searchParams.set("page", String(page));
         url.searchParams.set("per_page", String(ZONES_PER_PAGE));
-        const payload = await cloudflareGet<CloudflareZone[]>(url, token.apiToken);
-        for (const zone of payload.result ?? []) {
+        const payload = await cloudflareGet<unknown>(url, token.apiToken);
+        const pageZones = parseCloudflareZoneList(payload.result);
+        for (const zone of pageZones) {
             const name = normalizeZoneName(zone.name);
             if (name && typeof zone.id === "string" && zone.id.trim()) {
                 zones.set(name, zone.id.trim());
@@ -177,7 +178,7 @@ async function listAccountZones(
         const totalPages = payload.result_info?.total_pages;
         if (
             (typeof totalPages === "number" && page >= totalPages) ||
-            (payload.result?.length ?? 0) < ZONES_PER_PAGE
+            pageZones.length < ZONES_PER_PAGE
         ) {
             break;
         }
@@ -185,6 +186,18 @@ async function listAccountZones(
     return [...zones.entries()]
         .map(([name, id]) => ({ id, name }))
         .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function parseCloudflareZoneList(value: unknown): CloudflareZone[] {
+    if (!Array.isArray(value)) {
+        throw new Error("Cloudflare 域名列表返回格式异常：result 应该是数组");
+    }
+    for (const item of value) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+            throw new Error("Cloudflare 域名列表包含无法识别的记录");
+        }
+    }
+    return value as CloudflareZone[];
 }
 
 async function getSelectedZone(

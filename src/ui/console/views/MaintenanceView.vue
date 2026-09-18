@@ -87,7 +87,12 @@ function parseLogLine(line: string, index: number, purposes: Map<string, string>
             tool_call_started: "工具调用开始",
             tool_call: "工具调用完成",
             mcp_http_error_response: "MCP 请求错误",
-            daemon_project_bindings_cleaned: "项目绑定清理",
+            daemon_project_bindings_cleaned: "ChatGPT 会话关联清理",
+            daemon_started: "MCP 服务已启动",
+            daemon_stopping: "正在停止 MCP 服务",
+            daemon_stopped: "MCP 服务已停止",
+            daemon_stop_failed: "MCP 服务停止失败",
+            startup_failed: "MCP 服务启动失败",
         };
         const meta: string[] = [];
         if (typeof value.method === "string") meta.push(value.method);
@@ -101,12 +106,12 @@ function parseLogLine(line: string, index: number, purposes: Map<string, string>
             time: formatLogTime(value.time),
             level: levelInfo.label,
             tagType: levelInfo.tagType,
-            title: `${eventTitles[event] ?? event.replaceAll("_", " ")}${tool ? ` · ${tool}` : ""}`,
+            title: `${eventTitles[event] ?? "运行事件"}${tool ? ` · ${tool}` : ""}`,
             ...(detail ? { detail } : {}),
             meta,
         };
     } catch {
-        return { key: `${index}-${line}`, raw: line, pretty: line, time: "—", level: "LOG", tagType: "info", title: "文本日志", detail: line, meta: [] };
+        return { key: `${index}-${line}`, raw: line, pretty: line, time: "—", level: "日志", tagType: "info", title: "文本日志", detail: line, meta: [] };
     }
 }
 function formatLogTime(value: unknown): string {
@@ -116,10 +121,10 @@ function formatLogTime(value: unknown): string {
 }
 function formatLogLevel(value: unknown): { label: string; tagType: "info" | "warning" | "danger" } {
     const level = typeof value === "number" ? value : 30;
-    if (level >= 50) return { label: level >= 60 ? "FATAL" : "ERROR", tagType: "danger" };
-    if (level >= 40) return { label: "WARN", tagType: "warning" };
-    if (level <= 20) return { label: level <= 10 ? "TRACE" : "DEBUG", tagType: "info" };
-    return { label: "INFO", tagType: "info" };
+    if (level >= 50) return { label: level >= 60 ? "严重" : "错误", tagType: "danger" };
+    if (level >= 40) return { label: "警告", tagType: "warning" };
+    if (level <= 20) return { label: level <= 10 ? "跟踪" : "调试", tagType: "info" };
+    return { label: "信息", tagType: "info" };
 }
 function toggleLogDetails(key: string): void {
     const next = new Set(expandedLogs.value);
@@ -159,11 +164,11 @@ onBeforeUnmount(stopLogStream);
 function friendlyCheck(label: string, detail: string): { title: string; detail: string } {
     const titles: Record<string, string> = {
         "Node.js": "运行环境", "Git": "Git 工具", "文件搜索": "文件搜索", "配置文件": "本机设置",
-        "外部能力": "可用工具与技能", "连接密码": "连接密码", "公网地址": "ChatGPT 连接地址", "守护进程": "MCP 服务",
+        "工具与技能": "工具与技能", "连接密码": "连接密码", "公网地址": "ChatGPT 连接地址", "MCP 服务": "MCP 服务",
     };
     if (label === "连接密码" && /未设置/.test(detail)) return { title: titles[label]!, detail: "尚未设置，请前往“连接”页面完成。" };
     if (label === "公网地址" && /未设置/.test(detail)) return { title: titles[label]!, detail: "尚未配置，配置后才能从 ChatGPT 网页端连接。" };
-    if (label === "守护进程" && /^pid\s/i.test(detail)) return { title: titles[label]!, detail: "服务正在本机运行。" };
+    if (label === "MCP 服务" && /正在运行/.test(detail)) return { title: titles[label]!, detail: "MCP 服务正在运行。" };
     if (label === "配置文件") return { title: titles[label]!, detail: "设置文件可以正常读取。" };
     return { title: titles[label] ?? label, detail };
 }
@@ -175,15 +180,15 @@ function tagType(level: "ok" | "warn" | "error"): "success" | "warning" | "dange
         <el-tabs v-model="tab">
                 <el-tab-pane label="运行" name="runtime">
                     <div class="pane-toolbar">
-                        <el-button :icon="VideoPlay" :disabled="busy || !running" @click="emit('restartRuntime')">重启 Runtime</el-button>
-                        <el-button type="danger" plain :icon="VideoPause" :disabled="busy || !running" @click="emit('stopRuntime')">停止 Runtime</el-button>
+                        <el-button :icon="VideoPlay" :disabled="busy || !running" @click="emit('restartRuntime')">重启 MCP 服务</el-button>
+                        <el-button type="danger" plain :icon="VideoPause" :disabled="busy || !running" @click="emit('stopRuntime')">停止 MCP 服务</el-button>
                     </div>
                     <el-descriptions :column="1" border>
-                        <el-descriptions-item label="Controller">运行中 · PID {{ status?.pid ?? "—" }}</el-descriptions-item>
-                        <el-descriptions-item label="MCP Runtime">{{ running ? `运行中 · PID ${runtime?.pid ?? "—"}` : "未启动" }}</el-descriptions-item>
-                        <el-descriptions-item label="运行方式">{{ runtime?.mode === "local" ? "仅本机" : runtime?.mode ?? "—" }}</el-descriptions-item>
+                        <el-descriptions-item label="Web 控制台">{{ status ? "运行中" : "未运行" }}</el-descriptions-item>
+                        <el-descriptions-item label="MCP 服务">{{ running ? "运行中" : "未启动" }}</el-descriptions-item>
+                        <el-descriptions-item label="运行方式">{{ runtime?.mode === "local" ? "仅本机" : runtime?.mode === "public" ? "ChatGPT 公网" : "—" }}</el-descriptions-item>
                         <el-descriptions-item label="公网连接">{{ runtime?.publicMcpUrl ? "已连接" : "未连接" }}</el-descriptions-item>
-                        <el-descriptions-item v-if="setup?.config.publicAccess?.kind === 'cloudflare'" label="Tunnel 协议">{{ (setup?.config.runtime?.tunnelProtocol ?? "http2") === "http2" ? "HTTP/2" : "QUIC" }}</el-descriptions-item>
+                        <el-descriptions-item v-if="setup?.config.publicAccess?.kind === 'cloudflare'" label="Cloudflare 协议">{{ (setup?.config.runtime?.tunnelProtocol ?? "http2") === "http2" ? "HTTP/2" : "QUIC" }}</el-descriptions-item>
                         <el-descriptions-item label="登录保护">{{ runtime?.auth?.required ? (runtime.auth.configured ? "已启用" : "等待设置密码") : "仅本机，无需登录" }}</el-descriptions-item>
                         <el-descriptions-item label="本机地址"><span class="mono small break-all">{{ runtime?.localUrl ?? "—" }}</span></el-descriptions-item>
                         <el-descriptions-item label="ChatGPT 地址"><span class="mono small break-all">{{ chatGptUrl }}</span></el-descriptions-item>

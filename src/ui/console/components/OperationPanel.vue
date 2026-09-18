@@ -18,11 +18,11 @@ function friendlyPhase(message: string): string {
     const exact: Record<string, string> = {
         "准备中": "正在准备",
         "运行诊断": "正在检查服务",
-        "执行安全本机修复": "正在修复常见问题",
+        "执行安全本机修复": "正在修复常见本机问题",
         "验证公网连接": "正在检查公网连接",
         "打开 Cloudflare 登录": "正在打开 Cloudflare 登录",
         "读取 Cloudflare 登录": "正在读取 Cloudflare 账户",
-        "Cloudflare 域名已读取": "可用域名已读取",
+        "Cloudflare 域名已读取": "已经读取可用的 Cloudflare 域名",
         "正在取消": "正在取消",
         "完成": "操作已完成",
     };
