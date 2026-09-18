@@ -25,17 +25,13 @@ watch(() => props.projects, (items) => {
 </script>
 
 <template>
-    <div>
-        <div class="page-heading">
-            <div class="section-heading" style="margin-bottom: 0">
-                <div><h1>项目</h1><p>管理 ChatGPT 可以访问的项目，以及各项目的会话绑定。</p></div>
-                <el-button type="primary" :icon="FolderAdd" @click="emit('add')">添加项目</el-button>
-            </div>
+    <div class="page-surface list-surface">
+        <div class="table-toolbar">
+            <div class="table-toolbar-spacer"></div>
+            <el-button type="primary" :icon="FolderAdd" @click="emit('add')">添加项目</el-button>
         </div>
-
-        <el-card shadow="never">
-            <el-empty v-if="!projects.length" description="还没有项目"><el-button type="primary" @click="emit('add')">选择项目文件夹</el-button></el-empty>
-            <el-table v-else :data="projects" style="width: 100%" @row-click="openProject">
+        <el-empty v-if="!projects.length" description="还没有项目"><el-button type="primary" @click="emit('add')">选择项目文件夹</el-button></el-empty>
+        <el-table v-else :data="projects" style="width: 100%" @row-click="openProject">
                 <el-table-column label="项目" min-width="280">
                     <template #default="{ row }"><div class="project-name">{{ row.name }}</div><div class="project-path">{{ row.path }}</div></template>
                 </el-table-column>
@@ -44,19 +40,16 @@ watch(() => props.projects, (items) => {
                 <el-table-column label="操作" width="180" align="right">
                     <template #default="{ row }"><el-button text type="primary" @click.stop="openProject(row)">管理</el-button><el-button v-if="row.active" text type="danger" :disabled="busy" @click.stop="emit('remove', row)">停用</el-button><el-button v-else text type="primary" :disabled="busy" @click.stop="emit('reactivate', row)">重新启用</el-button></template>
                 </el-table-column>
-            </el-table>
-        </el-card>
-        <p v-if="conversations.length" class="muted small" style="margin-top: 12px">会话编号只用于区分项目选择记录，不代表 ChatGPT 对话正在运行。</p>
+        </el-table>
 
         <el-drawer v-model="drawerOpen" :title="drawerProject?.name ?? '项目详情'" size="min(520px, 92vw)">
             <template v-if="drawerProject">
                 <el-descriptions :column="1" border>
                     <el-descriptions-item label="状态"><el-tag :type="drawerProject.active ? 'success' : 'info'">{{ drawerProject.active ? "可用" : "已停用" }}</el-tag></el-descriptions-item>
                     <el-descriptions-item label="目录"><span class="break-all mono small">{{ drawerProject.path }}</span></el-descriptions-item>
-                    <el-descriptions-item label="项目 ID"><span class="mono small">{{ drawerProject.id }}</span></el-descriptions-item>
                 </el-descriptions>
                 <div class="section-heading" style="margin-top: 24px">
-                    <div><h2>会话绑定</h2><p>清除后，该 ChatGPT 会话下次使用项目工具时需要重新选择项目。</p></div>
+                    <h2>会话绑定</h2>
                     <el-button v-if="activeConversations.length > 1" text type="danger" :disabled="busy" @click="emit('cleanup', drawerProject, activeConversations.map((item) => item.id))">清理全部</el-button>
                 </div>
                 <el-empty v-if="!activeConversations.length" :image-size="60" description="还没有会话选择过这个项目" />

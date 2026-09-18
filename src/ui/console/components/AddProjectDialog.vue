@@ -59,14 +59,13 @@ function close(): void {
 
 <template>
     <el-dialog :model-value="modelValue" title="添加项目" width="min(560px, 92vw)" :close-on-click-modal="!busy" @close="close">
-        <p class="muted" style="margin-top: -8px">选择这台电脑上的项目文件夹，ChatGPT 就可以在其中工作。</p>
         <el-button class="break-all" style="width: 100%; height: auto; min-height: 64px; margin-top: 16px" :loading="picking" :disabled="busy" @click="choose">
             <el-icon><FolderOpened /></el-icon>
             {{ picking ? "请在系统窗口中选择文件夹" : "打开系统文件夹选择器" }}
         </el-button>
         <el-alert v-if="path" style="margin-top: 14px" type="success" :closable="false"><template #title>已选择：{{ path }}</template></el-alert>
         <div v-if="suggestions.length" style="margin-top: 18px">
-            <div class="muted small" style="margin-bottom: 6px">最近或自动发现的项目</div>
+            <div class="muted small" style="margin-bottom: 6px">推荐项目</div>
             <el-scrollbar max-height="190px">
                 <div v-for="item in suggestions" :key="item.path" class="status-line" style="cursor: pointer" @click="path = item.path; error = ''">
                     <div class="inline-actions" style="min-width: 0"><el-icon><Folder /></el-icon><div style="min-width: 0"><div>{{ item.name }}</div><div class="muted small break-all">{{ item.path }}</div></div></div>

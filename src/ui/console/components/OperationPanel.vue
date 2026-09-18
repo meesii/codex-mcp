@@ -31,7 +31,7 @@ function friendlyPhase(message: string): string {
 </script>
 
 <template>
-    <el-card v-if="operation" class="operation-panel" shadow="never">
+    <div v-if="operation" class="operation-panel">
         <div class="section-heading" style="margin-bottom: 0">
             <div>
                 <div class="inline-actions">
@@ -40,11 +40,11 @@ function friendlyPhase(message: string): string {
                     <el-tag :type="presentation.type" effect="light">{{ presentation.label }}</el-tag>
                 </div>
                 <div v-if="operation.messages.length" class="operation-messages">
-                    <div v-for="(message, index) in operation.messages.slice(-8)" :key="`${index}-${message}`">{{ friendlyPhase(message) }}</div>
+                    <div v-for="(message, index) in operation.messages.slice(-4)" :key="`${index}-${message}`">{{ friendlyPhase(message) }}</div>
                 </div>
-                <el-alert v-if="operation.error" class="operation-panel" type="error" :closable="false" :title="friendlyError(operation.error)" />
+                <el-alert v-if="operation.error" style="margin-top: 10px" type="error" :closable="false" :title="friendlyError(operation.error)" />
             </div>
             <el-button v-if="operation.state === 'running'" text @click="emit('cancel', operation.id)">取消</el-button>
         </div>
-    </el-card>
+    </div>
 </template>

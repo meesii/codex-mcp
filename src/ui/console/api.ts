@@ -52,7 +52,7 @@ export interface CapabilityConfig {
 
 export interface SetupConfigState {
     publicAccess?: { kind: "external" | "cloudflare"; domain: string };
-    runtime?: { mode: "local" | "public"; noTunnel?: boolean; tunnelLogs?: boolean };
+    runtime?: { mode: "local" | "public"; noTunnel?: boolean; tunnelLogs?: boolean; tunnelProtocol?: "http2" | "quic" };
 }
 
 export interface SetupSummary {
