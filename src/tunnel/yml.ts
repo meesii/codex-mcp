@@ -104,9 +104,8 @@ export function writeCloudflaredYml(
 ): void {
     mkdirSync(dirname(filePath), { recursive: true });
     const credentials = quoteYamlScalar(input.credentialsFile);
-    // Keep the IPv4 workaround for broken dual-stack networks, but leave the
-    // transport protocol on cloudflared's default auto mode so it can try QUIC
-    // and fall back to HTTP/2 when needed.
+    // Keep the IPv4 workaround for broken dual-stack networks. The edge
+    // transport is selected explicitly by the sidecar launch arguments.
     const body = [
         `tunnel: ${input.tunnelId}`,
         `credentials-file: ${credentials}`,

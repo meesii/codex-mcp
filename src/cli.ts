@@ -30,7 +30,7 @@ import {
     loadCommittedTunnelSetup,
     type TunnelSetupResult,
 } from "./tunnel/setup.js";
-import { loadUserConfig } from "./config/user-config.js";
+import { loadUserConfig, resolveTunnelProtocol } from "./config/user-config.js";
 import { randomBytes } from "node:crypto";
 import type { TunnelObservedStatus } from "./daemon/control.js";
 import {
@@ -366,6 +366,7 @@ async function startServices(options: StartServicesOptions): Promise<StartedServ
                 bin: tunnelSetup.bin,
                 tunnelId: tunnelSetup.tunnelId,
                 configPath: tunnelSetup.configPath,
+                protocol: resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol),
                 mirrorLogs: flags.tunnelLogs,
                 maxRestarts: options.daemon ? 3 : 0,
                 onStateChange: options.onTunnelStatus,

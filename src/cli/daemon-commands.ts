@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolveProjectRoot } from "../config/loader.js";
+import { loadUserConfig, resolveTunnelProtocol } from "../config/user-config.js";
 import type { DaemonStatusPayload, TunnelObservedStatus } from "../daemon/control.js";
 import { writeRuntimeLog } from "../lib/runtime-log.js";
 import {
@@ -65,7 +66,8 @@ export async function runStatus(flags: CliFlags): Promise<void> {
     const controllerStatus = controller ? await controller.client.status() : undefined;
     const control = controllerStatus?.runtime ?? await getControlStatus();
     const status = control.runtime;
-    const preferredIntent = preferredRuntimeIntent();
+    const userConfig = loadUserConfig();
+    const preferredIntent = preferredRuntimeIntent(userConfig);
     const daemonVersion = status?.version ?? null;
     const versionMismatch = Boolean(
         (daemonVersion && daemonVersion !== cliVersion) ||
@@ -99,6 +101,9 @@ export async function runStatus(flags: CliFlags): Promise<void> {
                 publicMcpUrl: status.publicMcpUrl ?? null,
                 runtimeIntent: status.runtimeIntent,
                 tunnelRunning: status.tunnel.running,
+                tunnelProtocol: userConfig.publicAccess?.kind === "cloudflare"
+                    ? resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol)
+                    : null,
                 tunnel: status.tunnel,
                 auth: status.auth,
             } : null,
@@ -134,6 +139,10 @@ export async function runStatus(flags: CliFlags): Promise<void> {
         { label: "本机 MCP", value: status.localUrl },
         { label: "OAuth", value: status.auth.required ? (status.auth.configured ? "已配置" : "未配置") : "未启用" },
         { label: "公网地址", value: status.publicMcpUrl ?? "未启用" },
+        ...(userConfig.publicAccess?.kind === "cloudflare" ? [{
+            label: "Tunnel 协议",
+            value: resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol) === "http2" ? "HTTP/2" : "QUIC",
+        }] : []),
         { label: "公网连接", value: describeTunnelStatus(status.tunnel) },
     ]);
 

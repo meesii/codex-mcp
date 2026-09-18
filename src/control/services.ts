@@ -3,7 +3,15 @@ import { bindingPresentationId, presentBindings, validateProjectFolder } from ".
 import { generateAdminPassword, hasAdminPassword, setAdminPassword, verifyAdminPassword } from "../auth/password-store.js";
 import { CapabilityManager } from "../capabilities/manager.js";
 import { resolveCapabilitiesConfig } from "../capabilities/config.js";
-import { ensureUserConfigDirs, loadUserConfig, saveUserConfig, type UserCapabilitiesConfig } from "../config/user-config.js";
+import {
+    ensureUserConfigDirs,
+    loadUserConfig,
+    resolveTunnelProtocol,
+    saveUserConfig,
+    type CloudflareTunnelProtocol,
+    type UserCapabilitiesConfig,
+    type UserRuntimeConfig,
+} from "../config/user-config.js";
 import {
     cleanStaleDaemonState,
     contactRunningDaemon,
@@ -282,6 +290,54 @@ export async function getSetupSummary(primaryWorkspace = process.cwd()): Promise
 export function saveCapabilities(config: UserCapabilitiesConfig): ReturnType<typeof resolveCapabilitiesConfig> {
     const saved = saveUserConfig({ capabilities: config });
     return resolveCapabilitiesConfig(saved.capabilities);
+}
+
+export async function setTunnelProtocol(protocol: CloudflareTunnelProtocol): Promise<{
+    protocol: CloudflareTunnelProtocol;
+    restarted: boolean;
+}> {
+    const normalized = resolveTunnelProtocol(protocol);
+    return await withDaemonLifecycleLock(async () => {
+        const config = loadUserConfig();
+        if (config.publicAccess?.kind !== "cloudflare") {
+            throw new Error("只有托管 Cloudflare Tunnel 才能选择传输协议");
+        }
+        const previousProtocol = resolveTunnelProtocol(config.runtime?.tunnelProtocol);
+        if (previousProtocol === normalized) return { protocol: normalized, restarted: false };
+
+        const daemon = await contactRunningDaemon();
+        const intent = daemon?.state.runtimeIntent ?? preferredRuntimeIntent(config);
+        const previousRuntime = config.runtime;
+        const nextRuntime: UserRuntimeConfig = {
+            mode: previousRuntime?.mode ?? (intent.local ? "local" : "public"),
+            noTunnel: previousRuntime?.noTunnel ?? intent.noTunnel,
+            tunnelLogs: previousRuntime?.tunnelLogs ?? intent.tunnelLogs,
+            tunnelProtocol: normalized,
+        };
+        saveUserConfig({ runtime: nextRuntime });
+
+        const shouldRestart = Boolean(daemon && !intent.local && !intent.noTunnel);
+        if (!shouldRestart) return { protocol: normalized, restarted: false };
+
+        try {
+            await stopDaemonContact(daemon!);
+            await startDaemonForIntent(intent);
+            return { protocol: normalized, restarted: true };
+        } catch (error) {
+            const rollbackRuntime: UserRuntimeConfig = previousRuntime ?? {
+                mode: intent.local ? "local" : "public",
+                noTunnel: intent.noTunnel,
+                tunnelLogs: intent.tunnelLogs,
+            };
+            saveUserConfig({ runtime: rollbackRuntime });
+            try {
+                await startDaemonForIntent(intent);
+            } catch {
+                // The original error is more useful; doctor/status can surface any recovery failure.
+            }
+            throw error;
+        }
+    });
 }
 
 export function readLogs(lines = 100): { path: string; text: string } {

@@ -22,6 +22,7 @@ import {
     restartRuntime,
     runDoctorService,
     saveCapabilities,
+    setTunnelProtocol,
     selfUpdate,
     setConnectionPassword,
     startRuntime,
@@ -275,6 +276,14 @@ export function createControllerHttpServer(options: ControllerHttpServerOptions)
             const config = body.config;
             if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("config is required");
             res.json({ ok: true, capabilities: saveCapabilities(config) });
+        } catch (error) { sendError(res, error, 400); }
+    });
+
+    app.post("/api/setup/tunnel-protocol", async (req, res) => {
+        try {
+            const protocol = requiredString(asRecord(req.body).protocol, "protocol");
+            if (protocol !== "http2" && protocol !== "quic") throw new Error("protocol must be http2 or quic");
+            res.json({ ok: true, ...(await setTunnelProtocol(protocol)) });
         } catch (error) { sendError(res, error, 400); }
     });
 

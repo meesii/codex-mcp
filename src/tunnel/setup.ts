@@ -11,6 +11,7 @@ import {
     getUserConfigPath,
     loadUserConfig,
     normalizeHostname,
+    resolveTunnelProtocol,
     type CloudflarePublicAccessConfig,
     type PublicAccessConfig,
     type UserConfig,
@@ -45,6 +46,7 @@ export interface TunnelSetupResult {
     configRevision?: string;
     previousConfigRevision?: string;
     zoneId?: string;
+    protocol?: ReturnType<typeof resolveTunnelProtocol>;
     /** Previous managed route, retained only long enough to retire its exact DNS hostname after commit. */
     previousManagedAccess?: CloudflarePublicAccessConfig;
     /** Present only for artifacts prepared by the current uncommitted wizard session. */
@@ -234,6 +236,7 @@ export async function prepareCloudflareTunnelSetup(
             ...(previousManaged ? { previousManagedAccess: previousManaged } : {}),
             ...(previousManaged?.configRevision ? { previousConfigRevision: previousManaged.configRevision } : {}),
             zoneId,
+            protocol: resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol),
             candidateSession: { createdTunnel: tunnel.created },
         };
     } catch (error) {
@@ -296,6 +299,7 @@ export async function loadCommittedTunnelSetup(
         configPath,
         configRevision: access.configRevision,
         zoneId: access.zoneId,
+        protocol: resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol),
     };
 }
 
@@ -420,6 +424,7 @@ async function runConfigWizard(
                 ? { previousConfigRevision: previousManaged.configRevision }
                 : {}),
             zoneId,
+            protocol: resolveTunnelProtocol(userConfig.runtime?.tunnelProtocol),
             candidateSession: { createdTunnel: tunnel.created },
         };
     } catch (error) {

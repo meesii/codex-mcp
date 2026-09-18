@@ -2,12 +2,12 @@ import {
     generateAdminPassword,
     hasAdminPassword,
 } from "../auth/password-store.js";
-import { setConnectionPassword } from "../control/services.js";
+import { setConnectionPassword, setTunnelProtocol } from "../control/services.js";
 import {
     configureCapabilitySources,
     describeCapabilitiesConfig,
 } from "../capabilities/setup.js";
-import { loadUserConfig } from "../config/user-config.js";
+import { loadUserConfig, resolveTunnelProtocol } from "../config/user-config.js";
 import {
     printInfo,
     printIntro,
@@ -67,7 +67,10 @@ async function runSetupManager(
             label: "公网方式",
             value: access.kind === "external" ? "自定义 HTTPS" : "Cloudflare Tunnel",
         },
-        ...(access.kind === "cloudflare" ? [{ label: "Tunnel", value: access.tunnelName }] : []),
+        ...(access.kind === "cloudflare" ? [
+            { label: "Tunnel", value: access.tunnelName },
+            { label: "传输协议", value: resolveTunnelProtocol(current.runtime?.tunnelProtocol) === "http2" ? "HTTP/2" : "QUIC" },
+        ] : []),
         { label: "连接密码", value: passwordConfigured ? "已设置" : "未设置" },
         { label: "外部能力", value: describeCapabilitiesConfig(current.capabilities) },
     ]);
@@ -80,6 +83,11 @@ async function runSetupManager(
             ...(access.kind === "external"
                 ? []
                 : [
+                      {
+                          value: "protocol",
+                          label: "修改 Tunnel 传输协议",
+                          hint: `当前 ${resolveTunnelProtocol(current.runtime?.tunnelProtocol) === "http2" ? "HTTP/2" : "QUIC"}`,
+                      },
                       {
                           value: "cloudflare",
                           label: "重新登录 / 切换 Cloudflare 账号",
@@ -112,6 +120,19 @@ async function runSetupManager(
     if (action === "capabilities") {
         const result = await configureCapabilitySources();
         printOutro(result.changed ? "外部能力设置已保存" : "外部能力设置保持不变");
+        return;
+    }
+    if (action === "protocol") {
+        const protocol = resolveTunnelProtocol(await askSelect(
+            "请选择 Cloudflare Tunnel 传输协议",
+            [
+                { value: "http2", label: "HTTP/2", hint: "默认；使用 TCP 7844，兼容性更好" },
+                { value: "quic", label: "QUIC", hint: "使用 UDP 7844，网络支持良好时可选" },
+            ],
+            resolveTunnelProtocol(current.runtime?.tunnelProtocol),
+        ));
+        const result = await setTunnelProtocol(protocol);
+        printOutro(`Tunnel 已切换为 ${result.protocol === "http2" ? "HTTP/2" : "QUIC"}${result.restarted ? "，Runtime 已重启" : ""}`);
         return;
     }
 

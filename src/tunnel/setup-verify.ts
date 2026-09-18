@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { isIP } from "node:net";
 import { safeHttpGet } from "../lib/http/safe-http.js";
+import type { CloudflareTunnelProtocol } from "../config/user-config.js";
 import { CloudflaredSidecar } from "./sidecar.js";
 import { verifyTunnelRoute, type TunnelProbe } from "./verify.js";
 
@@ -11,6 +12,7 @@ export interface SetupPublicRoute {
     bin?: string;
     tunnelId?: string;
     configPath?: string;
+    protocol?: CloudflareTunnelProtocol;
 }
 
 export interface SetupPublicVerificationResult {
@@ -67,6 +69,7 @@ export async function verifySetupPublicRoute(
                 bin: route.bin,
                 tunnelId: route.tunnelId,
                 configPath: route.configPath,
+                protocol: route.protocol ?? "http2",
             });
             tunnel = await sidecar.start();
             options.signal?.throwIfAborted();

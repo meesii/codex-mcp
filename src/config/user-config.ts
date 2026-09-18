@@ -22,6 +22,7 @@ export interface UserUiConfig {
 
 export type CapabilitySourceId = "agents" | "codex" | "claude";
 export type CapabilitySyncMode = "watch" | "startup";
+export type CloudflareTunnelProtocol = "http2" | "quic";
 
 export interface CapabilitySourceConfig {
     enabled?: boolean;
@@ -36,6 +37,8 @@ export interface UserRuntimeConfig {
     noTunnel?: boolean;
     /** Mirror managed tunnel logs into the terminal/runtime log. */
     tunnelLogs?: boolean;
+    /** Cloudflare edge transport. Omitted configs default to HTTP/2. */
+    tunnelProtocol?: CloudflareTunnelProtocol;
 }
 
 export interface UserCapabilitiesConfig {
@@ -312,7 +315,7 @@ function normalizeRuntimeConfig(value: unknown): UserRuntimeConfig {
         throw new Error("runtime must be an object");
     }
     const raw = value as Record<string, unknown>;
-    assertObjectKeys(raw, "runtime", ["mode", "noTunnel", "tunnelLogs"]);
+    assertObjectKeys(raw, "runtime", ["mode", "noTunnel", "tunnelLogs", "tunnelProtocol"]);
     if (raw.mode !== "local" && raw.mode !== "public") {
         throw new Error("runtime.mode must be local or public");
     }
@@ -322,14 +325,29 @@ function normalizeRuntimeConfig(value: unknown): UserRuntimeConfig {
     if (raw.tunnelLogs !== undefined && typeof raw.tunnelLogs !== "boolean") {
         throw new Error("runtime.tunnelLogs must be a boolean");
     }
+    const tunnelProtocol = raw.tunnelProtocol === undefined
+        ? undefined
+        : resolveTunnelProtocol(raw.tunnelProtocol);
     if (raw.mode === "local") {
-        return { mode: "local", noTunnel: true, tunnelLogs: false };
+        return {
+            mode: "local",
+            noTunnel: true,
+            tunnelLogs: false,
+            ...(tunnelProtocol ? { tunnelProtocol } : {}),
+        };
     }
     return {
         mode: "public",
         noTunnel: raw.noTunnel === true,
         tunnelLogs: raw.tunnelLogs === true,
+        ...(tunnelProtocol ? { tunnelProtocol } : {}),
     };
+}
+
+export function resolveTunnelProtocol(value: unknown): CloudflareTunnelProtocol {
+    if (value === undefined) return "http2";
+    if (value === "http2" || value === "quic") return value;
+    throw new Error("runtime.tunnelProtocol must be http2 or quic");
 }
 
 function normalizeCapabilitiesConfig(value: unknown): UserCapabilitiesConfig {

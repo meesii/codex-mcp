@@ -3,19 +3,25 @@ import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { terminateChildProcess } from "../lib/process/tree.js";
 import { printCompactLog } from "../lib/util/terminal.js";
-import { ensureUserConfigDirs, getUserLogDir } from "../config/user-config.js";
+import { ensureUserConfigDirs, getUserLogDir, type CloudflareTunnelProtocol } from "../config/user-config.js";
 import { cloudflaredChildEnv } from "./exec.js";
 
 const DEFAULT_READY_TIMEOUT_MS = 180_000;
 const MAX_DIAGNOSTIC_LOG_CHARS = 16_000;
 
-export function cloudflaredRunArgs(configPath: string, tunnelId: string): string[] {
+export function cloudflaredRunArgs(
+    configPath: string,
+    tunnelId: string,
+    protocol: CloudflareTunnelProtocol = "http2",
+): string[] {
     return [
         "tunnel",
         "--config",
         configPath,
         "--edge-ip-version",
         "4",
+        "--protocol",
+        protocol,
         "run",
         tunnelId,
     ];
@@ -25,31 +31,24 @@ export function tunnelReadinessTimeoutMessage(
     timeoutMs: number,
     logText: string,
     logPath: string,
+    protocol: CloudflareTunnelProtocol = "http2",
 ): string {
     const prefix = `公网连接在 ${Math.round(timeoutMs / 1000)} 秒内没有准备好。`;
-    const ipv6Tcp7844Timeout = /\[[0-9a-f:]+\]:7844[^\n]*(?:i\/o timeout|timed out|timeout)/i.test(
-        logText,
-    );
-    if (ipv6Tcp7844Timeout) {
-        return `${prefix} Cloudflare 的 IPv6 连接超时。当前版本已经强制使用 IPv4；请确认网络允许访问 TCP 7844。日志：${logPath}`;
+    if (protocol === "quic") {
+        return `${prefix} 当前使用 QUIC，请检查网络、代理或防火墙是否允许 Cloudflare UDP 7844。日志：${logPath}`;
     }
-
-    const tcp7844Failure =
-        /TCP Connectivity[^\n]*FAIL[^\n]*HTTP\/2[^\n]*(?:blocked|unreachable)/i.test(logText) ||
-        /(?:dial tcp|TLS handshake)[^\n]*:7844[^\n]*(?:i\/o timeout|timed out|timeout|refused|unreachable)/i.test(
-            logText,
-        );
-    if (tcp7844Failure) {
-        return `${prefix} Cloudflare 已回退到 HTTP/2，但 TCP 7844 仍不可达。请检查防火墙或网络限制；自动模式也会优先尝试 QUIC/UDP 7844。日志：${logPath}`;
-    }
-
-    return `${prefix} 请检查网络是否允许访问 Cloudflare UDP 或 TCP 7844。日志：${logPath}`;
+    const tcpFailure = /(?:dial tcp|TLS handshake|TCP Connectivity)[^\n]*7844[^\n]*(?:i\/o timeout|timed out|timeout|refused|unreachable|blocked)/i.test(logText);
+    return tcpFailure
+        ? `${prefix} 当前使用 HTTP/2，但 Cloudflare TCP 7844 不可达。请检查网络、代理或防火墙。日志：${logPath}`
+        : `${prefix} 当前使用 HTTP/2，请检查网络是否允许访问 Cloudflare TCP 7844。日志：${logPath}`;
 }
 
 export interface TunnelSidecarOptions {
     bin: string;
     tunnelId: string;
     configPath: string;
+    /** Cloudflare edge transport. Defaults to HTTP/2. */
+    protocol?: CloudflareTunnelProtocol;
     /** Mirror log lines to the parent terminal with a prefix. */
     mirrorLogs?: boolean;
     /** Max wait for edge registration (ms). */
@@ -141,7 +140,7 @@ export class CloudflaredSidecar {
 
         const child = spawn(
             this.options.bin,
-            cloudflaredRunArgs(configPath, this.options.tunnelId),
+            cloudflaredRunArgs(configPath, this.options.tunnelId, this.options.protocol ?? "http2"),
             {
                 stdio: ["ignore", "pipe", "pipe"],
                 windowsHide: true,
@@ -192,6 +191,7 @@ export class CloudflaredSidecar {
                             timeoutMs,
                             this.diagnosticTail,
                             this.logPath,
+                            this.options.protocol ?? "http2",
                         ),
                     ),
                 );
